@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0",
+  "packages": [
+    {
+      "id": "Microsoft.VisualStudioCode",
+      "name": "Visual Studio Code",
+      "category": "Development"
+    },
+    {
+      "id": "Brave.Brave",
+      "name": "Brave Browser",
+      "category": "Browsers"
+    },
+    {
+      "id": "Spotify.Spotify",
+      "name": "Spotify",
+      "category": "Media"
+    },
+    {
+      "id": "Git.Git",
+      "name": "Git",
+      "category": "Development"
+    },
+    {
+      "id": "GitHub.cli",
+      "name": "GitHub CLI",
+      "category": "Development"
+    },
+    {
+      "id": "OpenJS.NodeJS.LTS",
+      "name": "Node.js (LTS)",
+      "category": "Development"
+    },
+    {
+      "id": "Python.Latest",
+      "name": "Python 3 (Latest)",
+      "category": "Development"
+    }
+  ],
+  "apps": [
+    {
+      "name": "vscode",
+      "displayName": "Visual Studio Code",
+      "description": "Editor configuration and keybindings",
+      "files": [
+        {
+          "repoPath": "configs/vscode/settings.json",
+          "localPath": "%APPDATA%/Code/User/settings.json",
+          "required": true
+        },
+        {
+          "repoPath": "configs/vscode/keybindings.json",
+          "localPath": "%APPDATA%/Code/User/keybindings.json",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "powershell",
+      "displayName": "PowerShell Profile",
+      "description": "PowerShell 7+ and Windows PowerShell profile",
+      "files": [
+        {
+          "repoPath": "configs/powershell/Microsoft.PowerShell_profile.ps1",
+          "localPath": "$DOCUMENTS/PowerShell/Microsoft.PowerShell_profile.ps1",
+          "required": true
+        },
+        {
+          "repoPath": "configs/powershell/Microsoft.PowerShell_profile_5.ps1",
+          "localPath": "$DOCUMENTS/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
