@@ -67,8 +67,6 @@ rev           # Opens current folder in Windows Explorer
 | `sudo` | `<command>` | Windows 11 native elevation. Supports `sudo !!` to re-run the previous command as Administrator. |
 | `which` | `<command>` | Prints the full path of an executable or cmdlet (with error handling). |
 | `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
-| `dev` | *none* | Runs `npm run dev`. |
-| `preview` | *none* | Runs `npm run build; npm run preview`. |
 | `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Filters piped input (`docker ps \| findstr auth`) or searches codebase files recursively (`findstr "TODO"`), auto-skipping junk dirs (`.git`, `node_modules`, `bin`, `.venv`). |
 
 ### Development Examples:
