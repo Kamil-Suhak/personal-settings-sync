@@ -220,6 +220,45 @@ function killport ($port) {
     }
 }
 
+function Get-SearchableFiles {
+    param(
+        [string]$Path = ".",
+        [string[]]$ExcludeDirs = @('.git', 'node_modules', 'bin', 'obj', 'target', '.vs', 'dist', 'build', '.venv', '__pycache__', '.backups'),
+        [string[]]$ExcludeExtensions = @()
+    )
+
+    $resolved = Resolve-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+    if (-not $resolved) { return @() }
+
+    $rootItem = Get-Item -LiteralPath $resolved.Path -Force -ErrorAction SilentlyContinue
+    if (-not $rootItem) { return @() }
+    if (-not $rootItem.PSIsContainer) { return @($rootItem) }
+
+    $excludeSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$ExcludeDirs, [System.StringComparer]::OrdinalIgnoreCase)
+    $extSet = [System.Collections.Generic.HashSet[string]]::new([string[]]$ExcludeExtensions, [System.StringComparer]::OrdinalIgnoreCase)
+
+    $results = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    $queue = [System.Collections.Generic.Queue[System.IO.DirectoryInfo]]::new()
+    $queue.Enqueue($rootItem)
+
+    while ($queue.Count -gt 0) {
+        $currentDir = $queue.Dequeue()
+        try {
+            foreach ($subDir in $currentDir.EnumerateDirectories()) {
+                if (-not $excludeSet.Contains($subDir.Name)) {
+                    $queue.Enqueue($subDir)
+                }
+            }
+            foreach ($file in $currentDir.EnumerateFiles()) {
+                if ($extSet.Count -eq 0 -or -not $extSet.Contains($file.Extension)) {
+                    $results.Add($file)
+                }
+            }
+        } catch {}
+    }
+    return $results
+}
+
 function find {
     [CmdletBinding()]
     param(
@@ -237,15 +276,11 @@ function find {
 
     $cleanedTokens = $Name -split '[\s-_.]+' | Where-Object { $_ }
     $regexPattern = ($cleanedTokens | ForEach-Object { [regex]::Escape($_) }) -join '.?'
-    $excludeDirs = @('.git', 'node_modules', 'bin', 'obj', 'target', '.vs', 'dist', 'build')
+    $nameRegex = [regex]::new($regexPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
     $foundFiles = @(
-        Get-ChildItem -Path $Path -Recurse -File -Force -ErrorAction SilentlyContinue |
-        Where-Object {
-            $dir = $_.DirectoryName
-            -not ($excludeDirs | Where-Object { $dir -match [regex]::Escape("\$_\") -or $dir -match [regex]::Escape("/$_/") }) -and
-            ($_.Name -match $regexPattern)
-        } |
+        Get-SearchableFiles -Path $Path |
+        Where-Object { $nameRegex.IsMatch($_.Name) } |
         Select-Object FullName, Name, DirectoryName
     )
 
@@ -374,15 +409,10 @@ function findstr {
     end {
         if ($isPiped -or -not $Pattern) { return }
 
-        $excludeDirs = @('.git', 'node_modules', 'bin', 'obj', 'target', '.vs', 'dist', 'build', '.venv', '__pycache__')
         $binaryExts = @('.exe', '.dll', '.pdb', '.zip', '.tar', '.gz', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.woff', '.woff2', '.ttf')
         $currentDir = (Get-Location).Path.TrimEnd('\', '/')
 
-        $files = Get-ChildItem -Path $Path -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object {
-            $dir = $_.DirectoryName
-            -not ($excludeDirs | Where-Object { $dir -match [regex]::Escape("\$_\") -or $dir -match [regex]::Escape("/$_/") }) -and
-            -not ($binaryExts -contains $_.Extension.ToLower())
-        }
+        $files = Get-SearchableFiles -Path $Path -ExcludeExtensions $binaryExts
 
         $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
         $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
