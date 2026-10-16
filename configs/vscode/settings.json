@@ -1,0 +1,15 @@
+{
+  "security.workspace.trust.untrustedFiles": "open",
+  "cmake.showOptionsMovedNotification": false,
+  "explorer.confirmDelete": false,
+  "explorer.confirmDragAndDrop": false,
+  "python.defaultInterpreterPath": "c:\\Python314\\python.exe",
+  "github.copilot.nextEditSuggestions.enabled": true,
+  "python.createEnvironment.trigger": "off",
+  "workbench.iconTheme": "file-icons",
+  "editor.formatOnSave": true,
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "powershell.integratedConsole.showOnStartup": false
+}
