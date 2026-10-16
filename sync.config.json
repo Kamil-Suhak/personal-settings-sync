@@ -38,6 +38,14 @@
       "category": "Development"
     }
   ],
+  "fonts": [
+    {
+      "name": "JetBrains Mono",
+      "repo": "JetBrains/JetBrainsMono",
+      "fallbackUrl": "https://download.jetbrains.com/fonts/JetBrainsMono-2.304.zip",
+      "checkFile": "JetBrainsMono-Regular.ttf"
+    }
+  ],
   "apps": [
     {
       "name": "vscode",
@@ -59,7 +67,7 @@
     {
       "name": "powershell",
       "displayName": "PowerShell Profile",
-      "description": "PowerShell 7+ and Windows PowerShell profile",
+      "description": "PowerShell 7+ and Windows PowerShell 5.1 profile",
       "files": [
         {
           "repoPath": "configs/powershell/Microsoft.PowerShell_profile.ps1",
@@ -67,9 +75,33 @@
           "required": true
         },
         {
-          "repoPath": "configs/powershell/Microsoft.PowerShell_profile_5.ps1",
+          "repoPath": "configs/powershell/Microsoft.PowerShell_profile.ps1",
           "localPath": "$DOCUMENTS/WindowsPowerShell/Microsoft.PowerShell_profile.ps1",
-          "required": false
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "terminal",
+      "displayName": "Windows Terminal",
+      "description": "Windows Terminal profiles, keybindings, and color schemes",
+      "files": [
+        {
+          "repoPath": "configs/terminal/settings.json",
+          "localPath": "%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "git",
+      "displayName": "Git",
+      "description": "Global Git configuration",
+      "files": [
+        {
+          "repoPath": "configs/git/.gitconfig",
+          "localPath": "%USERPROFILE%/.gitconfig",
+          "required": true
         }
       ]
     }
