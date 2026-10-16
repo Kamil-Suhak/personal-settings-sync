@@ -11,5 +11,7 @@
   "files.eol": "\n",
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
-  "powershell.integratedConsole.showOnStartup": false
+  "powershell.integratedConsole.showOnStartup": false,
+  "terminal.integrated.shellIntegration.enabled": false,
+  "terminal.integrated.defaultProfile.windows": "PowerShell"
 }
