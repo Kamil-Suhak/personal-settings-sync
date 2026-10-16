@@ -104,6 +104,27 @@
           "required": true
         }
       ]
+    },
+    {
+      "name": "gemini",
+      "displayName": "AI Agent Rules",
+      "description": "Global AGENTS.md and GEMINI.md rules for AI coding assistants",
+      "files": [
+        {
+          "repoPath": "configs/gemini/AGENTS.md",
+          "localPath": "%USERPROFILE%/.gemini/AGENTS.md",
+          "required": true
+        },
+        {
+          "repoPath": "configs/gemini/GEMINI.md",
+          "localPath": "%USERPROFILE%/.gemini/GEMINI.md",
+          "required": true
+        }
+      ]
     }
+  ],
+  "skills": [
+    "developer-profile",
+    "repo-intro"
   ]
 }

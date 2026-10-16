@@ -144,6 +144,47 @@ function Get-FileHashSafe {
     return $null
 }
 
+function Get-DirectoryFileHashes {
+    param([string]$DirPath)
+    $hashes = [ordered]@{}
+    if (Test-PathSafe $DirPath -PathType Container) {
+        $files = @(Get-ChildItem -LiteralPath $DirPath -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+        foreach ($file in $files) {
+            $rel = $file.FullName.Substring($DirPath.Length).TrimStart('\', '/')
+            $hashes[$rel] = Get-FileHashSafe $file.FullName
+        }
+    }
+    return $hashes
+}
+
+function Compare-DirectorySyncState {
+    param(
+        [string]$RepoDirPath,
+        [string]$LocalDirPath
+    )
+    $repoExists = Test-PathSafe $RepoDirPath -PathType Container
+    $localExists = Test-PathSafe $LocalDirPath -PathType Container
+
+    if (-not $repoExists -and -not $localExists) { return "Missing Both" }
+    if (-not $repoExists) { return "Missing in Repo" }
+    if (-not $localExists) { return "Missing on Machine" }
+
+    $repoHashes = Get-DirectoryFileHashes $RepoDirPath
+    $localHashes = Get-DirectoryFileHashes $LocalDirPath
+
+    if ($repoHashes.Count -ne $localHashes.Count) {
+        return "Modified"
+    }
+
+    foreach ($key in $repoHashes.Keys) {
+        if (-not $localHashes.Contains($key) -or ($repoHashes[$key] -ne $localHashes[$key])) {
+            return "Modified"
+        }
+    }
+
+    return "In Sync"
+}
+
 function Get-WingetPath {
     $cmd = Get-Command winget.exe -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
@@ -342,6 +383,22 @@ switch ($Action) {
             }
         }
 
+        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            foreach ($skillName in $Config.skills) {
+                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $statusText = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
+
+                $results += [PSCustomObject]@{
+                    App       = "Skill"
+                    File      = $skillName
+                    Status    = $statusText
+                    RepoPath  = "configs/gemini/skills/$skillName"
+                    LocalPath = $localSkillPath
+                }
+            }
+        }
+
         $results | Format-Table -Property App, File, Status, LocalPath -AutoSize
 
         Write-Host "Workflows:" -ForegroundColor DarkGray
@@ -409,6 +466,45 @@ switch ($Action) {
 
                 Copy-Item -LiteralPath $repoFullPath -Destination $localFullPath -Force
                 Write-Badge "APPLIED" Green "$($file.repoPath) -> $localFullPath"
+                $appliedCount++
+            }
+        }
+
+        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            foreach ($skillName in $Config.skills) {
+                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+
+                if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
+                    Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
+                    continue
+                }
+
+                $state = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
+                if (-not $Force -and $state -eq "In Sync") {
+                    Write-Badge "OK" DarkGray "Already in sync: $skillName ($localSkillPath)"
+                    continue
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would deploy configs/gemini/skills/$skillName -> $localSkillPath"
+                    continue
+                }
+
+                if ((Test-PathSafe $localSkillPath -PathType Container) -and -not $NoBackup) {
+                    $skillBackup = Join-Path $backupDir "skills\$skillName"
+                    Copy-Item -LiteralPath $localSkillPath -Destination $skillBackup -Recurse -Force
+                    Write-Badge "BACKUP" DarkCyan "Backed up prior skill to: .backups\$timestamp\skills\$skillName"
+                }
+
+                $targetParent = Split-Path -Parent $localSkillPath
+                if (-not (Test-PathSafe $targetParent -PathType Container)) {
+                    [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
+                }
+
+                Copy-Item -LiteralPath $repoSkillPath -Destination $localSkillPath -Recurse -Force
+                Write-Badge "APPLIED" Green "configs/gemini/skills/$skillName -> $localSkillPath"
                 $appliedCount++
             }
         }
@@ -503,6 +599,39 @@ switch ($Action) {
 
                 Copy-Item -LiteralPath $chosen.LocalFullPath -Destination $repoFullPath -Force
                 Write-Badge "EXPORTED" Green "$($chosen.LocalFullPath) -> $repoRelPath"
+                $exportedCount++
+            }
+        }
+
+        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            foreach ($skillName in $Config.skills) {
+                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+
+                if (-not (Test-PathSafe $localSkillPath -PathType Container)) {
+                    Write-Badge "MISSING" DarkYellow "Local skill directory missing: $localSkillPath"
+                    continue
+                }
+
+                $state = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
+                if (-not $Force -and $state -eq "In Sync") {
+                    Write-Badge "OK" DarkGray "Already in sync: $skillName ($localSkillPath)"
+                    continue
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would export $localSkillPath -> configs/gemini/skills/$skillName"
+                    continue
+                }
+
+                $repoParent = Split-Path -Parent $repoSkillPath
+                if (-not (Test-PathSafe $repoParent -PathType Container)) {
+                    [System.IO.Directory]::CreateDirectory($repoParent) | Out-Null
+                }
+
+                Copy-Item -LiteralPath $localSkillPath -Destination $repoSkillPath -Recurse -Force
+                Write-Badge "EXPORTED" Green "$localSkillPath -> configs/gemini/skills/$skillName"
                 $exportedCount++
             }
         }
@@ -604,6 +733,31 @@ switch ($Action) {
                         $localLines = Get-Content -LiteralPath $localFullPath
                         $repoLines = Get-Content -LiteralPath $repoFullPath
                         Compare-Object -ReferenceObject $localLines -DifferenceObject $repoLines | Format-Table -AutoSize
+                    }
+                }
+            }
+        }
+
+        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            foreach ($skillName in $Config.skills) {
+                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+
+                if ((Test-PathSafe $repoSkillPath -PathType Container) -and (Test-PathSafe $localSkillPath -PathType Container)) {
+                    $state = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
+                    if ($state -ne "In Sync") {
+                        $diffCount++
+                        Write-Host "`n--- Diff for Skill: $skillName ($localSkillPath vs configs/gemini/skills/$skillName) ---" -ForegroundColor Magenta
+                        if ($hasGit) {
+                            $prevEAP = $ErrorActionPreference
+                            $ErrorActionPreference = 'Continue'
+                            try {
+                                git diff --no-index --color $localSkillPath $repoSkillPath
+                                $global:LASTEXITCODE = 0
+                            } finally {
+                                $ErrorActionPreference = $prevEAP
+                            }
+                        }
                     }
                 }
             }
@@ -788,6 +942,56 @@ switch ($Action) {
                     }
                     Write-Badge "FAILED" Red "Could not create symbolic link (original file preserved): $($_.Exception.Message)"
                     Write-Host "  Tip: Turn on Windows Developer Mode (Settings -> System -> For developers) or use '.\sync.ps1 apply' instead." -ForegroundColor Yellow
+                }
+            }
+        }
+
+        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            foreach ($skillName in $Config.skills) {
+                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+
+                if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
+                    Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
+                    continue
+                }
+
+                $localExists = Test-PathSafe $localSkillPath -PathType Container
+                if ($localExists) {
+                    $item = Get-Item -LiteralPath $localSkillPath -Force -ErrorAction SilentlyContinue
+                    if ($item -and ($item.LinkType -in @('SymbolicLink', 'Junction')) -and ($item.Target -eq $repoSkillPath -or (Resolve-Path $item.Target -ErrorAction SilentlyContinue).Path -eq $repoSkillPath)) {
+                        Write-Badge "OK" DarkGray "Already linked: $localSkillPath ===> configs/gemini/skills/$skillName"
+                        continue
+                    }
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would link $localSkillPath ===> configs/gemini/skills/$skillName"
+                    continue
+                }
+
+                if ($localExists -and -not $NoBackup) {
+                    $skillBackup = Join-Path $backupDir "skills\$skillName"
+                    Copy-Item -LiteralPath $localSkillPath -Destination $skillBackup -Recurse -Force
+                    Write-Badge "BACKUP" DarkCyan "Backed up prior skill to: .backups\$timestamp\skills\$skillName"
+                }
+
+                if ($localExists) {
+                    Remove-Item -LiteralPath $localSkillPath -Recurse -Force
+                }
+
+                $targetParent = Split-Path -Parent $localSkillPath
+                if (-not (Test-PathSafe $targetParent -PathType Container)) {
+                    [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
+                }
+
+                try {
+                    New-Item -ItemType Junction -Path $localSkillPath -Target $repoSkillPath -Force | Out-Null
+                    Write-Badge "LINKED" Green "$localSkillPath ===> configs/gemini/skills/$skillName"
+                    $linkedCount++
+                } catch {
+                    Write-Badge "FAILED" Red "Could not create junction link: $($_.Exception.Message)"
                 }
             }
         }
