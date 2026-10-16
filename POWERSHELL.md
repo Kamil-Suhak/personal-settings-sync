@@ -1,6 +1,6 @@
 # PowerShell Profile Cheatsheet
 
-Quick reference for all custom functions, aliases, and keybindings configured in [`configs/powershell/Microsoft.PowerShell_profile.ps1`](file:///c:/Users/kamil/Coding/Projects/personal-settings-sync/configs/powershell/Microsoft.PowerShell_profile.ps1).
+Quick reference for all custom functions, aliases, and keybindings configured in [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1).
 
 ---
 
@@ -40,19 +40,17 @@ gbc                       # 7. Clean up merged branches
 | `..` | *none* | Go up 1 directory (`Set-Location ..`). |
 | `...` | *none* | Go up 2 directories (`Set-Location ../..`). |
 | `....` | *none* | Go up 3 directories (`Set-Location ../../..`). |
-| `p` | `<name>` | **Universal Project Jumper**: fuzzy-matches `<name>` across `~/Coding/Projects`, `~/Dev`, and `~/Documents/Uczelnia` and jumps there immediately. |
-| `api` | *none* | Direct jump to `$HOME\Dev\dodge-backend-api`. |
-| `apim` | *none* | Direct jump to `$HOME\Dev\dodge-apim`. |
-| `thesis` | *none* | Direct jump to `$HOME\Documents\Uczelnia\thesis`. |
+| `p` | `[<name>] [-add\|-a [<path>]] [-list\|-l]` | **Universal Project Jumper**: searches all configured project roots and jumps to `<name>`. Reads local paths from `~/.project-roots`. Run `p -add` to register new project roots or `p -list` to view them. |
 | `rev` | `[<path>]` | Opens Windows File Explorer at the specified path (defaults to current directory `.`). |
 
 ### Navigation Examples:
 ```powershell
-p dodge       # Jumps to ~/Dev/dodge-backend-api
-p sync        # Jumps to ~/Coding/Projects/personal-settings-sync
-p thesis      # Jumps to ~/Documents/Uczelnia/thesis
-rev           # Opens current folder in Windows Explorer
-...           # Jumps up 2 folder levels
+p my-app       # Jumps to project matching 'my-app'
+p -add ~/Dev   # Registers ~/Dev to your project roots
+p -add         # Prompts to add current directory (or any path)
+p -list        # Displays all currently registered project roots
+rev            # Opens current folder in Windows Explorer
+...            # Jumps up 2 folder levels
 ```
 
 ---

@@ -11,6 +11,9 @@ Currently configured for:
 - **Git**: `.gitconfig` (user identity, LFS filter, editor, default branch)
 - Extensible to any application via `sync.config.json`
 
+> [!CAUTION]
+> **Public Repository Security Notice**: Never commit sensitive secrets, private credentials, or API keys (such as `id_rsa`, `.env`, tokens, or personal passwords) to this repository. Machine-specific credentials and custom aliases should always be stored in local, uncommitted files (`~/.gitconfig.local`, `~/.project-roots`, and `.profile.local.ps1`).
+
 ---
 
 ## The Best Way to Automate Settings Sync on Windows
@@ -40,13 +43,14 @@ personal-settings-sync/
 │   ├── terminal/
 │   │   └── settings.json                       # Windows Terminal settings
 │   └── git/
-│       └── .gitconfig                          # Global Git configuration
+│       └── .gitconfig                          # Global Git configuration (includes ~/.gitconfig.local)
 ├── scripts/
-│   └── setup-windows.ps1                       # Windows dev tweaks & JetBrains Mono font installer
+│   └── setup-windows.ps1                       # Windows dev tweaks, font installer & identity setup
 ├── .backups/                                   # Auto-generated prior backups (keeps latest 10)
 ├── sync.config.json                            # Declarative mapping of apps, fonts & repo files
 ├── winget-packages.json                        # Auto-synced Winget import/export manifest
 ├── sync.ps1                                    # Main PowerShell automation script
+├── bootstrap.ps1                               # 1-line remote web bootstrapper for new machines
 ├── POWERSHELL.md                               # PowerShell profile command reference
 └── README.md
 ```
@@ -55,7 +59,17 @@ personal-settings-sync/
 
 ## Complete New Machine Setup
 
-When setting up a brand-new machine, open PowerShell in this repository:
+### Option A: 1-Line Remote Setup (No Git or GitHub Login Required)
+
+On a brand-new Windows PC, open Windows PowerShell (or Windows Terminal) and run:
+
+```powershell
+irm https://raw.githubusercontent.com/<YourUsername>/personal-settings-sync/main/bootstrap.ps1 | iex
+```
+
+*This automatically downloads the repository archive, applies Windows developer settings, installs the JetBrains Mono font, prompts for local Git identity and project directories, installs Winget apps, and deploys your configurations.*
+
+### Option B: Local Setup (If already cloned)
 
 ```powershell
 # 1. Apply Windows developer tweaks & install JetBrains Mono font
@@ -90,7 +104,7 @@ When setting up a brand-new machine, open PowerShell in this repository:
 .\sync.ps1 apps -Update
 ```
 
-Configured packages in [`sync.config.json`](file:///c:/Users/kamil/Coding/Projects/personal-settings-sync/sync.config.json):
+Configured packages in [`sync.config.json`](sync.config.json):
 - **Visual Studio Code** (`Microsoft.VisualStudioCode`)
 - **Brave Browser** (`Brave.Brave`)
 - **Spotify** (`Spotify.Spotify`)
@@ -179,7 +193,7 @@ To install all listed extensions on a new machine:
 ## Adding More Applications & Packages
 
 ### Adding New Installed Software (Winget)
-To install another application on every machine, add an entry to the `packages` list in [`sync.config.json`](file:///c:/Users/kamil/Coding/Projects/personal-settings-sync/sync.config.json) (running `.\sync.ps1 export` will automatically update [`winget-packages.json`](file:///c:/Users/kamil/Coding/Projects/personal-settings-sync/winget-packages.json)):
+To install another application on every machine, add an entry to the `packages` list in [`sync.config.json`](sync.config.json) (running `.\sync.ps1 export` will automatically update [`winget-packages.json`](winget-packages.json)):
 
 ```json
 {
@@ -190,7 +204,7 @@ To install another application on every machine, add an entry to the `packages` 
 ```
 
 ### Adding New Configuration Files
-To sync settings for any other tool (e.g. SSH config, Cursor, Neovim), add an entry to `apps` in [`sync.config.json`](file:///c:/Users/kamil/Coding/Projects/personal-settings-sync/sync.config.json):
+To sync settings for any other tool (e.g. SSH config, Cursor, Neovim), add an entry to `apps` in [`sync.config.json`](sync.config.json):
 
 ```json
 {
