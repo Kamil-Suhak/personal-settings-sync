@@ -221,3 +221,10 @@ __marimo__/
 
 # Settings sync backups
 .backups/
+
+# Machine-local overrides & uncommitted credentials
+*.local
+*.local.ps1
+.gitconfig.local
+.project-roots
+
