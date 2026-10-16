@@ -23,7 +23,7 @@
           "PackageIdentifier": "OpenJS.NodeJS.LTS"
         },
         {
-          "PackageIdentifier": "Python.Python.3.13"
+          "PackageIdentifier": "Python.Python.3.14"
         }
       ],
       "SourceDetails": {
