@@ -140,17 +140,104 @@ function ..   { Set-Location .. }
 function ...  { Set-Location ../.. }
 function .... { Set-Location ../../.. }
 
-function api    { Set-Location "$HOME\Dev\dodge-backend-api" }
-function apim   { Set-Location "$HOME\Dev\dodge-apim" }
-function thesis { Set-Location "$HOME\Documents\Uczelnia\thesis" }
+function p {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Name,
+        [Alias("a")][switch]$Add,
+        [Alias("l")][switch]$List
+    )
 
-function p ($name) {
-    $roots = @("$HOME\Coding\Projects", "$HOME\Dev", "$HOME\Documents\Uczelnia")
-    $target = $roots | ForEach-Object { Get-ChildItem -Directory "$_\*$name*" -ErrorAction SilentlyContinue } | Select-Object -First 1
+    $rootsFile = Join-Path $HOME ".project-roots"
+
+    # Load configured roots from local uncommitted file (~/.project-roots)
+    $roots = [System.Collections.Generic.List[string]]::new()
+    if (Test-Path -LiteralPath $rootsFile) {
+        Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and -not $line.StartsWith('#') -and (Test-Path -LiteralPath $line)) {
+                $roots.Add($line)
+            }
+        }
+    }
+
+    # Sensible fallbacks if no custom roots configured yet
+    if ($roots.Count -eq 0) {
+        @("$HOME\Coding\Projects", "$HOME\Coding", "$HOME\Dev", "$HOME\Projects", "$HOME\Documents\Projects") |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            ForEach-Object { $roots.Add($_) }
+    }
+
+    # 1. List configured roots (p -list or p -l)
+    if ($List -or ($Name -in @('-l', '--list', 'list'))) {
+        Write-Host "`nConfigured project roots ($rootsFile):" -ForegroundColor Cyan
+        if ($roots.Count -eq 0) {
+            Write-Host "  No roots found. Use 'p -add <path>' to register one." -ForegroundColor Yellow
+        } else {
+            $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor Green }
+        }
+        Write-Host ""
+        return
+    }
+
+    # 2. Add new project root (p -add [<path>])
+    if ($Add -or ($Name -in @('-a', '--add', 'add'))) {
+        $candidatePath = if ($args.Count -gt 0) { $args[0] } elseif ($Name -and $Name -notin @('-a', '--add', 'add')) { $Name } else { $null }
+        if (-not $candidatePath) {
+            $candidatePath = Read-Host "Enter directory path to add to project roots (press Enter for current folder: $pwd)"
+            if (-not $candidatePath) { $candidatePath = $pwd.Path }
+        }
+        $resolved = Resolve-Path -LiteralPath $candidatePath -ErrorAction SilentlyContinue
+        if (-not $resolved) {
+            Write-Host "Directory not found: $candidatePath" -ForegroundColor Red
+            return
+        }
+        $existing = if (Test-Path -LiteralPath $rootsFile) { @(Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue) } else { @() }
+        if ($existing -notcontains $resolved.Path) {
+            Add-Content -LiteralPath $rootsFile -Value $resolved.Path
+            Write-Host "Added '$($resolved.Path)' to $rootsFile" -ForegroundColor Green
+        } else {
+            Write-Host "'$($resolved.Path)' is already in $rootsFile" -ForegroundColor Yellow
+        }
+        return
+    }
+
+    # 3. If no roots exist at all on machine, prompt interactively
+    if ($roots.Count -eq 0) {
+        Write-Host "`nNo project directories configured yet." -ForegroundColor Yellow
+        $promptPath = Read-Host "Enter your primary projects directory (e.g. ~/Coding/Projects)"
+        if ($promptPath) {
+            $resolved = Resolve-Path -LiteralPath $promptPath -ErrorAction SilentlyContinue
+            if ($resolved) {
+                Add-Content -LiteralPath $rootsFile -Value $resolved.Path
+                $roots.Add($resolved.Path)
+                Write-Host "Saved project root to $rootsFile" -ForegroundColor Green
+            }
+        }
+        if ($roots.Count -eq 0) { return }
+    }
+
+    # 4. If invoked without arguments, show roots and usage
+    if (-not $Name) {
+        Write-Host "`nConfigured project roots:" -ForegroundColor Cyan
+        $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor DarkGray }
+        Write-Host "Usage: p <name> | p -add [<path>] | p -list`n" -ForegroundColor DarkCyan
+        return
+    }
+
+    # 5. Search directories across all configured roots
+    $target = $roots | ForEach-Object {
+        Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "*$Name*" }
+    } | Select-Object -First 1
+
     if ($target) {
-        Set-Location $target.FullName
+        Set-Location -LiteralPath $target.FullName
     } else {
-        Write-Host "Project matching '$name' not found." -ForegroundColor Yellow
+        Write-Host "Project matching '$Name' not found in:" -ForegroundColor Yellow
+        $roots | ForEach-Object { Write-Host "  - $_" -ForegroundColor DarkGray }
+        Write-Host "Tip: Use 'p -add <path>' to register additional project directories." -ForegroundColor DarkCyan
     }
 }
 
@@ -581,3 +668,12 @@ function prompt {
     return " "
 }
 #endregion
+
+#region 7. Machine-Local Custom Overrides
+# Load optional machine-local configuration (git-ignored, never synced)
+$localProfile = Join-Path (Split-Path -Parent $PROFILE) ".profile.local.ps1"
+if (Test-Path -LiteralPath $localProfile) {
+    . $localProfile
+}
+#endregion
+
