@@ -1,6 +1,5 @@
 {
   "security.workspace.trust.untrustedFiles": "open",
-  "cmake.showOptionsMovedNotification": false,
   "explorer.confirmDelete": false,
   "explorer.confirmDragAndDrop": false,
   "python.defaultInterpreterPath": "c:\\Python314\\python.exe",
@@ -12,6 +11,43 @@
   "files.insertFinalNewline": true,
   "files.trimTrailingWhitespace": true,
   "powershell.integratedConsole.showOnStartup": false,
+  "latex-workshop.view.pdf.viewer": "tab",
+  "latex-workshop.intellisense.citation.backend": "biblatex",
+  "latex-workshop.latex.clean.enabled": true,
+  "latex-workshop.formatting.latex": "latexindent",
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+  },
+
+  "latex-workshop.latex.outDir": "%DIR%/out",
+  "latex-workshop.latex.autoBuild.run": "onSave",
+
+  "latex-workshop.latex.recipes": [
+    {
+      "name": "Fast PDF",
+      "tools": ["latexmk"],
+    },
+  ],
+
+  "latex-workshop.latex.tools": [
+    {
+      "name": "latexmk",
+      "command": "latexmk",
+      "args": [
+        "-pdf",
+        "-interaction=nonstopmode",
+        "-synctex=1",
+        "-file-line-error",
+        "-outdir=%OUTDIR%",
+        "%DOC%",
+      ],
+    },
+  ],
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
   "terminal.integrated.shellIntegration.enabled": false,
-  "terminal.integrated.defaultProfile.windows": "PowerShell"
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "workbench.editorAssociations": {
+    "*.copilotmd": "vscode.markdown.preview.editor",
+    "*.md": "vscode.markdown.editor",
+  },
 }
