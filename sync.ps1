@@ -503,6 +503,10 @@ switch ($Action) {
                     [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
                 }
 
+                if (Test-PathSafe $localSkillPath -PathType Container) {
+                    Remove-Item -LiteralPath $localSkillPath -Recurse -Force
+                }
+
                 Copy-Item -LiteralPath $repoSkillPath -Destination $localSkillPath -Recurse -Force
                 Write-Badge "APPLIED" Green "configs/gemini/skills/$skillName -> $localSkillPath"
                 $appliedCount++
@@ -628,6 +632,10 @@ switch ($Action) {
                 $repoParent = Split-Path -Parent $repoSkillPath
                 if (-not (Test-PathSafe $repoParent -PathType Container)) {
                     [System.IO.Directory]::CreateDirectory($repoParent) | Out-Null
+                }
+
+                if (Test-PathSafe $repoSkillPath -PathType Container) {
+                    Remove-Item -LiteralPath $repoSkillPath -Recurse -Force
                 }
 
                 Copy-Item -LiteralPath $localSkillPath -Destination $repoSkillPath -Recurse -Force

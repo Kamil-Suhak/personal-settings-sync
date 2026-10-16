@@ -21,6 +21,18 @@ Guidelines and conventions across primary technologies:
   - Use explicit parameter switches over positional guessing.
   - Avoid `cd` in automated steps; pass paths explicitly.
 
+### Custom PowerShell Profile Functions (`$PROFILE`)
+The agent shell runs in `pwsh` and loads the developer's PowerShell profile functions:
+- **`killport <port>`**: Safe to use. Kills whatever process is occupying a local port (e.g., `killport 3000`, `killport 8080`).
+- **`cmp <file1> <file2>`**: Safe to use. Compares SHA-256 hashes of two files to verify whether they are identical.
+- **`which <command>`**: Safe to use. Prints the full path of an executable or cmdlet.
+- **`p <project>` (Project Jumper) & `..`**: **Do NOT use for agent navigation**.
+  - `p` calls `Set-Location` internally. Because each agent command runs in an independent subshell process, directory changes do not persist to subsequent tool calls.
+  - The agent MUST always set the working directory via the `Cwd` parameter on the tool call directly.
+  - If the agent needs to find where a project lives, query `~/.project-roots` to discover its path and pass that path as `Cwd`.
+- **`push`**: **Do NOT use**. Bypasses review and pushes to remote, violating the safety rule against pushing without explicit approval.
+- **`find`**: **Do NOT use**. Uses interactive `Read-Host` prompts; use native file tools instead.
+
 ---
 
 ## 3. Python
