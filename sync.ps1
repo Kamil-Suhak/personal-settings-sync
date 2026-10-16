@@ -14,7 +14,8 @@
       - diff    : Show detailed diff for modified files
       - link    : Create symbolic links (local -> repo) for live continuous sync
       - apps    : Manage applications via Winget (list, install, update)
-      - setup   : Apply run-once Windows developer settings and Explorer tweaks
+      - fonts   : Download and install developer fonts (JetBrains Mono)
+      - setup   : Apply run-once Windows developer settings, fonts, and Explorer tweaks
       - help    : Show help message
 
 .PARAMETER SubAction
@@ -36,7 +37,7 @@
     Export or install VS Code extensions list (configs/vscode/extensions.txt).
 
 .PARAMETER Force
-    Overwrite files without asking for confirmation.
+    Overwrite files or reinstall fonts/packages even when already in sync.
 
 .PARAMETER WhatIf
     Simulate actions without modifying any files.
@@ -54,12 +55,13 @@
     .\sync.ps1 apps
     .\sync.ps1 apps -Install
     .\sync.ps1 apps -Update
+    .\sync.ps1 fonts
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('status', 'apply', 'export', 'diff', 'link', 'apps', 'setup', 'tweaks', 'help')]
+    [ValidateSet('status', 'apply', 'export', 'diff', 'link', 'apps', 'fonts', 'setup', 'tweaks', 'help')]
     [string]$Action = 'status',
 
     [Parameter(Position = 1)]
@@ -79,6 +81,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ConfigFile = Join-Path $ScriptDir 'sync.config.json'
+$MaxBackups = 10
 
 function Write-Badge {
     param(
@@ -125,7 +128,15 @@ function Get-FileHashSafe {
     param([string]$Path)
     try {
         if (Test-PathSafe $Path -PathType Leaf) {
-            return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+            $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+            $normalized = $text.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
+            } finally {
+                $sha.Dispose()
+            }
         }
     } catch {
         return $null
@@ -143,6 +154,102 @@ function Get-WingetPath {
     return $null
 }
 
+function Get-BackupDestination {
+    param(
+        [string]$BackupRoot,
+        [string]$RepoRelativePath,
+        [string]$LocalFullPath
+    )
+    $candidate = Join-Path $BackupRoot $RepoRelativePath
+    if (Test-PathSafe $candidate -PathType Leaf) {
+        $parentName = Split-Path -Leaf (Split-Path -Parent $LocalFullPath)
+        $leafName = Split-Path -Leaf $RepoRelativePath
+        $relDir = Split-Path -Parent $RepoRelativePath
+        $candidate = Join-Path $BackupRoot (Join-Path $relDir "${parentName}_${leafName}")
+    }
+    $dir = Split-Path -Parent $candidate
+    if (-not (Test-PathSafe $dir -PathType Container)) {
+        [System.IO.Directory]::CreateDirectory($dir) | Out-Null
+    }
+    return $candidate
+}
+
+function Remove-OldBackups {
+    param([int]$Keep = $MaxBackups)
+    $backupsRoot = Join-Path $ScriptDir '.backups'
+    if (-not (Test-PathSafe $backupsRoot -PathType Container)) { return }
+
+    $dirs = @(Get-ChildItem -LiteralPath $backupsRoot -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending)
+    if ($dirs.Count -gt $Keep) {
+        $toRemove = $dirs | Select-Object -Skip $Keep
+        foreach ($oldDir in $toRemove) {
+            Remove-Item -LiteralPath $oldDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Badge "CLEANUP" DarkGray "Pruned $($toRemove.Count) old backup folder(s) (retaining latest $Keep)."
+    }
+}
+
+function Sync-WingetManifest {
+    $manifestPath = Join-Path $ScriptDir 'winget-packages.json'
+    if (-not $Config.packages) { return $false }
+
+    $existingPythonId = 'Python.Python.3.14'
+    if (Test-PathSafe $manifestPath -PathType Leaf) {
+        try {
+            $existing = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $pyEntry = $existing.Sources[0].Packages | Where-Object { $_.PackageIdentifier -match '^Python\.Python\.3\.\d+$' } | Select-Object -First 1
+            if ($pyEntry) { $existingPythonId = $pyEntry.PackageIdentifier }
+        } catch {}
+    }
+
+    $pkgEntries = foreach ($pkg in $Config.packages) {
+        $id = if ($pkg.id -in @('Python.Latest', 'Python.Python.Latest', 'Python.Python.3')) {
+            $existingPythonId
+        } else {
+            $pkg.id
+        }
+        [ordered]@{ PackageIdentifier = $id }
+    }
+
+    $manifestObj = [ordered]@{
+        '$schema'      = 'https://aka.ms/winget-packages.schema.2.0.json'
+        CreationDate   = '2026-10-08T18:15:00.000'
+        Sources        = @(
+            [ordered]@{
+                Packages      = @($pkgEntries)
+                SourceDetails = [ordered]@{
+                    Argument   = 'https://cdn.winget.microsoft.com/cache'
+                    Identifier = 'Microsoft.Winget.Source_8wekyb3d8bbwe'
+                    Name       = 'winget'
+                    Type       = 'Microsoft.PreIndexed.Package'
+                }
+            }
+        )
+    }
+
+    $newJson = ($manifestObj | ConvertTo-Json -Depth 6).Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+    $oldHash = Get-FileHashSafe $manifestPath
+    $normalizedNew = $newJson.TrimEnd("`r", "`n")
+    $newBytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedNew)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $newHash = [System.BitConverter]::ToString($sha.ComputeHash($newBytes)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
+
+    if ($oldHash -ne $newHash) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would update winget-packages.json from sync.config.json"
+            return $false
+        }
+        [System.IO.File]::WriteAllText($manifestPath, $newJson, [System.Text.UTF8Encoding]::new($false))
+        Write-Badge "SYNCED" Green "Synchronized winget-packages.json with sync.config.json"
+        return $true
+    }
+    return $false
+}
+
 if ($Action -eq 'help') {
     Get-Help $MyInvocation.MyCommand.Path -Detailed
     return
@@ -156,7 +263,7 @@ if (-not (Test-PathSafe $ConfigFile -PathType Leaf)) {
 $Config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
 
 # Resolve target app if specified via $App or positional $SubAction
-$targetApp = if ($App) { $App } elseif ($Action -ne 'apps' -and $SubAction) { $SubAction } else { $null }
+$targetApp = if ($App) { $App } elseif ($Action -notin @('apps', 'fonts', 'setup', 'tweaks') -and $SubAction) { $SubAction } else { $null }
 $AppsToProcess = $Config.apps
 if ($targetApp) {
     $AppsToProcess = $Config.apps | Where-Object { $_.name -ieq $targetApp }
@@ -172,10 +279,15 @@ $backupDir = Join-Path $ScriptDir ".backups\$timestamp"
 # Pull first if requested
 if ($Pull) {
     Write-Host "`n=== Pulling Latest Changes From Git ===" -ForegroundColor Cyan
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         git pull
-    } catch {
-        Write-Badge "WARN" Yellow "git pull encountered a problem: $($_.Exception.Message)"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Badge "WARN" Yellow "git pull exited with code $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
 }
 
@@ -236,8 +348,9 @@ switch ($Action) {
         Write-Host "  .\sync.ps1 apply [-Pull]   -> Overwrite machine settings with repo settings" -ForegroundColor DarkGray
         Write-Host "  .\sync.ps1 export [-Push]  -> Copy machine settings into repository" -ForegroundColor DarkGray
         Write-Host "  .\sync.ps1 diff            -> View differences for modified files" -ForegroundColor DarkGray
-        Write-Host "  .\sync.ps1 apps -Install   -> Install standard apps via Winget" -ForegroundColor DarkGray
-        Write-Host "  .\sync.ps1 apps -Update    -> Upgrade all installed apps via Winget`n" -ForegroundColor DarkGray
+        Write-Host "  .\sync.ps1 apps -Install   -> Install standard apps and fonts via Winget" -ForegroundColor DarkGray
+        Write-Host "  .\sync.ps1 apps -Update    -> Upgrade all installed apps via Winget" -ForegroundColor DarkGray
+        Write-Host "  .\sync.ps1 fonts           -> Download and install JetBrains Mono font`n" -ForegroundColor DarkGray
     }
 
     'apply' {
@@ -262,8 +375,8 @@ switch ($Action) {
                 $repoHash = Get-FileHashSafe $repoFullPath
                 $localHash = if ($localExists) { Get-FileHashSafe $localFullPath } else { $null }
 
-                if ($localExists -and $repoHash -and ($repoHash -eq $localHash)) {
-                    Write-Badge "OK" DarkGray "Already in sync: $($file.repoPath)"
+                if (-not $Force -and $localExists -and $repoHash -and ($repoHash -eq $localHash)) {
+                    Write-Badge "OK" DarkGray "Already in sync: $localFullPath"
                     continue
                 }
 
@@ -274,13 +387,18 @@ switch ($Action) {
 
                 # Backup existing local file before overwriting
                 if ($localExists -and -not $NoBackup) {
-                    $fileBackupPath = Join-Path $backupDir $file.repoPath
-                    $fileBackupDir = Split-Path -Parent $fileBackupPath
-                    if (-not (Test-PathSafe $fileBackupDir -PathType Container)) {
-                        [System.IO.Directory]::CreateDirectory($fileBackupDir) | Out-Null
-                    }
+                    $fileBackupPath = Get-BackupDestination -BackupRoot $backupDir -RepoRelativePath $file.repoPath -LocalFullPath $localFullPath
                     Copy-Item -LiteralPath $localFullPath -Destination $fileBackupPath -Force
-                    Write-Badge "BACKUP" DarkCyan "Backed up current local file to: .backups\$timestamp\$($file.repoPath)"
+                    $relBackup = $fileBackupPath.Substring($ScriptDir.Length).TrimStart('\', '/')
+                    Write-Badge "BACKUP" DarkCyan "Backed up current local file to: $relBackup"
+                }
+
+                # If target is currently a symbolic link, remove link before copying file
+                if ($localExists) {
+                    $localItem = Get-Item -LiteralPath $localFullPath -Force -ErrorAction SilentlyContinue
+                    if ($localItem -and $localItem.LinkType -eq 'SymbolicLink') {
+                        Remove-Item -LiteralPath $localFullPath -Force
+                    }
                 }
 
                 # Ensure target directory exists
@@ -295,14 +413,16 @@ switch ($Action) {
             }
         }
 
-        # Handle VS Code extensions install if requested or file exists
+        # Handle VS Code extensions install if requested
         $extFile = Join-Path $ScriptDir "configs\vscode\extensions.txt"
         if ($SyncExtensions -and (Test-PathSafe $extFile -PathType Leaf)) {
             Write-Host "`n[VS Code Extensions]" -ForegroundColor Yellow
             if (Get-Command code -ErrorAction SilentlyContinue) {
                 Get-Content $extFile | Where-Object { $_ -match '\S' } | ForEach-Object {
                     Write-Host "Installing extension: $_" -ForegroundColor Cyan
-                    code --install-extension $_ --force
+                    if (-not $WhatIf) {
+                        code --install-extension $_ --force
+                    }
                 }
             } else {
                 Write-Badge "WARN" Yellow "'code' command not found in PATH; skipping extension install."
@@ -313,6 +433,7 @@ switch ($Action) {
             Write-Host "`nDone. Successfully applied $appliedCount file(s)." -ForegroundColor Green
             if ($appliedCount -gt 0 -and -not $NoBackup) {
                 Write-Host "Backups preserved in: $backupDir" -ForegroundColor DarkGray
+                Remove-OldBackups -Keep $MaxBackups
             }
         }
     }
@@ -324,28 +445,54 @@ switch ($Action) {
         foreach ($appEntry in $AppsToProcess) {
             Write-Host "`n[$($appEntry.displayName)]" -ForegroundColor Yellow
 
-            foreach ($file in $appEntry.files) {
-                $repoFullPath = Join-Path $ScriptDir $file.repoPath
-                $localFullPath = Resolve-DynamicPath $file.localPath
+            # Group by repoPath in case multiple local paths share a single repo file (e.g. PS 7+ and PS 5.1)
+            $groupedFiles = $appEntry.files | Group-Object -Property repoPath
 
-                if (-not (Test-PathSafe $localFullPath -PathType Leaf)) {
-                    if ($file.required) {
+            foreach ($group in $groupedFiles) {
+                $repoRelPath = $group.Name
+                $repoFullPath = Join-Path $ScriptDir $repoRelPath
+                $repoExists = Test-PathSafe $repoFullPath -PathType Leaf
+                $repoHash = if ($repoExists) { Get-FileHashSafe $repoFullPath } else { $null }
+
+                # Select candidate local files that exist
+                $existingCandidates = @()
+                foreach ($file in $group.Group) {
+                    $localFullPath = Resolve-DynamicPath $file.localPath
+                    if (Test-PathSafe $localFullPath -PathType Leaf) {
+                        $item = Get-Item -LiteralPath $localFullPath -Force -ErrorAction SilentlyContinue
+                        $existingCandidates += [PSCustomObject]@{
+                            FileEntry     = $file
+                            LocalFullPath = $localFullPath
+                            Hash          = Get-FileHashSafe $localFullPath
+                            LastWriteTime = if ($item) { $item.LastWriteTime } else { [datetime]::MinValue }
+                        }
+                    } elseif ($file.required -and $group.Group.Count -eq 1) {
                         Write-Badge "MISSING" DarkYellow "Local file does not exist: $localFullPath"
+                    }
+                }
+
+                if ($existingCandidates.Count -eq 0) {
+                    if (($group.Group | Where-Object { $_.required }) -and $group.Group.Count -gt 1) {
+                        Write-Badge "MISSING" DarkYellow "No local files found for: $repoRelPath"
                     }
                     continue
                 }
 
-                $repoExists = Test-PathSafe $repoFullPath -PathType Leaf
-                $localHash = Get-FileHashSafe $localFullPath
-                $repoHash = if ($repoExists) { Get-FileHashSafe $repoFullPath } else { $null }
+                # Prefer candidates whose hash differs from the repo, sorted by newest LastWriteTime
+                $modifiedCandidates = @($existingCandidates | Where-Object { $_.Hash -ne $repoHash } | Sort-Object LastWriteTime -Descending)
+                $chosen = if ($modifiedCandidates.Count -gt 0) {
+                    $modifiedCandidates[0]
+                } else {
+                    ($existingCandidates | Sort-Object LastWriteTime -Descending)[0]
+                }
 
-                if ($repoExists -and $localHash -and ($repoHash -eq $localHash)) {
-                    Write-Badge "OK" DarkGray "Already in sync: $localFullPath"
+                if (-not $Force -and $repoExists -and $chosen.Hash -and ($chosen.Hash -eq $repoHash)) {
+                    Write-Badge "OK" DarkGray "Already in sync: $($chosen.LocalFullPath)"
                     continue
                 }
 
                 if ($WhatIf) {
-                    Write-Badge "WHAT-IF" Cyan "Would export $localFullPath -> $($file.repoPath)"
+                    Write-Badge "WHAT-IF" Cyan "Would export $($chosen.LocalFullPath) -> $repoRelPath"
                     continue
                 }
 
@@ -354,8 +501,15 @@ switch ($Action) {
                     [System.IO.Directory]::CreateDirectory($repoFileDir) | Out-Null
                 }
 
-                Copy-Item -LiteralPath $localFullPath -Destination $repoFullPath -Force
-                Write-Badge "EXPORTED" Green "$localFullPath -> $($file.repoPath)"
+                Copy-Item -LiteralPath $chosen.LocalFullPath -Destination $repoFullPath -Force
+                Write-Badge "EXPORTED" Green "$($chosen.LocalFullPath) -> $repoRelPath"
+                $exportedCount++
+            }
+        }
+
+        # Keep winget-packages.json synchronized with sync.config.json
+        if (-not $targetApp) {
+            if (Sync-WingetManifest) {
                 $exportedCount++
             }
         }
@@ -365,13 +519,17 @@ switch ($Action) {
             Write-Host "`n[VS Code Extensions]" -ForegroundColor Yellow
             if (Get-Command code -ErrorAction SilentlyContinue) {
                 $extFile = Join-Path $ScriptDir "configs\vscode\extensions.txt"
-                $extDir = Split-Path -Parent $extFile
-                if (-not (Test-PathSafe $extDir -PathType Container)) {
-                    [System.IO.Directory]::CreateDirectory($extDir) | Out-Null
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would export installed extensions -> configs/vscode/extensions.txt"
+                } else {
+                    $extDir = Split-Path -Parent $extFile
+                    if (-not (Test-PathSafe $extDir -PathType Container)) {
+                        [System.IO.Directory]::CreateDirectory($extDir) | Out-Null
+                    }
+                    code --list-extensions | Out-File -FilePath $extFile -Encoding utf8
+                    Write-Badge "EXPORTED" Green "Exported installed extensions -> configs/vscode/extensions.txt"
+                    $exportedCount++
                 }
-                code --list-extensions | Out-File -FilePath $extFile -Encoding utf8
-                Write-Badge "EXPORTED" Green "Exported installed extensions -> configs/vscode/extensions.txt"
-                $exportedCount++
             } else {
                 Write-Badge "WARN" Yellow "'code' command not found in PATH; skipping extension export."
             }
@@ -385,17 +543,35 @@ switch ($Action) {
         # Push if requested
         if ($Push -and -not $WhatIf) {
             Write-Host "`n=== Pushing Changes to Git Remote ===" -ForegroundColor Cyan
-            git add configs sync.config.json winget-packages.json
-            $commitMsg = "sync: update settings from $env:COMPUTERNAME ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
-            git commit -m $commitMsg
-            git push
-            Write-Badge "PUSHED" Green "Committed and pushed to GitHub."
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
+            try {
+                git add configs sync.config.json winget-packages.json
+                $porcelain = git status --porcelain
+                if (-not $porcelain) {
+                    Write-Badge "OK" DarkGray "Working tree is clean; nothing to commit or push."
+                } else {
+                    $commitMsg = "sync: update settings from $env:COMPUTERNAME ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
+                    git commit -m $commitMsg
+                    if ($LASTEXITCODE -eq 0) {
+                        git push
+                        if ($LASTEXITCODE -eq 0) {
+                            Write-Badge "PUSHED" Green "Committed and pushed to GitHub."
+                        } else {
+                            Write-Badge "WARN" Yellow "git push exited with code $LASTEXITCODE"
+                        }
+                    }
+                }
+            } finally {
+                $ErrorActionPreference = $prevEAP
+            }
         }
     }
 
     'diff' {
         Write-Host "`n=== Comparing Repository vs Local Files ===" -ForegroundColor Cyan
         $hasGit = [bool](Get-Command git -ErrorAction SilentlyContinue)
+        $diffCount = 0
 
         foreach ($appEntry in $AppsToProcess) {
             foreach ($file in $appEntry.files) {
@@ -413,9 +589,17 @@ switch ($Action) {
                 $localHash = Get-FileHashSafe $localFullPath
 
                 if ($repoHash -ne $localHash) {
-                    Write-Host "`n--- Diff for $($appEntry.displayName) ($($file.repoPath)) ---" -ForegroundColor Magenta
+                    $diffCount++
+                    Write-Host "`n--- Diff for $($appEntry.displayName): $localFullPath vs $($file.repoPath) ---" -ForegroundColor Magenta
                     if ($hasGit) {
-                        git diff --no-index --color $localFullPath $repoFullPath
+                        $prevEAP = $ErrorActionPreference
+                        $ErrorActionPreference = 'Continue'
+                        try {
+                            git diff --no-index --color $localFullPath $repoFullPath
+                            $global:LASTEXITCODE = 0
+                        } finally {
+                            $ErrorActionPreference = $prevEAP
+                        }
                     } else {
                         $localLines = Get-Content -LiteralPath $localFullPath
                         $repoLines = Get-Content -LiteralPath $repoFullPath
@@ -423,6 +607,10 @@ switch ($Action) {
                     }
                 }
             }
+        }
+
+        if ($diffCount -eq 0) {
+            Write-Badge "OK" Green "All existing tracked files are identical."
         }
     }
 
@@ -443,10 +631,31 @@ switch ($Action) {
                 exit 1
             }
 
+            $installedListText = ""
+            if ($wingetCmd -and -not $Force) {
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = 'Continue'
+                try {
+                    $installedListText = (& $wingetCmd list --accept-source-agreements 2>$null) -join "`n"
+                } catch {} finally {
+                    $ErrorActionPreference = $prevEAP
+                }
+            }
+
             foreach ($pkg in $Config.packages) {
                 $packageId = $pkg.id
-                if ($packageId -in @('Python.Latest', 'Python.Python.Latest', 'Python.Python.3')) {
-                    if ($wingetCmd) {
+                $isDynamicPython = $packageId -in @('Python.Latest', 'Python.Python.Latest', 'Python.Python.3')
+
+                if (-not $Force -and $installedListText) {
+                    $checkPattern = if ($isDynamicPython) { 'Python\.Python\.3\.\d+' } else { [regex]::Escape($packageId) }
+                    if ($installedListText -match $checkPattern) {
+                        Write-Badge "OK" DarkGray "Already installed: $($pkg.name) ($packageId)"
+                        continue
+                    }
+                }
+
+                if ($isDynamicPython) {
+                    if ($wingetCmd -and -not $WhatIf) {
                         try {
                             $found = & $wingetCmd search --id Python.Python.3 --source winget 2>$null | Select-String 'Python\.Python\.(3\.\d+)'
                             if ($found) {
@@ -458,7 +667,7 @@ switch ($Action) {
                         } catch {}
                     }
                     if ($packageId -like '*Latest*') {
-                        $packageId = 'Python.Python.3.13'
+                        $packageId = 'Python.Python.3.14'
                     }
                 }
 
@@ -470,8 +679,18 @@ switch ($Action) {
 
                 & $wingetCmd install --id $packageId -e --accept-package-agreements --accept-source-agreements
             }
+
+            # Also ensure JetBrains Mono developer font is installed
+            $setupScript = Join-Path $ScriptDir 'scripts\setup-windows.ps1'
+            if (Test-PathSafe $setupScript -PathType Leaf) {
+                $fontParams = @{ FontsOnly = $true }
+                if ($WhatIf) { $fontParams['WhatIf'] = $true }
+                if ($Force)  { $fontParams['Force']  = $true }
+                & $setupScript @fontParams
+            }
+
             if (-not $WhatIf) {
-                Write-Host "`nPackage installation process complete." -ForegroundColor Green
+                Write-Host "`nPackage and font installation process complete." -ForegroundColor Green
             }
         } elseif ($doUpdate) {
             Write-Host "`n=== Upgrading All Installed Applications (Winget) ===" -ForegroundColor Cyan
@@ -490,16 +709,23 @@ switch ($Action) {
             Write-Host "`n=== Configured Applications (Winget) ===" -ForegroundColor Cyan
             $Config.packages | Format-Table -Property Name, Id, Category -AutoSize
 
+            if ($Config.fonts) {
+                Write-Host "=== Configured Developer Fonts ===" -ForegroundColor Cyan
+                $Config.fonts | Format-Table -Property Name, Repo, CheckFile -AutoSize
+            }
+
             Write-Host "Commands:" -ForegroundColor DarkGray
-            Write-Host "  .\sync.ps1 apps -Install   -> Install all listed applications" -ForegroundColor DarkGray
+            Write-Host "  .\sync.ps1 apps -Install   -> Install all listed applications and fonts" -ForegroundColor DarkGray
             Write-Host "  .\sync.ps1 apps -Update    -> Upgrade all installed apps to latest version" -ForegroundColor DarkGray
-            Write-Host "  Native Winget alternative : winget import -i winget-packages.json`n" -ForegroundColor DarkGray
+            Write-Host "  .\sync.ps1 fonts           -> Download and install JetBrains Mono font only" -ForegroundColor DarkGray
+            Write-Host "  Native Winget alternative  : winget import -i winget-packages.json`n" -ForegroundColor DarkGray
         }
     }
 
     'link' {
         Write-Host "`n=== Creating Symbolic Links (Machine -> Repo) ===" -ForegroundColor Cyan
         Write-Host "Note: Creating symbolic links requires Windows Developer Mode or Administrator privileges.`n" -ForegroundColor DarkGray
+        $linkedCount = 0
 
         foreach ($appEntry in $AppsToProcess) {
             Write-Host "`n[$($appEntry.displayName)]" -ForegroundColor Yellow
@@ -509,7 +735,23 @@ switch ($Action) {
                 $localFullPath = Resolve-DynamicPath $file.localPath
 
                 if (-not (Test-PathSafe $repoFullPath -PathType Leaf)) {
-                    Write-Badge "WARN" Yellow "Repo file missing: $($file.repoPath)"
+                    if ($file.required) {
+                        Write-Badge "WARN" Yellow "Repo file missing: $($file.repoPath)"
+                    }
+                    continue
+                }
+
+                $localExists = Test-PathSafe $localFullPath -PathType Leaf
+                if ($localExists -and -not $Force) {
+                    $item = Get-Item -LiteralPath $localFullPath -Force -ErrorAction SilentlyContinue
+                    if ($item -and $item.LinkType -eq 'SymbolicLink' -and ($item.Target -eq $repoFullPath -or (Resolve-Path $item.Target -ErrorAction SilentlyContinue).Path -eq $repoFullPath)) {
+                        Write-Badge "OK" DarkGray "Already linked: $localFullPath -> $($file.repoPath)"
+                        continue
+                    }
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would link $localFullPath ===> $($file.repoPath)"
                     continue
                 }
 
@@ -518,35 +760,52 @@ switch ($Action) {
                     [System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
                 }
 
-                if (Test-PathSafe $localFullPath) {
-                    # Check if already a symlink pointing to the repo file
-                    $item = Get-Item -LiteralPath $localFullPath -ErrorAction SilentlyContinue
-                    if ($item -and $item.LinkType -eq 'SymbolicLink' -and ($item.Target -eq $repoFullPath -or (Resolve-Path $item.Target -ErrorAction SilentlyContinue).Path -eq $repoFullPath)) {
-                        Write-Badge "OK" DarkGray "Already linked: $localFullPath -> $($file.repoPath)"
-                        continue
-                    }
-
+                $tempOldFile = $null
+                if ($localExists) {
                     if (-not $NoBackup) {
-                        $fileBackupPath = Join-Path $backupDir $file.repoPath
-                        $fileBackupDir = Split-Path -Parent $fileBackupPath
-                        if (-not (Test-PathSafe $fileBackupDir -PathType Container)) {
-                            [System.IO.Directory]::CreateDirectory($fileBackupDir) | Out-Null
-                        }
+                        $fileBackupPath = Get-BackupDestination -BackupRoot $backupDir -RepoRelativePath $file.repoPath -LocalFullPath $localFullPath
                         Copy-Item -LiteralPath $localFullPath -Destination $fileBackupPath -Force
-                        Write-Badge "BACKUP" DarkCyan "Backed up prior file to: .backups\$timestamp\$($file.repoPath)"
+                        $relBackup = $fileBackupPath.Substring($ScriptDir.Length).TrimStart('\', '/')
+                        Write-Badge "BACKUP" DarkCyan "Backed up prior file to: $relBackup"
                     }
 
-                    Remove-Item -LiteralPath $localFullPath -Force
+                    # Move existing file to temporary path so we can restore it if symlink creation fails
+                    $tempOldFile = "$localFullPath.sync-tmp"
+                    Move-Item -LiteralPath $localFullPath -Destination $tempOldFile -Force
                 }
 
                 try {
                     New-Item -ItemType SymbolicLink -Path $localFullPath -Target $repoFullPath -Force | Out-Null
+                    if ($tempOldFile -and (Test-PathSafe $tempOldFile -PathType Leaf)) {
+                        Remove-Item -LiteralPath $tempOldFile -Force -ErrorAction SilentlyContinue
+                    }
                     Write-Badge "LINKED" Green "$localFullPath ===> $($file.repoPath)"
+                    $linkedCount++
                 } catch {
-                    Write-Badge "FAILED" Red "Could not create symbolic link: $($_.Exception.Message)"
+                    # Restore original local file if symlink creation failed
+                    if ($tempOldFile -and (Test-PathSafe $tempOldFile -PathType Leaf)) {
+                        Move-Item -LiteralPath $tempOldFile -Destination $localFullPath -Force -ErrorAction SilentlyContinue
+                    }
+                    Write-Badge "FAILED" Red "Could not create symbolic link (original file preserved): $($_.Exception.Message)"
                     Write-Host "  Tip: Turn on Windows Developer Mode (Settings -> System -> For developers) or use '.\sync.ps1 apply' instead." -ForegroundColor Yellow
                 }
             }
+        }
+
+        if (-not $WhatIf -and $linkedCount -gt 0 -and -not $NoBackup) {
+            Remove-OldBackups -Keep $MaxBackups
+        }
+    }
+
+    'fonts' {
+        $setupScript = Join-Path $ScriptDir 'scripts\setup-windows.ps1'
+        if (Test-PathSafe $setupScript -PathType Leaf) {
+            $params = @{ FontsOnly = $true }
+            if ($WhatIf) { $params['WhatIf'] = $true }
+            if ($Force)  { $params['Force']  = $true }
+            & $setupScript @params
+        } else {
+            Write-Badge "ERROR" Red "Setup script not found at $setupScript"
         }
     }
 
@@ -555,6 +814,7 @@ switch ($Action) {
         if (Test-PathSafe $setupScript -PathType Leaf) {
             $params = @{}
             if ($WhatIf) { $params['WhatIf'] = $true }
+            if ($Force)  { $params['Force']  = $true }
             & $setupScript @params
         } else {
             Write-Badge "ERROR" Red "Setup script not found at $setupScript"
