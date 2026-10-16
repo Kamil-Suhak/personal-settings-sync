@@ -156,6 +156,92 @@ function Install-JetBrainsMonoFont {
     }
 }
 
+function Configure-GitUserSafe {
+    $localGitConfig = Join-Path $HOME ".gitconfig.local"
+    $hasLocalConfig = Test-Path -LiteralPath $localGitConfig
+    $currentEmail = if ($hasLocalConfig) {
+        (& git config --file $localGitConfig user.email 2>$null)
+    } else {
+        (& git config --global user.email 2>$null)
+    }
+
+    if (-not $currentEmail -or $Force) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would prompt for Git user.name and user.email to store in ~/.gitconfig.local"
+            return
+        }
+
+        if ([Environment]::UserInteractive) {
+            Write-Host "`n=== Git Identity Setup (Local Only) ===" -ForegroundColor Cyan
+            Write-Host "Your identity is stored in ~/.gitconfig.local and never committed to git." -ForegroundColor DarkGray
+            $namePrompt = Read-Host "Enter Git user name (e.g. Your Name)"
+            $emailPrompt = Read-Host "Enter Git user email address"
+
+            if ($namePrompt) {
+                & git config --file $localGitConfig user.name $namePrompt
+            }
+            if ($emailPrompt) {
+                & git config --file $localGitConfig user.email $emailPrompt
+            }
+
+            if ($namePrompt -or $emailPrompt) {
+                Write-Badge "APPLIED" Green "Saved Git identity to: $localGitConfig"
+            }
+        }
+    } else {
+        Write-Badge "OK" DarkGray "Git user identity already configured in ~/.gitconfig.local."
+    }
+}
+
+function Configure-ProjectRootsSafe {
+    $rootsFile = Join-Path $HOME ".project-roots"
+    $hasRoots = Test-Path -LiteralPath $rootsFile
+
+    if (-not $hasRoots -or $Force) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would prompt for project root directories to store in ~/.project-roots"
+            return
+        }
+
+        if ([Environment]::UserInteractive) {
+            Write-Host "`n=== Project Directories Setup (for 'p' jumper) ===" -ForegroundColor Cyan
+            Write-Host "Directories are stored locally in ~/.project-roots and never committed to git." -ForegroundColor DarkGray
+            $defaultHint = "$HOME\Coding\Projects, $HOME\Dev"
+            $inputPaths = Read-Host "Enter project directories (comma-separated, press Enter for defaults: $defaultHint)"
+
+            $rootsToSave = [System.Collections.Generic.List[string]]::new()
+            if ($inputPaths) {
+                foreach ($raw in ($inputPaths -split ',')) {
+                    $trimmed = $raw.Trim()
+                    if ($trimmed) {
+                        $resolved = Resolve-Path -LiteralPath $trimmed -ErrorAction SilentlyContinue
+                        $finalPath = if ($resolved) { $resolved.Path } else { [Environment]::ExpandEnvironmentVariables($trimmed) }
+                        if (-not (Test-Path -LiteralPath $finalPath)) {
+                            New-Item -ItemType Directory -Path $finalPath -Force | Out-Null
+                        }
+                        $rootsToSave.Add($finalPath)
+                    }
+                }
+            } else {
+                @("$HOME\Coding\Projects", "$HOME\Dev") | ForEach-Object {
+                    $expanded = [Environment]::ExpandEnvironmentVariables($_)
+                    if (-not (Test-Path -LiteralPath $expanded)) {
+                        New-Item -ItemType Directory -Path $expanded -Force | Out-Null
+                    }
+                    $rootsToSave.Add($expanded)
+                }
+            }
+
+            if ($rootsToSave.Count -gt 0) {
+                $rootsToSave | Out-File -FilePath $rootsFile -Encoding utf8
+                Write-Badge "APPLIED" Green "Configured $($rootsToSave.Count) project root(s) in: $rootsFile"
+            }
+        }
+    } else {
+        Write-Badge "OK" DarkGray "Project roots already configured in ~/.project-roots."
+    }
+}
+
 if ($FontsOnly) {
     Write-Host "`n=== Installing Developer Fonts ===" -ForegroundColor Cyan
     Install-JetBrainsMonoFont
@@ -198,7 +284,13 @@ else {
 # 3. Developer Fonts (User Scope - No Admin Required)
 Install-JetBrainsMonoFont
 
-# 4. System-Wide Developer Tweaks (Machine Scope - Graceful if not Admin)
+# 4. Git Identity Configuration (Local uncommitted file)
+Configure-GitUserSafe
+
+# 5. Project Roots Setup (Local uncommitted file)
+Configure-ProjectRootsSafe
+
+# 6. System-Wide Developer Tweaks (Machine Scope - Graceful if not Admin)
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if ($isAdmin) {
@@ -214,7 +306,7 @@ else {
     Write-Badge "INFO" DarkGray "Skipping LongPaths and Developer Mode tweaks (requires running as Administrator)"
 }
 
-# 5. Restart Explorer to apply UI tweaks immediately
+# 7. Restart Explorer to apply UI tweaks immediately
 if ($RestartExplorer -and -not $WhatIf) {
     Write-Host "`nRestarting Windows Explorer to apply visual settings..." -ForegroundColor Cyan
     Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
