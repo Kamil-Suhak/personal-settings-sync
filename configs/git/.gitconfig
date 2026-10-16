@@ -1,5 +1,7 @@
+[include]
+	path = ~/.gitconfig.local
 [core]
-	editor = \"C:\\Users\\kamil\\AppData\\Local\\Programs\\Microsoft VS Code\\bin\\code\" --wait
+	editor = code --wait
 	autocrlf = false
 	safecrlf = false
 [filter "lfs"]
@@ -7,9 +9,5 @@
 	smudge = git-lfs smudge -- %f
 	process = git-lfs filter-process
 	required = true
-[user]
-	name = Kamil
-	email = kamilsuhak@gmail.com
 [init]
 	defaultBranch = main
-
