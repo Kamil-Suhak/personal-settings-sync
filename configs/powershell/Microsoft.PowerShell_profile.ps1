@@ -323,16 +323,21 @@ function rev {
 
 <#
 .SYNOPSIS
-Locates commands. By default prints path; with -m shows description/short manual; with -f shows full manual.
+Locates commands. Prints path by default; with -h shows description/manual.
 #>
 function which {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true, Position = 0)]
         [string]$Name,
-        [Alias("m")][switch]$Man,
-        [Alias("f")][switch]$Full
+        [Alias("h")][switch]$Help,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ExtraArgs
     )
+
+    if ($ExtraArgs -contains '--help' -or $ExtraArgs -contains '-help') {
+        $Help = $true
+    }
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if (-not $cmd) {
@@ -340,13 +345,19 @@ function which {
         return
     }
 
-    $showMan = $Man -or $Full
-    if (-not $showMan) {
+    if (-not $Help) {
         switch ($cmd.CommandType) {
             'Application' { return $cmd.Source }
+            { $_ -in 'Function', 'Filter' } {
+                if ($cmd.ScriptBlock -and $cmd.ScriptBlock.File) { return $cmd.ScriptBlock.File }
+                if ($PROFILE) { return $PROFILE.ToString() }
+                return 'PowerShell Profile'
+            }
             'Alias'       { return $cmd.Definition }
-            { $_ -in 'Function', 'Filter' } { return $cmd.Definition }
-            Default       { return (if ($cmd.Source) { $cmd.Source } else { $cmd.Name }) }
+            Default       {
+                if ($cmd.Source) { return $cmd.Source }
+                return $cmd.Name
+            }
         }
     }
 
@@ -360,25 +371,30 @@ function which {
 
     switch ($cmd.CommandType) {
         { $_ -in 'Function', 'Filter' } {
-            $help = Get-Help $cmd.Name -ErrorAction SilentlyContinue
-            if ($help.Synopsis -and $help.Synopsis -ne $cmd.Name) {
-                Write-Host "${yellow}Description:${reset}`n  $($help.Synopsis)`n"
+            $funcPath = if ($cmd.ScriptBlock -and $cmd.ScriptBlock.File) {
+                $cmd.ScriptBlock.File
+            } elseif ($PROFILE) {
+                $PROFILE.ToString()
+            } else {
+                'PowerShell Profile'
             }
-            Write-Host "${yellow}Source Definition:${reset}"
-            $lines = $cmd.Definition.Trim() -split "`r?`n"
-            foreach ($line in $lines) { Write-Host "  ${gray}$line${reset}" }
+            Write-Host "${yellow}Path:${reset}        ${green}$funcPath${reset}"
+            $helpObj = Get-Help $cmd.Name -ErrorAction SilentlyContinue
+            if ($helpObj.Synopsis -and $helpObj.Synopsis.Trim() -ne $cmd.Name) {
+                Write-Host "`n${yellow}Description:${reset}`n  $($helpObj.Synopsis.Trim())"
+            }
         }
         'Alias' {
             Write-Host "${yellow}Alias Target:${reset} ${green}$($cmd.Definition)${reset}`n"
-            which $cmd.Definition -Man:$Man -Full:$Full
+            which $cmd.Definition -Help:$Help
         }
         'Application' {
-            Write-Host "${yellow}Path:${reset}    ${green}$($cmd.Source)${reset}"
+            Write-Host "${yellow}Path:${reset}        ${green}$($cmd.Source)${reset}"
             if (Test-Path -LiteralPath $cmd.Source) {
                 $ver = (Get-Item -LiteralPath $cmd.Source).VersionInfo
-                if ($ver.FileVersion) { Write-Host "${yellow}Version:${reset} ${gray}$($ver.FileVersion)${reset}" }
+                if ($ver.FileVersion) { Write-Host "${yellow}Version:${reset}     ${gray}$($ver.FileVersion)${reset}" }
             }
-            Write-Host "`n${yellow}Manual / Usage Help (POSIX-style):${reset}"
+            Write-Host "`n${yellow}Manual / Usage Help:${reset}"
             try {
                 $helpOutput = ($null | & $cmd.Source --help 2>&1)
                 if ($LASTEXITCODE -ne 0 -or -not $helpOutput) {
@@ -386,11 +402,7 @@ function which {
                 }
                 if ($helpOutput) {
                     $lines = @($helpOutput)
-                    $limit = if ($Full) { $lines.Count } else { 25 }
-                    $lines | Select-Object -First $limit | ForEach-Object { Write-Host "  $_" }
-                    if (-not $Full -and $lines.Count -gt $limit) {
-                        Write-Host "`n  ${gray}... [truncated, showing 25 of $($lines.Count) lines. Use 'which $Name -f' for complete manual]${reset}"
-                    }
+                    $lines | ForEach-Object { Write-Host "  $_" }
                 } else {
                     Write-Host "  ${gray}(No built-in --help or /? documentation returned)${reset}"
                 }
@@ -399,12 +411,12 @@ function which {
             }
         }
         'Cmdlet' {
-            Write-Host "${yellow}Module:${reset}  ${green}$($cmd.ModuleName)${reset}"
-            $help = Get-Help $cmd.Name -ErrorAction SilentlyContinue
-            if ($help.Synopsis) { Write-Host "`n${yellow}Synopsis:${reset}`n  $($help.Synopsis)" }
-            if ($help.Syntax) {
+            Write-Host "${yellow}Module:${reset}      ${green}$($cmd.ModuleName)${reset}"
+            $helpObj = Get-Help $cmd.Name -ErrorAction SilentlyContinue
+            if ($helpObj.Synopsis) { Write-Host "`n${yellow}Synopsis:${reset}`n  $($helpObj.Synopsis.Trim())" }
+            if ($helpObj.Syntax) {
                 Write-Host "`n${yellow}Syntax:${reset}"
-                ($help.Syntax | Out-String).Trim() | ForEach-Object { Write-Host "  ${gray}$_${reset}" }
+                ($helpObj.Syntax | Out-String).Trim() | ForEach-Object { Write-Host "  ${gray}$_${reset}" }
             }
         }
     }
