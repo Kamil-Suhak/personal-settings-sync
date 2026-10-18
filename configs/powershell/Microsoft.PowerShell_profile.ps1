@@ -323,13 +323,15 @@ function rev {
 
 <#
 .SYNOPSIS
-Locates commands. Prints path by default; with -h shows description/manual.
+Locates commands. Prints path by default; with -h shows description/manual. Supports 'profile' to inspect profile functions.
 #>
 function which {
-    [CmdletBinding()]
+    [CmdletBinding(DefaultParameterSetName = "Name")]
     param(
-        [Parameter(Mandatory = $true, Position = 0)]
+        [Parameter(Mandatory = $true, Position = 0, ParameterSetName = "Name")]
         [string]$Name,
+        [Parameter(Mandatory = $true, ParameterSetName = "Profile")]
+        [Alias("p")][switch]$Profile,
         [Alias("h")][switch]$Help,
         [Parameter(ValueFromRemainingArguments = $true)]
         [string[]]$ExtraArgs
@@ -337,6 +339,51 @@ function which {
 
     if ($ExtraArgs -contains '--help' -or $ExtraArgs -contains '-help') {
         $Help = $true
+    }
+
+    $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
+    $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
+    $green = if ($PSStyle) { $PSStyle.Foreground.Green } else { "" }
+    $gray = if ($PSStyle) { $PSStyle.Foreground.BrightBlack } else { "" }
+    $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
+
+    # Special Profile Inspection Mode: which profile [-h] | which -profile [-h]
+    $isProfile = $Profile -or ($Name -in @('profile', '$profile', '-profile', '--profile'))
+    if ($isProfile) {
+        $targetProfile = if ((Get-Command which -ErrorAction SilentlyContinue).ScriptBlock.File) {
+            (Get-Command which).ScriptBlock.File
+        } elseif ($PROFILE.CurrentUserCurrentHost -and (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) {
+            $PROFILE.CurrentUserCurrentHost
+        } elseif ($PROFILE) {
+            $PROFILE.ToString()
+        } else {
+            "PowerShell Profile"
+        }
+
+        if (-not $Help) {
+            return $targetProfile
+        }
+
+        Write-Host "`n${cyan}=== [PROFILE] $targetProfile ===${reset}"
+        if (Test-Path -LiteralPath $targetProfile) {
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($targetProfile, [ref]$null, [ref]$null)
+            $funcAsts = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) |
+                Where-Object { $_.Name -ne 'prompt' }
+
+            Write-Host "${yellow}Custom Profile Functions ($($funcAsts.Count)):${reset}`n"
+            $maxLen = 0
+            foreach ($f in $funcAsts) {
+                if ($f.Name.Length -gt $maxLen) { $maxLen = $f.Name.Length }
+            }
+            $pad = [math]::Max($maxLen + 2, 12)
+            foreach ($f in $funcAsts) {
+                $h = Get-Help $f.Name -ErrorAction SilentlyContinue
+                $syn = if ($h.Synopsis) { $h.Synopsis.Trim() } else { "" }
+                Write-Host "  ${green}$($f.Name.PadRight($pad))${reset} $syn"
+            }
+            Write-Host ""
+        }
+        return
     }
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
@@ -360,12 +407,6 @@ function which {
             }
         }
     }
-
-    $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
-    $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
-    $green = if ($PSStyle) { $PSStyle.Foreground.Green } else { "" }
-    $gray = if ($PSStyle) { $PSStyle.Foreground.BrightBlack } else { "" }
-    $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
 
     Write-Host "`n${cyan}=== [$($cmd.CommandType.ToString().ToUpper())] $($cmd.Name) ===${reset}"
 

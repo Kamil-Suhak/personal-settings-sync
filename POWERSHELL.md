@@ -63,7 +63,7 @@ rev            # Opens current folder in Windows Explorer
 | `killport` | `<port>` | Finds and kills whatever process is occupying a local port (e.g. `killport 5000`, `killport 5432`). |
 | `find` | `<name> [<path>] [-o\|--open]` | Interactive fuzzy file finder. Excludes junk (`node_modules`, `.git`, `bin`), copies selection to clipboard, and optionally opens in VS Code with `-o` or `--open`. |
 | `sudo` | `<command>` | Windows 11 native elevation. Supports `sudo !!` to re-run the previous command as Administrator. |
-| `which` | `<command> [-h\|--help]` | Locates commands. By default, prints the path for an application or the profile path for a custom function. With `-h`, displays path + manual/help for an application, or path + description for a custom function. |
+| `which` | `<command> [-h\|--help]`<br>`which profile [-h]` | Locates commands. By default, prints the path for an application or the profile path for a custom function. With `-h`, displays path + manual/help for an application, or path + description for a custom function. Run `which profile` to get the profile path, or `which profile -h` to list all custom profile functions and their descriptions. |
 | `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
 | `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Filters piped input (`docker ps \| findstr auth`) or searches codebase files recursively (`findstr "TODO"`), auto-skipping junk dirs (`.git`, `node_modules`, `bin`, `.venv`). |
 
@@ -81,6 +81,8 @@ which python          # Default: prints path C:\Python314\python.exe
 which commit          # Default: prints profile path where function is defined
 which git -h          # Help mode: prints path, version, and manual/help
 which commit -h       # Help mode: prints profile path and description
+which profile         # Prints profile path
+which profile -h      # Lists all custom profile functions and their short descriptions
 ```
 
 ---
