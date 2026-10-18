@@ -9,6 +9,11 @@ $env:VIRTUAL_ENV_DISABLE_PROMPT = 1
 #endregion
 
 #region 2. Git Automation & Workflows
+
+<#
+.SYNOPSIS
+Stages all files and creates a commit: git add -A; git commit -m <message>.
+#>
 function commit {
     if (-not $args) {
         Write-Host "Commit message required: commit <message>" -ForegroundColor Yellow
@@ -18,6 +23,10 @@ function commit {
     git commit -m "$args"
 }
 
+<#
+.SYNOPSIS
+Pushes commits to remote. If message is passed, stages and commits first. Automatically sets upstream tracking on new branches.
+#>
 function push {
     $branch = (& git branch --show-current 2>$null) -join ''
     if (-not $branch) { Write-Host "Not a git repository." -ForegroundColor Red; return }
@@ -37,6 +46,10 @@ function push {
     }
 }
 
+<#
+.SYNOPSIS
+Fetches upstream updates from develop (or main) and rebases with autostash. Supports -m for merge and -c for previewing incoming commits.
+#>
 function catchup {
     param(
         [string]$Base = "develop",
@@ -81,6 +94,10 @@ function catchup {
     }
 }
 
+<#
+.SYNOPSIS
+Safely syncs current branch with remote: pulls with rebase and autostash, then pushes.
+#>
 function sync {
     Write-Host "Syncing with remote..." -ForegroundColor Cyan
     git pull --rebase --autostash
@@ -89,6 +106,10 @@ function sync {
     }
 }
 
+<#
+.SYNOPSIS
+Switches to branch, or lists your 10 most recently active branches if no argument is passed.
+#>
 function b ($name) {
     if (-not $name) {
         Write-Host "Recent branches:" -ForegroundColor Cyan
@@ -98,6 +119,10 @@ function b ($name) {
     git checkout $name
 }
 
+<#
+.SYNOPSIS
+Creates and switches to a new branch: git checkout -b <branch-name>.
+#>
 function nb ($name) {
     if (-not $name) {
         Write-Host "Branch name required: nb <branch-name>" -ForegroundColor Yellow
@@ -106,24 +131,44 @@ function nb ($name) {
     git checkout -b $name
 }
 
+<#
+.SYNOPSIS
+Jumps directly back to main branch (automatically falls back to master if repo uses master).
+#>
 function main {
     git checkout main 2>$null
     if ($LASTEXITCODE -ne 0) { git checkout master }
 }
 
+<#
+.SYNOPSIS
+Safety net: unwinds the last commit while keeping all changes safely staged (git reset --soft HEAD~1).
+#>
 function undo {
     git reset --soft HEAD~1
     Write-Host "Undid last commit. Changes remain safely staged." -ForegroundColor Green
 }
 
+<#
+.SYNOPSIS
+Compact, clean 1-line branch and file status (git status -sb).
+#>
 function st {
     git status -sb
 }
 
+<#
+.SYNOPSIS
+Compact colorized commit graph (git log --graph --oneline). Defaults to 10 commits.
+#>
 function lg ($count = 10) {
     git log --graph --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' --abbrev-commit -n $count
 }
 
+<#
+.SYNOPSIS
+Deletes all local branches that have already been merged into main.
+#>
 function gbc {
     $merged = git branch --merged main 2>$null | Where-Object { $_ -notmatch 'main|master|\*' }
     if ($merged) {
@@ -136,10 +181,29 @@ function gbc {
 #endregion
 
 #region 3. Navigation & Project Switcher
+
+<#
+.SYNOPSIS
+Go up 1 directory level (Set-Location ..).
+#>
 function ..   { Set-Location .. }
+
+<#
+.SYNOPSIS
+Go up 2 directory levels (Set-Location ../..).
+#>
 function ...  { Set-Location ../.. }
+
+<#
+.SYNOPSIS
+Go up 3 directory levels (Set-Location ../../..).
+#>
 function .... { Set-Location ../../.. }
 
+<#
+.SYNOPSIS
+Universal Project Jumper: searches configured project roots in ~/.project-roots and jumps to matching project directory. Supports -add and -list.
+#>
 function p {
     [CmdletBinding()]
     param(
@@ -241,6 +305,10 @@ function p {
     }
 }
 
+<#
+.SYNOPSIS
+Opens Windows File Explorer at the specified path (defaults to current folder).
+#>
 function rev {
     param([string]$Path = ".")
     try {
@@ -252,14 +320,101 @@ function rev {
 #endregion
 
 #region 4. Development & System Helpers
-function which ($name) {
-    try {
-        Get-Command $name -ErrorAction Stop | Select-Object -ExpandProperty Source
-    } catch {
-        Write-Error "Command '$name' not found."
+
+<#
+.SYNOPSIS
+Locates commands. By default prints path; with -m shows description/short manual; with -f shows full manual.
+#>
+function which {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Name,
+        [Alias("m")][switch]$Man,
+        [Alias("f")][switch]$Full
+    )
+
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+        Write-Error "Command '$Name' not found."
+        return
     }
+
+    $showMan = $Man -or $Full
+    if (-not $showMan) {
+        switch ($cmd.CommandType) {
+            'Application' { return $cmd.Source }
+            'Alias'       { return $cmd.Definition }
+            { $_ -in 'Function', 'Filter' } { return $cmd.Definition }
+            Default       { return (if ($cmd.Source) { $cmd.Source } else { $cmd.Name }) }
+        }
+    }
+
+    $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
+    $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
+    $green = if ($PSStyle) { $PSStyle.Foreground.Green } else { "" }
+    $gray = if ($PSStyle) { $PSStyle.Foreground.BrightBlack } else { "" }
+    $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
+
+    Write-Host "`n${cyan}=== [$($cmd.CommandType.ToString().ToUpper())] $($cmd.Name) ===${reset}"
+
+    switch ($cmd.CommandType) {
+        { $_ -in 'Function', 'Filter' } {
+            $help = Get-Help $cmd.Name -ErrorAction SilentlyContinue
+            if ($help.Synopsis -and $help.Synopsis -ne $cmd.Name) {
+                Write-Host "${yellow}Description:${reset}`n  $($help.Synopsis)`n"
+            }
+            Write-Host "${yellow}Source Definition:${reset}"
+            $lines = $cmd.Definition.Trim() -split "`r?`n"
+            foreach ($line in $lines) { Write-Host "  ${gray}$line${reset}" }
+        }
+        'Alias' {
+            Write-Host "${yellow}Alias Target:${reset} ${green}$($cmd.Definition)${reset}`n"
+            which $cmd.Definition -Man:$Man -Full:$Full
+        }
+        'Application' {
+            Write-Host "${yellow}Path:${reset}    ${green}$($cmd.Source)${reset}"
+            if (Test-Path -LiteralPath $cmd.Source) {
+                $ver = (Get-Item -LiteralPath $cmd.Source).VersionInfo
+                if ($ver.FileVersion) { Write-Host "${yellow}Version:${reset} ${gray}$($ver.FileVersion)${reset}" }
+            }
+            Write-Host "`n${yellow}Manual / Usage Help (POSIX-style):${reset}"
+            try {
+                $helpOutput = ($null | & $cmd.Source --help 2>&1)
+                if ($LASTEXITCODE -ne 0 -or -not $helpOutput) {
+                    $helpOutput = ($null | & $cmd.Source /? 2>&1)
+                }
+                if ($helpOutput) {
+                    $lines = @($helpOutput)
+                    $limit = if ($Full) { $lines.Count } else { 25 }
+                    $lines | Select-Object -First $limit | ForEach-Object { Write-Host "  $_" }
+                    if (-not $Full -and $lines.Count -gt $limit) {
+                        Write-Host "`n  ${gray}... [truncated, showing 25 of $($lines.Count) lines. Use 'which $Name -f' for complete manual]${reset}"
+                    }
+                } else {
+                    Write-Host "  ${gray}(No built-in --help or /? documentation returned)${reset}"
+                }
+            } catch {
+                Write-Host "  ${gray}Could not execute help: $_${reset}"
+            }
+        }
+        'Cmdlet' {
+            Write-Host "${yellow}Module:${reset}  ${green}$($cmd.ModuleName)${reset}"
+            $help = Get-Help $cmd.Name -ErrorAction SilentlyContinue
+            if ($help.Synopsis) { Write-Host "`n${yellow}Synopsis:${reset}`n  $($help.Synopsis)" }
+            if ($help.Syntax) {
+                Write-Host "`n${yellow}Syntax:${reset}"
+                ($help.Syntax | Out-String).Trim() | ForEach-Object { Write-Host "  ${gray}$_${reset}" }
+            }
+        }
+    }
+    Write-Host ""
 }
 
+<#
+.SYNOPSIS
+Activates Python virtual environment (default: .venv). Automatically creates it via py -m venv if it does not exist yet.
+#>
 function venv {
     param([string]$Name = ".venv")
     if (-not (Test-Path $Name)) {
@@ -278,6 +433,10 @@ function venv {
     }
 }
 
+<#
+.SYNOPSIS
+Windows 11 native elevation. Runs command as Administrator; supports 'sudo !!' to re-run the previous command.
+#>
 function sudo {
     [CmdletBinding()]
     param(
@@ -296,17 +455,25 @@ function sudo {
     sudo.exe pwsh.exe -NoLogo -NoProfile -Command $cmd
 }
 
+<#
+.SYNOPSIS
+Finds and kills whatever process is occupying a local TCP port (e.g. killport 5000).
+#>
 function killport ($port) {
     $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
     if ($connections) {
         $pids = $connections.OwningProcess | Select-Object -Unique
         Stop-Process -Id $pids -Force
         Write-Host "Terminated process(es) on port ${port}: $($pids -join ', ')" -ForegroundColor Green
-    } else {
+        } else {
         Write-Host "No active process listening on port ${port}." -ForegroundColor Yellow
     }
 }
 
+<#
+.SYNOPSIS
+Helper function that recursively enumerates files excluding common junk directories and specified extensions.
+#>
 function Get-SearchableFiles {
     param(
         [string]$Path = ".",
@@ -346,6 +513,10 @@ function Get-SearchableFiles {
     return $results
 }
 
+<#
+.SYNOPSIS
+Interactive fuzzy file finder. Excludes junk folders, copies selected file path to clipboard, and optionally opens in VS Code with -o/--open.
+#>
 function find {
     [CmdletBinding()]
     param(
@@ -416,6 +587,10 @@ function find {
     }
 }
 
+<#
+.SYNOPSIS
+Compares SHA-256 hashes of two files to verify whether their contents are identical.
+#>
 function cmp {
     param (
         [string]$file1,
@@ -436,6 +611,10 @@ function cmp {
     }
 }
 
+<#
+.SYNOPSIS
+Dual-mode text finder. Filters piped input or searches codebase files recursively while auto-skipping junk directories and binary files.
+#>
 function findstr {
     [CmdletBinding()]
     param(
