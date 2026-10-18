@@ -108,27 +108,53 @@ function sync {
 
 <#
 .SYNOPSIS
-Switches to branch, or lists your 10 most recently active branches if no argument is passed.
+Switches branch, lists recent branches (no arg), or prompts to create a new branch if not found.
 #>
-function b ($name) {
-    if (-not $name) {
+function b {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Name,
+        [Alias("n")][switch]$New
+    )
+
+    if (-not $Name) {
         Write-Host "Recent branches:" -ForegroundColor Cyan
         git branch --sort=-committerdate | Select-Object -First 10
         return
     }
-    git checkout $name
+
+    if ($New) {
+        git checkout -b $Name
+        return
+    }
+
+    $local = (& git branch --list $Name 2>$null) -join ''
+    $remote = (& git branch -r --list "*/$Name" 2>$null) -join ''
+    $exists = [bool]($local.Trim() -or $remote.Trim())
+
+    if ($exists) {
+        git checkout $Name
+    } else {
+        $reply = Read-Host "Branch '$Name' not found. Create it? [Y/n]"
+        if ($reply -eq '' -or $reply -match '^[Yy]') {
+            git checkout -b $Name
+        } else {
+            Write-Host "Aborted. Branch '$Name' was not created." -ForegroundColor DarkGray
+        }
+    }
 }
 
 <#
 .SYNOPSIS
-Creates and switches to a new branch: git checkout -b <branch-name>.
+Creates and switches to a new branch (alias for b -New <branch-name>).
 #>
 function nb ($name) {
     if (-not $name) {
         Write-Host "Branch name required: nb <branch-name>" -ForegroundColor Yellow
         return
     }
-    git checkout -b $name
+    b $name -New
 }
 
 <#

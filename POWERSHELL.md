@@ -12,8 +12,8 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 | `commit` | `<message>` | Stages all files and creates a commit: `git add -A; git commit -m "<message>"`. |
 | `catchup` | `[<branch>] [-m\|--merge] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **rebases with autostash**. Use `-m` or `--merge` for a merge commit, or `-c` / `--check` to preview incoming commits without applying. |
 | `sync` | *none* | Safely syncs current branch: pulls with `rebase --autostash`, then pushes. |
-| `b` | `[<branch>]` | Switches to `<branch>`. If run with no arguments, lists your **10 most recently active branches**. |
-| `nb` | `<branch>` | Creates and switches to a new branch: `git checkout -b <branch>`. |
+| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it. If it doesn't exist, **prompts to create it** (`[Y/n]`). Pass `-n` or `-new` to create directly without prompting. |
+| `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly. |
 | `main` | *none* | Jumps directly back to `main` (automatically falls back to `master` if repo uses master). |
 | `undo` | *none* | **The safety net**: unwinds the last commit while keeping all changes safely staged (`git reset --soft HEAD~1`). |
 | `st` | *none* | Compact, clean 1-line branch and file status (`git status -sb`). |
@@ -22,7 +22,7 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 
 ### Git Workflow Examples:
 ```powershell
-nb feature-auth           # 1. Create and switch to new branch
+b feature-auth           # 1. Switch to feature-auth, or prompts to create if new
 push "feat: add login"    # 2. Stages, commits, and pushes (auto-sets upstream on GitHub)
 catchup -Check            # 3. See what commits teammates pushed to develop
 catchup                   # 4. Rebase cleanly on top of develop (with autostash)
