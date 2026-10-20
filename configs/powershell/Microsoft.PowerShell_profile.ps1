@@ -25,6 +25,30 @@ function commit {
 
 <#
 .SYNOPSIS
+Stages all local changes and amends the latest commit without editing message (or updates message if provided).
+#>
+function amend {
+    $hasCommits = (& git rev-parse --verify HEAD 2>$null)
+    if (-not $hasCommits) {
+        Write-Host "No commits exist to amend or not in a git repository." -ForegroundColor Yellow
+        return
+    }
+
+    git add -A
+    if ($args) {
+        git commit --amend -m "$args"
+    } else {
+        git commit --amend --no-edit
+    }
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Amended latest commit:" -ForegroundColor Green
+        git log -1 --oneline
+    }
+}
+
+<#
+.SYNOPSIS
 Pushes commits to remote. If message is passed, stages and commits first. Automatically sets upstream tracking on new branches.
 #>
 function push {

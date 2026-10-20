@@ -10,6 +10,7 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 | :--- | :--- | :--- |
 | `push` | `[<message>]` | Pushes commits to remote. If `<message>` is passed, stages and commits first (`git add -A; git commit -m`). **Automatically sets upstream tracking** on new branches. |
 | `commit` | `<message>` | Stages all files and creates a commit: `git add -A; git commit -m "<message>"`. |
+| `amend` | `[<message>]` | Stages all local changes and amends the latest commit without editing message (`git commit --amend --no-edit`). If `<message>` is provided, updates commit message. |
 | `catchup` | `[<branch>] [-m\|--merge] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **rebases with autostash**. Use `-m` or `--merge` for a merge commit, or `-c` / `--check` to preview incoming commits without applying. |
 | `sync` | *none* | Safely syncs current branch: pulls with `rebase --autostash`, then pushes. |
 | `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it. If it doesn't exist, **prompts to create it** (`[Y/n]`). Pass `-n` or `-new` to create directly without prompting. |
@@ -23,12 +24,14 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 ### Git Workflow Examples:
 ```powershell
 b feature-auth           # 1. Switch to feature-auth, or prompts to create if new
-push "feat: add login"    # 2. Stages, commits, and pushes (auto-sets upstream on GitHub)
-catchup -Check            # 3. See what commits teammates pushed to develop
-catchup                   # 4. Rebase cleanly on top of develop (with autostash)
-undo                      # 5. Undo accidental commit without losing code
-main                      # 6. Jump back to main branch
-gbc                       # 7. Clean up merged branches
+commit "feat: add login" # 2. Stages and creates commit
+amend                    # 3. Quickly fold staged/unstaged tweaks into last commit
+push                     # 4. Push to remote (auto-sets upstream on GitHub)
+catchup -Check           # 5. See what commits teammates pushed to develop
+catchup                  # 6. Rebase cleanly on top of develop (with autostash)
+undo                     # 7. Undo accidental commit without losing code
+main                     # 8. Jump back to main branch
+gbc                      # 9. Clean up merged branches
 ```
 
 ---
