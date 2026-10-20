@@ -38,6 +38,7 @@ personal-settings-sync/
 │   ├── gemini/
 │   │   ├── AGENTS.md                           # Universal AI agent rules & guidelines
 │   │   ├── GEMINI.md                           # Antigravity/Gemini agent rules
+│   │   ├── skills.json                         # Global skills discovery manifest (~/.gemini/config/skills.json)
 │   │   └── skills/                             # Curated global skills
 │   │       ├── developer-profile/              # Developer patterns & philosophy
 │   │       └── repo-intro/                     # Repo onboarding protocol

@@ -119,6 +119,11 @@
           "repoPath": "configs/gemini/GEMINI.md",
           "localPath": "%USERPROFILE%/.gemini/GEMINI.md",
           "required": true
+        },
+        {
+          "repoPath": "configs/gemini/skills.json",
+          "localPath": "%USERPROFILE%/.gemini/config/skills.json",
+          "required": true
         }
       ]
     }
