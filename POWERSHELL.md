@@ -11,11 +11,11 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 | `push` | `[<message>]` | Pushes commits to remote. If `<message>` is passed, stages and commits first (`git add -A; git commit -m`). **Automatically sets upstream tracking** on new branches. |
 | `commit` | `<message>` | Stages all files and creates a commit: `git add -A; git commit -m "<message>"`. |
 | `amend` | `[<message>]` | Stages all local changes and amends the latest commit without editing message (`git commit --amend --no-edit`). If `<message>` is provided, updates commit message. |
-| `catchup` | `[<branch>] [-m\|--merge] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **rebases with autostash**. Use `-m` or `--merge` for a merge commit, or `-c` / `--check` to preview incoming commits without applying. |
-| `sync` | *none* | Safely syncs current branch: pulls with `rebase --autostash`, then pushes. |
-| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it. If it doesn't exist, **prompts to create it** (`[Y/n]`). Pass `-n` or `-new` to create directly without prompting. |
-| `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly. |
-| `main` | *none* | Jumps directly back to `main` (automatically falls back to `master` if repo uses master). |
+| `catchup` | `[<branch>] [-r\|--rebase] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **merges into current branch**. Use `-r` or `--rebase` for a rebase with autostash, or `-c` / `--check` to preview incoming commits without applying. |
+| `sync` | `[-r\|--rebase]` | Safely syncs current branch: pulls with **merge** (or `-r` for rebase with autostash), then pushes. |
+| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it (`git switch`). If it doesn't exist, **prompts to create it** (`[Y/n]`) with `git switch -c`. Pass `-n` or `-new` to create directly without prompting. |
+| `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly (`git switch -c`). |
+| `main` | *none* | Jumps directly back to `main` via `git switch` (automatically falls back to `master` if repo uses master). |
 | `undo` | *none* | **The safety net**: unwinds the last commit while keeping all changes safely staged (`git reset --soft HEAD~1`). |
 | `st` | *none* | Compact, clean 1-line branch and file status (`git status -sb`). |
 | `lg` | `[<count>]` | Compact colorized commit graph (`git log --graph --oneline`). Defaults to 10 commits. |
@@ -23,14 +23,14 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 
 ### Git Workflow Examples:
 ```powershell
-b feature-auth           # 1. Switch to feature-auth, or prompts to create if new
+b feature-auth           # 1. Switch to feature-auth, or prompts to create if new (git switch -c)
 commit "feat: add login" # 2. Stages and creates commit
 amend                    # 3. Quickly fold staged/unstaged tweaks into last commit
 push                     # 4. Push to remote (auto-sets upstream on GitHub)
 catchup -Check           # 5. See what commits teammates pushed to develop
-catchup                  # 6. Rebase cleanly on top of develop (with autostash)
+catchup                  # 6. Merge cleanly with latest develop
 undo                     # 7. Undo accidental commit without losing code
-main                     # 8. Jump back to main branch
+main                     # 8. Jump back to main branch (git switch)
 gbc                      # 9. Clean up merged branches
 ```
 
