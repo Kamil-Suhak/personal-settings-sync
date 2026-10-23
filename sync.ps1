@@ -384,9 +384,10 @@ switch ($Action) {
         }
 
         if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
             foreach ($skillName in $Config.skills) {
                 $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
                 $statusText = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
 
                 $results += [PSCustomObject]@{
@@ -472,9 +473,10 @@ switch ($Action) {
 
         if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
             Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
             foreach ($skillName in $Config.skills) {
                 $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
                     Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
@@ -609,9 +611,10 @@ switch ($Action) {
 
         if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
             Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
             foreach ($skillName in $Config.skills) {
                 $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if (-not (Test-PathSafe $localSkillPath -PathType Container)) {
                     Write-Badge "MISSING" DarkYellow "Local skill directory missing: $localSkillPath"
@@ -747,9 +750,10 @@ switch ($Action) {
         }
 
         if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
             foreach ($skillName in $Config.skills) {
                 $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if ((Test-PathSafe $repoSkillPath -PathType Container) -and (Test-PathSafe $localSkillPath -PathType Container)) {
                     $state = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
@@ -956,9 +960,10 @@ switch ($Action) {
 
         if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
             Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
             foreach ($skillName in $Config.skills) {
                 $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills\$skillName"
+                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
                     Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
