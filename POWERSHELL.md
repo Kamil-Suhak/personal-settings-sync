@@ -43,17 +43,19 @@ gbc                      # 9. Clean up merged branches
 | `..` | *none* | Go up 1 directory (`Set-Location ..`). |
 | `...` | *none* | Go up 2 directories (`Set-Location ../..`). |
 | `....` | *none* | Go up 3 directories (`Set-Location ../../..`). |
-| `p` | `[<name>] [-add\|-a [<path>]] [-list\|-l]` | **Universal Project Jumper**: searches all configured project roots and jumps to `<name>`. Reads local paths from `~/.project-roots`. Run `p -add` to register new project roots or `p -list` to view them. |
+| `p` | `[<name>] [-add\|-a [<path>]] [-remove\|-r [<path>]] [-list\|-l]` | **Universal Project Jumper**: searches all configured project roots and jumps to `<name>`. Reads local paths from `~/.project-roots`. Run `p -add` to register new roots, `p -remove` to remove roots, or `p -list` to view them. |
 | `rev` | `[<path>]` | Opens Windows File Explorer at the specified path (defaults to current directory `.`). |
 
 ### Navigation Examples:
 ```powershell
-p my-app       # Jumps to project matching 'my-app'
-p -add ~/Dev   # Registers ~/Dev to your project roots
-p -add         # Prompts to add current directory (or any path)
-p -list        # Displays all currently registered project roots
-rev            # Opens current folder in Windows Explorer
-...            # Jumps up 2 folder levels
+p my-app         # Jumps to project matching 'my-app'
+p -add ~/Dev     # Registers ~/Dev to your project roots
+p -add           # Prompts to add current directory (or any path)
+p -remove Dev    # Removes Dev directory from registered project roots
+p -remove        # Interactively lists roots with numbers to choose and remove
+p -list          # Displays all currently registered project roots
+rev              # Opens current folder in Windows Explorer
+...              # Jumps up 2 folder levels
 ```
 
 ---
