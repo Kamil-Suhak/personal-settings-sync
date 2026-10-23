@@ -17,16 +17,14 @@ Currently configured for:
 
 ---
 
-## The Best Way to Automate Settings Sync on Windows
+## Reliable Settings Synchronization on Windows
 
-When synchronizing settings across machines on Windows, there are two primary approaches:
+This repository uses **Copy-Based Synchronization with automated backups and diffing** as its single, dedicated sync mechanism:
 
-| Strategy | How it Works | Pros | Considerations |
-| :--- | :--- | :--- | :--- |
-| **Copy-Based Sync** *(Default & Recommended)* | The script copies files between the repo and system locations (`Apply` / `Export`). | • **No Administrator or Developer Mode required**<br>• Fully safe: creates automatic timestamped `.backups/` (retains latest 10)<br>• Resilient to atomic editor file rewrites<br>• Easy side-by-side diffing before changes | Requires running `.\sync.ps1 apply` when pulling changes. |
-| **Symbolic Links** *(Optional: `.\sync.ps1 link`)* | Local files become pointer links pointing directly into this repo clone. | • Edits in repo or app are instantly synchronized without running a command. | • Requires **Windows Developer Mode** or elevated Admin permissions.<br>• Some editors can sever symlinks during atomic saves. |
-
-This repository implements **Copy-Based Sync with automated backups and diffing** by default, while also providing a built-in `link` command if you prefer symbolic links.
+- **No Administrator or Developer Mode required**: Runs cleanly in standard user PowerShell sessions across all machines.
+- **Fail-safe with automated backups**: Timestamped backups are created in `.backups/` before any file is overwritten (retaining the 10 most recent backups).
+- **Atomic-save resilient**: Fully immune to editors (like VS Code) that sever symbolic links during atomic save operations.
+- **Auditability & control**: Inspect exact differences via `.\sync.ps1 diff` and verify status with `.\sync.ps1 status` before applying.
 
 ---
 
@@ -189,7 +187,6 @@ To install all listed extensions on a new machine:
 | `.\sync.ps1 export` | Copies files from machine $\rightarrow$ repo and syncs `winget-packages.json`. |
 | `.\sync.ps1 export -Push` | Exports machine files $\rightarrow$ repo, then stages, commits, and pushes to remote if changed. |
 | `.\sync.ps1 diff` | Displays unified line-by-line diff for any files that differ. |
-| `.\sync.ps1 link` | Safely creates symbolic links from machine paths pointing directly to this repo (requires Developer Mode). |
 | `.\sync.ps1 apps` | Lists all configured Winget packages, developer fonts, and available actions. |
 | `.\sync.ps1 apps -Install` | Installs all missing software via Winget and installs the JetBrains Mono font. |
 | `.\sync.ps1 apps -Update` | Upgrades all installed software to the latest versions via Winget. |

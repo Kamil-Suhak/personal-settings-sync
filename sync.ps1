@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Synchronizes configurations between this repository and local system paths.
-    Supports copy-based synchronization, symbolic links, and Winget app management.
+    Supports copy-based synchronization and Winget app management.
 
 .PARAMETER Action
     The action to execute:
@@ -12,7 +12,6 @@
       - apply   : Deploy settings from repository to this machine (repo -> local)
       - export  : Harvest current settings from machine into repository (local -> repo)
       - diff    : Show detailed diff for modified files
-      - link    : Create symbolic links (local -> repo) for live continuous sync
       - apps    : Manage applications via Winget (list, install, update)
       - fonts   : Download and install developer fonts (JetBrains Mono)
       - setup   : Apply run-once Windows developer settings, fonts, and Explorer tweaks
@@ -61,7 +60,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('status', 'apply', 'export', 'diff', 'link', 'apps', 'fonts', 'setup', 'tweaks', 'help')]
+    [ValidateSet('status', 'apply', 'export', 'diff', 'apps', 'fonts', 'setup', 'tweaks', 'help')]
     [string]$Action = 'status',
 
     [Parameter(Position = 1)]
@@ -885,132 +884,6 @@ switch ($Action) {
             Write-Host "  .\sync.ps1 apps -Update    -> Upgrade all installed apps to latest version" -ForegroundColor DarkGray
             Write-Host "  .\sync.ps1 fonts           -> Download and install JetBrains Mono font only" -ForegroundColor DarkGray
             Write-Host "  Native Winget alternative  : winget import -i winget-packages.json`n" -ForegroundColor DarkGray
-        }
-    }
-
-    'link' {
-        Write-Host "`n=== Creating Symbolic Links (Machine -> Repo) ===" -ForegroundColor Cyan
-        Write-Host "Note: Creating symbolic links requires Windows Developer Mode or Administrator privileges.`n" -ForegroundColor DarkGray
-        $linkedCount = 0
-
-        foreach ($appEntry in $AppsToProcess) {
-            Write-Host "`n[$($appEntry.displayName)]" -ForegroundColor Yellow
-
-            foreach ($file in $appEntry.files) {
-                $repoFullPath = Join-Path $ScriptDir $file.repoPath
-                $localFullPath = Resolve-DynamicPath $file.localPath
-
-                if (-not (Test-PathSafe $repoFullPath -PathType Leaf)) {
-                    if ($file.required) {
-                        Write-Badge "WARN" Yellow "Repo file missing: $($file.repoPath)"
-                    }
-                    continue
-                }
-
-                $localExists = Test-PathSafe $localFullPath -PathType Leaf
-                if ($localExists -and -not $Force) {
-                    $item = Get-Item -LiteralPath $localFullPath -Force -ErrorAction SilentlyContinue
-                    if ($item -and $item.LinkType -eq 'SymbolicLink' -and ($item.Target -eq $repoFullPath -or (Resolve-Path $item.Target -ErrorAction SilentlyContinue).Path -eq $repoFullPath)) {
-                        Write-Badge "OK" DarkGray "Already linked: $localFullPath -> $($file.repoPath)"
-                        continue
-                    }
-                }
-
-                if ($WhatIf) {
-                    Write-Badge "WHAT-IF" Cyan "Would link $localFullPath ===> $($file.repoPath)"
-                    continue
-                }
-
-                $targetDir = Split-Path -Parent $localFullPath
-                if (-not (Test-PathSafe $targetDir -PathType Container)) {
-                    [System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
-                }
-
-                $tempOldFile = $null
-                if ($localExists) {
-                    if (-not $NoBackup) {
-                        $fileBackupPath = Get-BackupDestination -BackupRoot $backupDir -RepoRelativePath $file.repoPath -LocalFullPath $localFullPath
-                        Copy-Item -LiteralPath $localFullPath -Destination $fileBackupPath -Force
-                        $relBackup = $fileBackupPath.Substring($ScriptDir.Length).TrimStart('\', '/')
-                        Write-Badge "BACKUP" DarkCyan "Backed up prior file to: $relBackup"
-                    }
-
-                    # Move existing file to temporary path so we can restore it if symlink creation fails
-                    $tempOldFile = "$localFullPath.sync-tmp"
-                    Move-Item -LiteralPath $localFullPath -Destination $tempOldFile -Force
-                }
-
-                try {
-                    New-Item -ItemType SymbolicLink -Path $localFullPath -Target $repoFullPath -Force | Out-Null
-                    if ($tempOldFile -and (Test-PathSafe $tempOldFile -PathType Leaf)) {
-                        Remove-Item -LiteralPath $tempOldFile -Force -ErrorAction SilentlyContinue
-                    }
-                    Write-Badge "LINKED" Green "$localFullPath ===> $($file.repoPath)"
-                    $linkedCount++
-                } catch {
-                    # Restore original local file if symlink creation failed
-                    if ($tempOldFile -and (Test-PathSafe $tempOldFile -PathType Leaf)) {
-                        Move-Item -LiteralPath $tempOldFile -Destination $localFullPath -Force -ErrorAction SilentlyContinue
-                    }
-                    Write-Badge "FAILED" Red "Could not create symbolic link (original file preserved): $($_.Exception.Message)"
-                    Write-Host "  Tip: Turn on Windows Developer Mode (Settings -> System -> For developers) or use '.\sync.ps1 apply' instead." -ForegroundColor Yellow
-                }
-            }
-        }
-
-        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
-            Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
-            $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
-            foreach ($skillName in $Config.skills) {
-                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
-                $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
-
-                if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
-                    Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
-                    continue
-                }
-
-                $localExists = Test-PathSafe $localSkillPath -PathType Container
-                if ($localExists) {
-                    $item = Get-Item -LiteralPath $localSkillPath -Force -ErrorAction SilentlyContinue
-                    if ($item -and ($item.LinkType -in @('SymbolicLink', 'Junction')) -and ($item.Target -eq $repoSkillPath -or (Resolve-Path $item.Target -ErrorAction SilentlyContinue).Path -eq $repoSkillPath)) {
-                        Write-Badge "OK" DarkGray "Already linked: $localSkillPath ===> configs/gemini/skills/$skillName"
-                        continue
-                    }
-                }
-
-                if ($WhatIf) {
-                    Write-Badge "WHAT-IF" Cyan "Would link $localSkillPath ===> configs/gemini/skills/$skillName"
-                    continue
-                }
-
-                if ($localExists -and -not $NoBackup) {
-                    $skillBackup = Join-Path $backupDir "skills\$skillName"
-                    Copy-Item -LiteralPath $localSkillPath -Destination $skillBackup -Recurse -Force
-                    Write-Badge "BACKUP" DarkCyan "Backed up prior skill to: .backups\$timestamp\skills\$skillName"
-                }
-
-                if ($localExists) {
-                    Remove-Item -LiteralPath $localSkillPath -Recurse -Force
-                }
-
-                $targetParent = Split-Path -Parent $localSkillPath
-                if (-not (Test-PathSafe $targetParent -PathType Container)) {
-                    [System.IO.Directory]::CreateDirectory($targetParent) | Out-Null
-                }
-
-                try {
-                    New-Item -ItemType Junction -Path $localSkillPath -Target $repoSkillPath -Force | Out-Null
-                    Write-Badge "LINKED" Green "$localSkillPath ===> configs/gemini/skills/$skillName"
-                    $linkedCount++
-                } catch {
-                    Write-Badge "FAILED" Red "Could not create junction link: $($_.Exception.Message)"
-                }
-            }
-        }
-
-        if (-not $WhatIf -and $linkedCount -gt 0 -and -not $NoBackup) {
-            Remove-OldBackups -Keep $MaxBackups
         }
     }
 
