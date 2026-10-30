@@ -17,6 +17,9 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 | `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly (`git switch -c`). |
 | `main` | *none* | Jumps directly back to `main` via `git switch` (automatically falls back to `master` if repo uses master). |
 | `undo` | *none* | **The safety net**: unwinds the last commit while keeping all changes safely staged (`git reset --soft HEAD~1`). |
+| `wip` | `[<message>] [-a\|--all]` | **Work In Progress**: Stashes staged changes by default (`git stash push --staged`). Pass `-a` or `--all` to stage all changes (`git add -A`) and stash everything including untracked. Defaults to timestamped message. |
+| `unwip` | *none* | Restores the latest stash by popping it back into the working tree (`git stash pop`). |
+| `stashes` | *none* | Displays formatted, colorized list of all git stashes with index, age, and description. |
 | `st` | *none* | Compact, clean 1-line branch and file status (`git status -sb`). |
 | `lg` | `[<count>]` | Compact colorized commit graph (`git log --graph --oneline`). Defaults to 10 commits. |
 | `gbc` | *none* | Deletes all local branches that have already been merged into `main`. |
@@ -26,12 +29,16 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 b feature-auth           # 1. Switch to feature-auth, or prompts to create if new (git switch -c)
 commit "feat: add login" # 2. Stages and creates commit
 amend                    # 3. Quickly fold staged/unstaged tweaks into last commit
-push                     # 4. Push to remote (auto-sets upstream on GitHub)
-catchup -Check           # 5. See what commits teammates pushed to develop
-catchup                  # 6. Merge cleanly with latest develop
-undo                     # 7. Undo accidental commit without losing code
-main                     # 8. Jump back to main branch (git switch)
-gbc                      # 9. Clean up merged branches
+wip                      # 4. Stashes staged changes with timestamp
+wip -a "refactoring api" # 5. Auto-stages all files and stashes everything
+stashes                  # 6. Views formatted list of stashes
+unwip                    # 7. Pops latest stash back to working tree
+push                     # 8. Push to remote (auto-sets upstream on GitHub)
+catchup -Check           # 9. See what commits teammates pushed to develop
+catchup                  # 10. Merge cleanly with latest develop
+undo                     # 11. Undo accidental commit without losing code
+main                     # 12. Jump back to main branch (git switch)
+gbc                      # 13. Clean up merged branches
 ```
 
 ---
@@ -43,6 +50,8 @@ gbc                      # 9. Clean up merged branches
 | `..` | *none* | Go up 1 directory (`Set-Location ..`). |
 | `...` | *none* | Go up 2 directories (`Set-Location ../..`). |
 | `....` | *none* | Go up 3 directories (`Set-Location ../../..`). |
+| `back` | *none* | Jumps back to the previous working directory (toggles between current and previous location). |
+| `mkcd` | `<path>` | Creates directory (including nested parents) and navigates into it in one step (`New-Item -ItemType Directory -Force; Set-Location`). |
 | `p` | `[<name>] [-add\|-a [<path>]] [-remove\|-r [<path>]] [-list\|-l]` | **Universal Project Jumper**: searches all configured project roots and jumps to `<name>`. Reads local paths from `~/.project-roots`. Run `p -add` to register new roots, `p -remove` to remove roots, or `p -list` to view them. |
 | `rev` | `[<path>]` | Opens Windows File Explorer at the specified path (defaults to current directory `.`). |
 
@@ -54,6 +63,8 @@ p -add           # Prompts to add current directory (or any path)
 p -remove Dev    # Removes Dev directory from registered project roots
 p -remove        # Interactively lists roots with numbers to choose and remove
 p -list          # Displays all currently registered project roots
+mkcd src/auth    # Creates nested directory and navigates into it
+back             # Jumps back to previous directory (run again to toggle back)
 rev              # Opens current folder in Windows Explorer
 ...              # Jumps up 2 folder levels
 ```
@@ -65,19 +76,17 @@ rev              # Opens current folder in Windows Explorer
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
 | `venv` | `[<name>]` | Activates Python virtual environment (default: `.venv`). **Automatically creates it** via `py -m venv` if it doesn't exist yet. |
-| `killport` | `<port>` | Finds and kills whatever process is occupying a local port (e.g. `killport 5000`, `killport 5432`). |
-| `find` | `<name> [<path>] [-o\|--open]` | Interactive fuzzy file finder. Excludes junk (`node_modules`, `.git`, `bin`), copies selection to clipboard, and optionally opens in VS Code with `-o` or `--open`. |
+| `find` | `<name> [<path>] [-o\|--open]` | Interactive fuzzy file finder. Uses **instant git index acceleration (`git ls-files`)** inside repositories (monolith optimized), falls back to .NET file walker outside, copies selection to clipboard, and optionally opens in VS Code with `-o` or `--open`. |
 | `sudo` | `<command>` | Windows 11 native elevation. Supports `sudo !!` to re-run the previous command as Administrator. |
 | `which` | `<command> [-h\|--help]`<br>`which profile [-h]` | Locates commands. By default, prints the path for an application or the profile path for a custom function. With `-h`, displays path + manual/help for an application, or path + description for a custom function. Run `which profile` to get the profile path, or `which profile -h` to list all custom profile functions and their descriptions. |
 | `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
-| `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Filters piped input (`docker ps \| findstr auth`) or searches codebase files recursively (`findstr "TODO"`), auto-skipping junk dirs (`.git`, `node_modules`, `bin`, `.venv`). |
+| `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Uses **git grep acceleration** inside repositories (blazing fast in monoliths), falls back to .NET walker outside. Filters piped input (`docker ps \| findstr auth`) or searches codebase files with `-l`, `-v`, `-c`. |
 
 ### Development Examples:
 ```powershell
 venv                  # Creates/activates .venv and integrates badge into prompt
-killport 8080         # Kills hung backend dev server on port 8080
 find user -o          # Searches for files matching 'user' and opens choice in VS Code
-findstr "TODO"        # Recursive text search across codebase files
+findstr "TODO"        # Fast text search across codebase files (git grep in repos)
 findstr "TODO" -l     # Only print filenames containing matches
 docker ps | findstr auth  # Filters pipeline output for 'auth'
 sudo winget upgrade   # Runs single command elevated
@@ -86,6 +95,9 @@ which python          # Default: prints path C:\Python314\python.exe
 which commit          # Default: prints profile path where function is defined
 which git -h          # Help mode: prints path, version, and manual/help
 which commit -h       # Help mode: prints profile path and description
+which profile         # Prints profile path
+which profile -h      # Lists all custom profile functions and their short descriptions
+```
 which profile         # Prints profile path
 which profile -h      # Lists all custom profile functions and their short descriptions
 ```

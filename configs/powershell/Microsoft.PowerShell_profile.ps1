@@ -1,11 +1,15 @@
 #region 1. Core Environment & Encodings
-if (-not [Environment]::UserInteractive) { return }
+# Bail out immediately if session is non-interactive or streams are redirected (e.g. AGY, automated agent runners, CI/CD)
+if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return }
 
 # Force UTF-8 console encoding for Powerline glyphs and emojis
 $OutputEncoding = [Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
 
 # Prevent Python virtualenv from injecting an unstyled line above our prompt
 $env:VIRTUAL_ENV_DISABLE_PROMPT = 1
+
+# Cache elevated admin state once at startup to avoid expensive reflection on every prompt render
+$global:__is_admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 #endregion
 
 #region 2. Git Automation & Workflows
@@ -286,6 +290,95 @@ function gbc {
         Write-Host "No stale merged branches found." -ForegroundColor DarkGray
     }
 }
+
+<#
+.SYNOPSIS
+Work In Progress: Stashes staged changes by default, or use -All (-a) to stage and stash all changes including untracked.
+#>
+function wip {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)]
+        [string]$Message,
+        [Alias("a")][switch]$All
+    )
+
+    # Support POSIX style -a / --all
+    if ($args -contains '-a' -or $args -contains '--all' -or $Message -in @('-a', '--all')) {
+        $All = $true
+        if ($Message -in @('-a', '--all')) {
+            $Message = if ($args.Count -gt 0) { $args -join ' ' } else { $null }
+        }
+    }
+
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $wipMsg = if ($Message) { "WIP: $Message" } else { "WIP: $timestamp" }
+
+    if ($All) {
+        Write-Host "Staging all changes (including untracked)..." -ForegroundColor Cyan
+        git add -A
+        git stash push -u -m "$wipMsg"
+    } else {
+        # Verify staged changes exist
+        $null = git diff --staged --quiet 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "No staged changes to stash." -ForegroundColor Yellow
+            Write-Host "Tip: Stage files first (git add) or use 'wip -a' to auto-stage and stash all changes." -ForegroundColor DarkGray
+            return
+        }
+        Write-Host "Stashing staged changes..." -ForegroundColor Cyan
+        git stash push --staged -m "$wipMsg"
+    }
+
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Stashed: $wipMsg" -ForegroundColor Green
+        Clear-GitBranchCache
+    }
+}
+
+<#
+.SYNOPSIS
+Restores the latest stash by popping it back into the working tree (git stash pop).
+#>
+function unwip {
+    $hasStash = (& git stash list -n 1 2>$null)
+    if (-not $hasStash) {
+        Write-Host "No stashes found to pop." -ForegroundColor Yellow
+        return
+    }
+
+    Write-Host "Popping latest stash..." -ForegroundColor Cyan
+    git stash pop
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Restored stash to working tree." -ForegroundColor Green
+        Clear-GitBranchCache
+    }
+}
+
+<#
+.SYNOPSIS
+Displays formatted, colorized list of all git stashes.
+#>
+function stashes {
+    $rawStashes = git stash list --pretty=format:'%gd%x09%cr%x09%s' 2>$null
+    if (-not $rawStashes) {
+        Write-Host "No stashes found." -ForegroundColor DarkGray
+        return
+    }
+
+    Write-Host "`nGit Stashes:" -ForegroundColor Cyan
+    foreach ($entry in $rawStashes) {
+        $parts = $entry -split "`t"
+        if ($parts.Count -ge 3) {
+            Write-Host "  $($parts[0].PadRight(12))" -NoNewline -ForegroundColor Green
+            Write-Host " ($($parts[1]))" -NoNewline -ForegroundColor DarkGray
+            Write-Host " $($parts[2])" -ForegroundColor Yellow
+        } else {
+            Write-Host "  $entry"
+        }
+    }
+    Write-Host ""
+}
 #endregion
 
 #region 3. Navigation & Project Switcher
@@ -495,6 +588,36 @@ function rev {
         Write-Error "Path not found: $Path"
     }
 }
+
+# Directory history state for 'back' command
+$global:__current_location = $pwd.Path
+$global:__prev_location = $null
+
+<#
+.SYNOPSIS
+Creates directory (including nested parents) and navigates into it in one step.
+#>
+function mkcd {
+    param(
+        [Parameter(Mandatory = $true, Position = 0)]
+        [string]$Path
+    )
+    $null = New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop
+    Set-Location -LiteralPath $Path
+}
+
+<#
+.SYNOPSIS
+Jumps back to the previous working directory (toggles between current and previous location).
+#>
+function back {
+    if (-not $global:__prev_location -or -not (Test-Path -LiteralPath $global:__prev_location)) {
+        Write-Host "No previous directory recorded." -ForegroundColor Yellow
+        return
+    }
+    $target = $global:__prev_location
+    Set-Location -LiteralPath $target
+}
 #endregion
 
 #region 4. Development & System Helpers
@@ -693,21 +816,6 @@ function sudo {
 
 <#
 .SYNOPSIS
-Finds and kills whatever process is occupying a local TCP port (e.g. killport 5000).
-#>
-function killport ($port) {
-    $connections = Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue
-    if ($connections) {
-        $pids = $connections.OwningProcess | Select-Object -Unique
-        Stop-Process -Id $pids -Force
-        Write-Host "Terminated process(es) on port ${port}: $($pids -join ', ')" -ForegroundColor Green
-        } else {
-        Write-Host "No active process listening on port ${port}." -ForegroundColor Yellow
-    }
-}
-
-<#
-.SYNOPSIS
 Helper function that recursively enumerates files excluding common junk directories and specified extensions.
 #>
 function Get-SearchableFiles {
@@ -751,7 +859,7 @@ function Get-SearchableFiles {
 
 <#
 .SYNOPSIS
-Interactive fuzzy file finder. Excludes junk folders, copies selected file path to clipboard, and optionally opens in VS Code with -o/--open.
+Interactive fuzzy file finder. Uses git index acceleration inside git repositories, falls back to .NET file walker, copies selected path to clipboard, and optionally opens in VS Code with -o/--open.
 #>
 function find {
     [CmdletBinding()]
@@ -772,11 +880,44 @@ function find {
     $regexPattern = ($cleanedTokens | ForEach-Object { [regex]::Escape($_) }) -join '.?'
     $nameRegex = [regex]::new($regexPattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
 
-    $foundFiles = @(
-        Get-SearchableFiles -Path $Path |
-        Where-Object { $nameRegex.IsMatch($_.Name) } |
-        Select-Object FullName, Name, DirectoryName
-    )
+    $isGitRepo = (& git rev-parse --is-inside-work-tree 2>$null) -eq 'true'
+    $foundFiles = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+    if ($isGitRepo) {
+        $gitRoot = (& git rev-parse --show-toplevel 2>$null)
+        $gitArgs = @('ls-files', '--cached', '--others', '--exclude-standard')
+        if ($Path -and $Path -ne '.') { $gitArgs += $Path }
+        $trackedFiles = & git @gitArgs 2>$null
+
+        if ($trackedFiles) {
+            foreach ($relFile in $trackedFiles) {
+                $fileName = Split-Path $relFile -Leaf
+                if ($nameRegex.IsMatch($fileName)) {
+                    $fullPath = if ($gitRoot) { Join-Path $gitRoot $relFile } else { (Resolve-Path $relFile -ErrorAction SilentlyContinue).Path }
+                    $dirName = Split-Path $fullPath -Parent
+                    $foundFiles.Add([PSCustomObject]@{
+                        FullName      = $fullPath
+                        Name          = $fileName
+                        DirectoryName = $dirName
+                    })
+                }
+            }
+        }
+    }
+
+    if (-not $isGitRepo -or $foundFiles.Count -eq 0) {
+        if (-not $isGitRepo) {
+            Get-SearchableFiles -Path $Path |
+                Where-Object { $nameRegex.IsMatch($_.Name) } |
+                ForEach-Object {
+                    $foundFiles.Add([PSCustomObject]@{
+                        FullName      = $_.FullName
+                        Name          = $_.Name
+                        DirectoryName = $_.DirectoryName
+                    })
+                }
+        }
+    }
 
     if ($foundFiles.Count -eq 0) {
         Write-Host "No files found matching '$Name'." -ForegroundColor Yellow
@@ -911,14 +1052,44 @@ function findstr {
     end {
         if ($isPiped -or -not $Pattern) { return }
 
+        $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
+        $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
+        $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
+
+        # 1. Fast Git acceleration inside a Git repository (monolith indexing)
+        $isGitRepo = (& git rev-parse --is-inside-work-tree 2>$null) -eq 'true'
+        if ($isGitRepo) {
+            $grepArgs = @('grep', '-n', '-I', '--color=never')
+            if (-not $CaseSensitive) { $grepArgs += '-i' }
+            if ($Invert) { $grepArgs += '-v' }
+            if ($FilesOnly) { $grepArgs += '-l' }
+            $grepArgs += @('-e', $Pattern)
+            if ($Path -and $Path -ne '.') { $grepArgs += @('--', $Path) }
+
+            $results = & git @grepArgs 2>$null
+            if ($results) {
+                if ($FilesOnly) {
+                    foreach ($line in $results) {
+                        "${cyan}${line}${reset}"
+                    }
+                } else {
+                    foreach ($line in $results) {
+                        if ($line -match '^([^:]+):(\d+):(.*)$') {
+                            "${cyan}$($matches[1])${reset}:${yellow}$($matches[2])${reset}: $($matches[3])"
+                        } else {
+                            $line
+                        }
+                    }
+                }
+            }
+            return
+        }
+
+        # 2. Pure PowerShell fallback outside Git repositories
         $binaryExts = @('.exe', '.dll', '.pdb', '.zip', '.tar', '.gz', '.7z', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.pdf', '.woff', '.woff2', '.ttf')
         $currentDir = (Get-Location).Path.TrimEnd('\', '/')
 
         $files = Get-SearchableFiles -Path $Path -ExcludeExtensions $binaryExts
-
-        $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
-        $yellow = if ($PSStyle) { $PSStyle.Foreground.Yellow } else { "" }
-        $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
         $matchingFiles = [System.Collections.Generic.HashSet[string]]::new()
 
         foreach ($file in $files) {
@@ -987,6 +1158,12 @@ if ($Host.UI.RawUI -and (Get-Command Set-PSReadLineOption -ErrorAction SilentlyC
 
 #region 6. Powerline Segmented Prompt
 function prompt {
+    # Track directory history for 'back' command
+    if ($global:__current_location -and $global:__current_location -ne $pwd.Path) {
+        $global:__prev_location = $global:__current_location
+    }
+    $global:__current_location = $pwd.Path
+
     $lastError = $global:?
     $statusColor = if ($lastError) { "Green" } else { "Red" }
     $arrow = [char]0xE0B0
@@ -1097,8 +1274,7 @@ function prompt {
     $segments = [System.Collections.Generic.List[hashtable]]::new()
 
     # Elevated Admin badge (only if running as Administrator)
-    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-    if ($isAdmin) {
+    if ($global:__is_admin) {
         $segments.Add(@{ Text = "⚡ ADMIN"; Bg = "DarkRed"; Fg = "Yellow" })
     }
 
