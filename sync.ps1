@@ -532,6 +532,23 @@ switch ($Action) {
                 Write-Badge "APPLIED" Green "$skillsRepoBase/$skillName -> $localSkillPath"
                 $appliedCount++
             }
+
+            # Ensure Antigravity/Gemini discovery paths link to the agent-agnostic ~/.agents/skills directory via NTFS junctions
+            $resolvedSkillsBase = Resolve-DynamicPath $skillsBase
+            $geminiSkillsPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\skills"
+            $geminiConfigSkillsPath = Resolve-DynamicPath "%USERPROFILE%\.gemini\config\skills"
+
+            foreach ($linkPath in @($geminiSkillsPath, $geminiConfigSkillsPath)) {
+                if (-not (Test-PathSafe $linkPath) -and (Test-PathSafe $resolvedSkillsBase -PathType Container) -and -not $WhatIf) {
+                    $linkParent = Split-Path -Parent $linkPath
+                    if (-not (Test-PathSafe $linkParent -PathType Container)) {
+                        [System.IO.Directory]::CreateDirectory($linkParent) | Out-Null
+                    }
+                    try {
+                        New-Item -ItemType Junction -Path $linkPath -Target $resolvedSkillsBase -ErrorAction SilentlyContinue | Out-Null
+                    } catch {}
+                }
+            }
         }
 
         # Handle VS Code extensions install if requested
