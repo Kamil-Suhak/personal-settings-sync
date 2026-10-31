@@ -67,6 +67,7 @@ param(
     [string]$SubAction,
 
     [string]$App,
+    [switch]$Skills,
     [switch]$Install,
     [switch]$Update,
     [switch]$Pull,
@@ -302,14 +303,31 @@ if (-not (Test-PathSafe $ConfigFile -PathType Leaf)) {
 
 $Config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
 
-# Resolve target app if specified via $App or positional $SubAction
-$targetApp = if ($App) { $App } elseif ($Action -notin @('apps', 'fonts', 'setup', 'tweaks') -and $SubAction) { $SubAction } else { $null }
+# Resolve target app or target skill if specified via $App, $Skills flag, or positional $SubAction
+$targetApp = if ($Skills) { 'skills' } elseif ($App) { $App } elseif ($Action -notin @('apps', 'fonts', 'setup', 'tweaks') -and $SubAction) { $SubAction } else { $null }
+
+$isSkillsTarget = $targetApp -and ($targetApp -in @('skills', 'agents') -or ($Config.skills -and $Config.skills -contains $targetApp))
+$SkillsToProcess = if ($Config.skills) {
+    if ($isSkillsTarget -and $Config.skills -contains $targetApp) {
+        @($targetApp)
+    } elseif ($isSkillsTarget -or -not $targetApp) {
+        $Config.skills
+    } else {
+        @()
+    }
+} else { @() }
+
 $AppsToProcess = $Config.apps
 if ($targetApp) {
-    $AppsToProcess = $Config.apps | Where-Object { $_.name -ieq $targetApp }
-    if (-not $AppsToProcess) {
-        Write-Badge "ERROR" Red "App '$targetApp' not found in sync.config.json. Available: $(($Config.apps.name) -join ', ')"
-        exit 1
+    if ($isSkillsTarget) {
+        $AppsToProcess = @()
+    } else {
+        $AppsToProcess = $Config.apps | Where-Object { $_.name -ieq $targetApp }
+        if (-not $AppsToProcess) {
+            $available = @($Config.apps.name) + @('skills')
+            Write-Badge "ERROR" Red "Target '$targetApp' not found in sync.config.json. Available: $($available -join ', ')"
+            exit 1
+        }
     }
 }
 
@@ -382,10 +400,11 @@ switch ($Action) {
             }
         }
 
-        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+        if ($SkillsToProcess.Count -gt 0) {
+            $skillsRepoBase = if ($Config.skillsRepoDir) { $Config.skillsRepoDir } else { "configs\skills" }
             $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
-            foreach ($skillName in $Config.skills) {
-                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+            foreach ($skillName in $SkillsToProcess) {
+                $repoSkillPath = Join-Path $ScriptDir "$skillsRepoBase\$skillName"
                 $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
                 $statusText = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
 
@@ -393,7 +412,7 @@ switch ($Action) {
                     App       = "Skill"
                     File      = $skillName
                     Status    = $statusText
-                    RepoPath  = "configs/gemini/skills/$skillName"
+                    RepoPath  = "$skillsRepoBase/$skillName"
                     LocalPath = $localSkillPath
                 }
             }
@@ -470,15 +489,16 @@ switch ($Action) {
             }
         }
 
-        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+        if ($SkillsToProcess.Count -gt 0) {
             Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            $skillsRepoBase = if ($Config.skillsRepoDir) { $Config.skillsRepoDir } else { "configs\skills" }
             $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
-            foreach ($skillName in $Config.skills) {
-                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+            foreach ($skillName in $SkillsToProcess) {
+                $repoSkillPath = Join-Path $ScriptDir "$skillsRepoBase\$skillName"
                 $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if (-not (Test-PathSafe $repoSkillPath -PathType Container)) {
-                    Write-Badge "WARN" Yellow "Repo skill directory missing: configs/gemini/skills/$skillName"
+                    Write-Badge "WARN" Yellow "Repo skill directory missing: $skillsRepoBase/$skillName"
                     continue
                 }
 
@@ -489,7 +509,7 @@ switch ($Action) {
                 }
 
                 if ($WhatIf) {
-                    Write-Badge "WHAT-IF" Cyan "Would deploy configs/gemini/skills/$skillName -> $localSkillPath"
+                    Write-Badge "WHAT-IF" Cyan "Would deploy $skillsRepoBase/$skillName -> $localSkillPath"
                     continue
                 }
 
@@ -509,7 +529,7 @@ switch ($Action) {
                 }
 
                 Copy-Item -LiteralPath $repoSkillPath -Destination $localSkillPath -Recurse -Force
-                Write-Badge "APPLIED" Green "configs/gemini/skills/$skillName -> $localSkillPath"
+                Write-Badge "APPLIED" Green "$skillsRepoBase/$skillName -> $localSkillPath"
                 $appliedCount++
             }
         }
@@ -608,11 +628,12 @@ switch ($Action) {
             }
         }
 
-        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+        if ($SkillsToProcess.Count -gt 0) {
             Write-Host "`n[AI Agent Skills]" -ForegroundColor Yellow
+            $skillsRepoBase = if ($Config.skillsRepoDir) { $Config.skillsRepoDir } else { "configs\skills" }
             $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
-            foreach ($skillName in $Config.skills) {
-                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+            foreach ($skillName in $SkillsToProcess) {
+                $repoSkillPath = Join-Path $ScriptDir "$skillsRepoBase\$skillName"
                 $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if (-not (Test-PathSafe $localSkillPath -PathType Container)) {
@@ -627,7 +648,7 @@ switch ($Action) {
                 }
 
                 if ($WhatIf) {
-                    Write-Badge "WHAT-IF" Cyan "Would export $localSkillPath -> configs/gemini/skills/$skillName"
+                    Write-Badge "WHAT-IF" Cyan "Would export $localSkillPath -> $skillsRepoBase/$skillName"
                     continue
                 }
 
@@ -641,7 +662,7 @@ switch ($Action) {
                 }
 
                 Copy-Item -LiteralPath $localSkillPath -Destination $repoSkillPath -Recurse -Force
-                Write-Badge "EXPORTED" Green "$localSkillPath -> configs/gemini/skills/$skillName"
+                Write-Badge "EXPORTED" Green "$localSkillPath -> $skillsRepoBase/$skillName"
                 $exportedCount++
             }
         }
@@ -748,17 +769,18 @@ switch ($Action) {
             }
         }
 
-        if ($Config.skills -and (-not $targetApp -or $targetApp -in @('gemini', 'skills'))) {
+        if ($SkillsToProcess.Count -gt 0) {
+            $skillsRepoBase = if ($Config.skillsRepoDir) { $Config.skillsRepoDir } else { "configs\skills" }
             $skillsBase = if ($Config.skillsTargetDir) { $Config.skillsTargetDir } else { "%USERPROFILE%\.agents\skills" }
-            foreach ($skillName in $Config.skills) {
-                $repoSkillPath = Join-Path $ScriptDir "configs\gemini\skills\$skillName"
+            foreach ($skillName in $SkillsToProcess) {
+                $repoSkillPath = Join-Path $ScriptDir "$skillsRepoBase\$skillName"
                 $localSkillPath = Resolve-DynamicPath "$skillsBase\$skillName"
 
                 if ((Test-PathSafe $repoSkillPath -PathType Container) -and (Test-PathSafe $localSkillPath -PathType Container)) {
                     $state = Compare-DirectorySyncState -RepoDirPath $repoSkillPath -LocalDirPath $localSkillPath
                     if ($state -ne "In Sync") {
                         $diffCount++
-                        Write-Host "`n--- Diff for Skill: $skillName ($localSkillPath vs configs/gemini/skills/$skillName) ---" -ForegroundColor Magenta
+                        Write-Host "`n--- Diff for Skill: $skillName ($localSkillPath vs $skillsRepoBase/$skillName) ---" -ForegroundColor Magenta
                         if ($hasGit) {
                             $prevEAP = $ErrorActionPreference
                             $ErrorActionPreference = 'Continue'

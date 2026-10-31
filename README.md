@@ -9,7 +9,7 @@ Currently configured for:
 - **PowerShell**: Unified `$PROFILE` across both PowerShell 7+ and Windows PowerShell 5.1 — see [POWERSHELL.md](POWERSHELL.md) for command cheatsheet
 - **Windows Terminal**: `settings.json` (profiles, keybindings, JetBrains Mono font, color schemes)
 - **Git**: `.gitconfig` (user identity, LFS filter, editor, default branch)
-- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`) and curated skills (`developer-profile`, `repo-intro`)
+- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`) and curated skills (`developer-profile`, `repo-intro`, `ask`)
 - Extensible to any application via `sync.config.json`
 
 > [!CAUTION]
@@ -39,7 +39,8 @@ personal-settings-sync/
 │   │   ├── skills.json                         # Global skills discovery manifest (~/.gemini/config/skills.json)
 │   │   └── skills/                             # Curated global skills
 │   │       ├── developer-profile/              # Developer patterns & philosophy
-│   │       └── repo-intro/                     # Repo onboarding protocol
+│   │       ├── repo-intro/                     # Repo onboarding protocol
+│   │       └── ask/                            # Read-only architectural inquiry protocol (/ask)
 │   ├── vscode/
 │   │   ├── settings.json                       # VS Code user settings
 │   │   ├── keybindings.json                    # (Optional) Keybindings

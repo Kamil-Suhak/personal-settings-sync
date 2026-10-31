@@ -128,9 +128,11 @@
       ]
     }
   ],
+  "skillsRepoDir": "configs/skills",
   "skillsTargetDir": "%USERPROFILE%/.agents/skills",
   "skills": [
     "developer-profile",
-    "repo-intro"
+    "repo-intro",
+    "ask"
   ]
 }
