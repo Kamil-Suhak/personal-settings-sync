@@ -68,6 +68,7 @@ param(
 
     [string]$App,
     [switch]$Skills,
+    [switch]$Plugins,
     [switch]$Install,
     [switch]$Update,
     [switch]$Pull,
@@ -148,13 +149,46 @@ function Get-DirectoryFileHashes {
     param([string]$DirPath)
     $hashes = [ordered]@{}
     if (Test-PathSafe $DirPath -PathType Container) {
-        $files = @(Get-ChildItem -LiteralPath $DirPath -File -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName)
+        $files = @(Get-ChildItem -LiteralPath $DirPath -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '[\\/]\.git([\\/]|$)' } |
+            Sort-Object FullName)
         foreach ($file in $files) {
             $rel = $file.FullName.Substring($DirPath.Length).TrimStart('\', '/')
             $hashes[$rel] = Get-FileHashSafe $file.FullName
         }
     }
     return $hashes
+}
+
+function Copy-DirectorySafe {
+    param(
+        [string]$SourcePath,
+        [string]$DestinationPath,
+        [string[]]$ExcludePatterns = @('[\\/]\.git([\\/]|$)')
+    )
+    if (-not (Test-PathSafe $DestinationPath -PathType Container)) {
+        [System.IO.Directory]::CreateDirectory($DestinationPath) | Out-Null
+    }
+
+    $sourceItems = @(Get-ChildItem -LiteralPath $SourcePath -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $fullName = $_.FullName
+            $skip = $false
+            foreach ($pattern in $ExcludePatterns) {
+                if ($fullName -match $pattern) { $skip = $true; break }
+            }
+            -not $skip
+        })
+
+    foreach ($file in $sourceItems) {
+        $rel = $file.FullName.Substring($SourcePath.Length).TrimStart('\', '/')
+        $targetFile = Join-Path $DestinationPath $rel
+        $targetDir = Split-Path -Parent $targetFile
+        if (-not (Test-PathSafe $targetDir -PathType Container)) {
+            [System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
+        }
+        Copy-Item -LiteralPath $file.FullName -Destination $targetFile -Force
+    }
 }
 
 function Compare-DirectorySyncState {
@@ -369,15 +403,27 @@ if (-not (Test-PathSafe $ConfigFile -PathType Leaf)) {
 
 $Config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
 
-# Resolve target app or target skill if specified via $App, $Skills flag, or positional $SubAction
-$targetApp = if ($Skills) { 'skills' } elseif ($App) { $App } elseif ($Action -notin @('apps', 'fonts', 'setup', 'tweaks') -and $SubAction) { $SubAction } else { $null }
+# Resolve target app, skill, or plugin if specified via $App, $Skills, $Plugins, or positional $SubAction
+$targetApp = if ($Skills) { 'skills' } elseif ($Plugins) { 'plugins' } elseif ($App) { $App } elseif ($Action -notin @('apps', 'fonts', 'setup', 'tweaks') -and $SubAction) { $SubAction } else { $null }
 
 $isSkillsTarget = $targetApp -and ($targetApp -in @('skills', 'agents') -or ($Config.skills -and $Config.skills -contains $targetApp))
+$isPluginsTarget = $targetApp -and ($targetApp -in @('plugins', 'plugin') -or ($Config.plugins -and $Config.plugins -contains $targetApp))
+
 $SkillsToProcess = if ($Config.skills) {
     if ($isSkillsTarget -and $Config.skills -contains $targetApp) {
         @($targetApp)
-    } elseif ($isSkillsTarget -or -not $targetApp) {
+    } elseif ($isSkillsTarget -or (-not $targetApp -and -not $isPluginsTarget)) {
         $Config.skills
+    } else {
+        @()
+    }
+} else { @() }
+
+$PluginsToProcess = if ($Config.plugins) {
+    if ($isPluginsTarget -and $Config.plugins -contains $targetApp) {
+        @($targetApp)
+    } elseif ($isPluginsTarget -or (-not $targetApp -and -not $isSkillsTarget)) {
+        $Config.plugins
     } else {
         @()
     }
@@ -385,12 +431,12 @@ $SkillsToProcess = if ($Config.skills) {
 
 $AppsToProcess = $Config.apps
 if ($targetApp) {
-    if ($isSkillsTarget) {
+    if ($isSkillsTarget -or $isPluginsTarget) {
         $AppsToProcess = @()
     } else {
         $AppsToProcess = $Config.apps | Where-Object { $_.name -ieq $targetApp }
         if (-not $AppsToProcess) {
-            $available = @($Config.apps.name) + @('skills')
+            $available = @($Config.apps.name) + @('skills') + @('plugins')
             Write-Badge "ERROR" Red "Target '$targetApp' not found in sync.config.json. Available: $($available -join ', ')"
             exit 1
         }
@@ -480,6 +526,24 @@ switch ($Action) {
                     Status    = $statusText
                     RepoPath  = "$skillsRepoBase/$skillName"
                     LocalPath = $localSkillPath
+                }
+            }
+        }
+
+        if ($PluginsToProcess.Count -gt 0) {
+            $pluginsRepoBase = if ($Config.pluginsRepoDir) { $Config.pluginsRepoDir } else { "configs\plugins" }
+            $pluginsBase = if ($Config.pluginsTargetDir) { $Config.pluginsTargetDir } else { "%USERPROFILE%\.gemini\config\plugins" }
+            foreach ($pluginName in $PluginsToProcess) {
+                $repoPluginPath = Join-Path $ScriptDir "$pluginsRepoBase\$pluginName"
+                $localPluginPath = Resolve-DynamicPath "$pluginsBase\$pluginName"
+                $statusText = Compare-DirectorySyncState -RepoDirPath $repoPluginPath -LocalDirPath $localPluginPath
+
+                $results += [PSCustomObject]@{
+                    App       = "Plugin"
+                    File      = $pluginName
+                    Status    = $statusText
+                    RepoPath  = "$pluginsRepoBase/$pluginName"
+                    LocalPath = $localPluginPath
                 }
             }
         }
@@ -621,6 +685,42 @@ switch ($Action) {
             }
         }
 
+        if ($PluginsToProcess.Count -gt 0) {
+            Write-Host "`n[Antigravity Plugins]" -ForegroundColor Yellow
+            $pluginsRepoBase = if ($Config.pluginsRepoDir) { $Config.pluginsRepoDir } else { "configs\plugins" }
+            $pluginsBase = if ($Config.pluginsTargetDir) { $Config.pluginsTargetDir } else { "%USERPROFILE%\.gemini\config\plugins" }
+            foreach ($pluginName in $PluginsToProcess) {
+                $repoPluginPath = Join-Path $ScriptDir "$pluginsRepoBase\$pluginName"
+                $localPluginPath = Resolve-DynamicPath "$pluginsBase\$pluginName"
+
+                if (-not (Test-PathSafe $repoPluginPath -PathType Container)) {
+                    Write-Badge "WARN" Yellow "Repo plugin directory missing: $pluginsRepoBase/$pluginName"
+                    continue
+                }
+
+                $state = Compare-DirectorySyncState -RepoDirPath $repoPluginPath -LocalDirPath $localPluginPath
+                if (-not $Force -and $state -eq "In Sync") {
+                    Write-Badge "OK" DarkGray "Already in sync: $pluginName ($localPluginPath)"
+                    continue
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would deploy $pluginsRepoBase/$pluginName -> $localPluginPath"
+                    continue
+                }
+
+                if ((Test-PathSafe $localPluginPath -PathType Container) -and -not $NoBackup) {
+                    $pluginBackup = Join-Path $backupDir "plugins\$pluginName"
+                    Copy-DirectorySafe -SourcePath $localPluginPath -DestinationPath $pluginBackup
+                    Write-Badge "BACKUP" DarkCyan "Backed up prior plugin to: .backups\$timestamp\plugins\$pluginName"
+                }
+
+                Copy-DirectorySafe -SourcePath $repoPluginPath -DestinationPath $localPluginPath
+                Write-Badge "APPLIED" Green "$pluginsRepoBase/$pluginName -> $localPluginPath"
+                $appliedCount++
+            }
+        }
+
         # Handle VS Code extensions install if requested
         $extFile = Join-Path $ScriptDir "configs\vscode\extensions.txt"
         if ($SyncExtensions -and (Test-PathSafe $extFile -PathType Leaf)) {
@@ -754,6 +854,36 @@ switch ($Action) {
             }
         }
 
+        if ($PluginsToProcess.Count -gt 0) {
+            Write-Host "`n[Antigravity Plugins]" -ForegroundColor Yellow
+            $pluginsRepoBase = if ($Config.pluginsRepoDir) { $Config.pluginsRepoDir } else { "configs\plugins" }
+            $pluginsBase = if ($Config.pluginsTargetDir) { $Config.pluginsTargetDir } else { "%USERPROFILE%\.gemini\config\plugins" }
+            foreach ($pluginName in $PluginsToProcess) {
+                $repoPluginPath = Join-Path $ScriptDir "$pluginsRepoBase\$pluginName"
+                $localPluginPath = Resolve-DynamicPath "$pluginsBase\$pluginName"
+
+                if (-not (Test-PathSafe $localPluginPath -PathType Container)) {
+                    Write-Badge "MISSING" DarkYellow "Local plugin directory missing: $localPluginPath"
+                    continue
+                }
+
+                $state = Compare-DirectorySyncState -RepoDirPath $repoPluginPath -LocalDirPath $localPluginPath
+                if (-not $Force -and $state -eq "In Sync") {
+                    Write-Badge "OK" DarkGray "Already in sync: $pluginName ($localPluginPath)"
+                    continue
+                }
+
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would export $localPluginPath -> $pluginsRepoBase/$pluginName"
+                    continue
+                }
+
+                Copy-DirectorySafe -SourcePath $localPluginPath -DestinationPath $repoPluginPath
+                Write-Badge "EXPORTED" Green "$localPluginPath -> $pluginsRepoBase/$pluginName"
+                $exportedCount++
+            }
+        }
+
         # Keep winget-packages.json synchronized with sync.config.json
         if (-not $targetApp) {
             if (Sync-WingetManifest) {
@@ -851,6 +981,33 @@ switch ($Action) {
                         $localLines = Get-Content -LiteralPath $localFullPath
                         $repoLines = Get-Content -LiteralPath $repoFullPath
                         Compare-Object -ReferenceObject $localLines -DifferenceObject $repoLines | Format-Table -AutoSize
+                    }
+                }
+            }
+        }
+
+        if ($PluginsToProcess.Count -gt 0) {
+            $pluginsRepoBase = if ($Config.pluginsRepoDir) { $Config.pluginsRepoDir } else { "configs\plugins" }
+            $pluginsBase = if ($Config.pluginsTargetDir) { $Config.pluginsTargetDir } else { "%USERPROFILE%\.gemini\config\plugins" }
+            foreach ($pluginName in $PluginsToProcess) {
+                $repoPluginPath = Join-Path $ScriptDir "$pluginsRepoBase\$pluginName"
+                $localPluginPath = Resolve-DynamicPath "$pluginsBase\$pluginName"
+
+                if ((Test-PathSafe $repoPluginPath -PathType Container) -and (Test-PathSafe $localPluginPath -PathType Container)) {
+                    $state = Compare-DirectorySyncState -RepoDirPath $repoPluginPath -LocalDirPath $localPluginPath
+                    if ($state -ne "In Sync") {
+                        $diffCount++
+                        Write-Host "`n--- Diff for Plugin: $pluginName ($localPluginPath vs $pluginsRepoBase/$pluginName) ---" -ForegroundColor Magenta
+                        if ($hasGit) {
+                            $prevEAP = $ErrorActionPreference
+                            $ErrorActionPreference = 'Continue'
+                            try {
+                                git diff --no-index --color $localPluginPath $repoPluginPath
+                                $global:LASTEXITCODE = 0
+                            } finally {
+                                $ErrorActionPreference = $prevEAP
+                            }
+                        }
                     }
                 }
             }

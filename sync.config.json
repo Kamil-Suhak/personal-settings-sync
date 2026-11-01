@@ -135,5 +135,10 @@
     "repo-intro",
     "ask",
     "ux"
+  ],
+  "pluginsRepoDir": "configs/plugins",
+  "pluginsTargetDir": "%USERPROFILE%/.gemini/config/plugins",
+  "plugins": [
+    "egm"
   ]
 }

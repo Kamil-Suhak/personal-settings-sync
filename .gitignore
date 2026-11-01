@@ -6,3 +6,4 @@
 *.local.ps1
 .gitconfig.local
 .project-roots
+configs/plugins/*/.git

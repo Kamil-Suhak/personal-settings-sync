@@ -9,7 +9,7 @@ Currently configured for:
 - **PowerShell**: Unified `$PROFILE` across both PowerShell 7+ and Windows PowerShell 5.1 — see [POWERSHELL.md](POWERSHELL.md) for command cheatsheet
 - **Windows Terminal**: `settings.json` (profiles, keybindings, JetBrains Mono font, color schemes)
 - **Git**: `.gitconfig.shared` (universal settings, LF line ending hardening, LFS filter, zdiff3 merge, rebase autoStash)
-- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`) and curated skills (`developer-profile`, `repo-intro`, `ask`, `ux`)
+- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`), curated skills (`developer-profile`, `repo-intro`, `ask`, `ux`), and Antigravity plugins (`egm` - Elephant-Goldfish Model)
 - Extensible to any application via `sync.config.json`
 
 > [!CAUTION]
@@ -36,11 +36,14 @@ personal-settings-sync/
 │   ├── gemini/
 │   │   ├── AGENTS.md                           # Universal AI agent rules & guidelines
 │   │   ├── GEMINI.md                           # Antigravity/Gemini agent rules
-│   │   ├── skills.json                         # Global skills discovery manifest (~/.gemini/config/skills.json)
-│   │   └── skills/                             # Curated global skills
-│   │       ├── developer-profile/              # Developer patterns & philosophy
-│   │       ├── repo-intro/                     # Repo onboarding protocol
-│   │       └── ask/                            # Read-only architectural inquiry protocol (/ask)
+│   │   └── skills.json                         # Global skills discovery manifest (~/.gemini/config/skills.json)
+│   ├── skills/                                 # Agent-agnostic skills (~/.agents/skills)
+│   │   ├── developer-profile/                  # Developer patterns & philosophy
+│   │   ├── repo-intro/                         # Repo onboarding protocol
+│   │   ├── ask/                                # Read-only architectural inquiry protocol (/ask)
+│   │   └── ux/                                 # UX & visual craft protocol (/ux)
+│   ├── plugins/                                # Antigravity plugins (~/.gemini/config/plugins)
+│   │   └── egm/                                # Elephant-Goldfish Model (Google) plugin
 │   ├── vscode/
 │   │   ├── settings.json                       # VS Code user settings
 │   │   ├── keybindings.json                    # (Optional) Keybindings
