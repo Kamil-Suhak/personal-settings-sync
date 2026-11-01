@@ -82,6 +82,8 @@ rev              # Opens current folder in Windows Explorer
 | `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
 | `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Uses **git grep acceleration** inside repositories (blazing fast in monoliths), falls back to .NET walker outside. Filters piped input (`docker ps \| findstr auth`) or searches codebase files with `-l`, `-v`, `-c`. |
 | `brave` | `[<arguments>...]` | Launches Brave Browser with optional arguments (URLs, flags like `--incognito`, `--app=...`, profiles). Supports piped URLs (`git remote get-url origin \| brave`). Non-blocking. |
+| `copy` | `[<value>]` | Alias for `Set-Clipboard`. Copies input, arguments, or pipeline data directly to the clipboard (`"token" \| copy`). |
+| `paste` | *none* | Alias for `Get-Clipboard`. Retrieves and outputs text from the clipboard (`paste \| findstr api`). |
 
 ### Development Examples:
 ```powershell
@@ -90,6 +92,10 @@ find user -o          # Searches for files matching 'user' and opens choice in V
 findstr "TODO"        # Fast text search across codebase files (git grep in repos)
 findstr "TODO" -l     # Only print filenames containing matches
 docker ps | findstr auth  # Filters pipeline output for 'auth'
+"hello world" | copy  # Copies text to clipboard
+copy (git status -s)  # Copies git status output to clipboard
+paste                 # Outputs clipboard contents
+paste | findstr auth  # Pipes clipboard text into search filter
 brave                 # Launches Brave Browser
 brave https://github.com  # Opens URL in Brave
 brave --incognito     # Opens Brave in incognito mode

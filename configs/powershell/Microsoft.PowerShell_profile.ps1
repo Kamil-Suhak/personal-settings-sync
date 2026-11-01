@@ -1173,6 +1173,10 @@ function brave {
         Start-Process -FilePath $bravePath
     }
 }
+
+# Clipboard shortcuts
+Set-Alias -Name copy -Value Set-Clipboard -Option AllScope -Force
+Set-Alias -Name paste -Value Get-Clipboard -Option AllScope -Force
 #endregion
 
 #region 5. PSReadLine & Predictive IntelliSense
