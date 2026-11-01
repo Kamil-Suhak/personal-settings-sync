@@ -8,12 +8,12 @@ Currently configured for:
 - **VS Code**: `settings.json`, `keybindings.json` (and optional extension list)
 - **PowerShell**: Unified `$PROFILE` across both PowerShell 7+ and Windows PowerShell 5.1 — see [POWERSHELL.md](POWERSHELL.md) for command cheatsheet
 - **Windows Terminal**: `settings.json` (profiles, keybindings, JetBrains Mono font, color schemes)
-- **Git**: `.gitconfig` (user identity, LFS filter, editor, default branch)
+- **Git**: `.gitconfig.shared` (universal settings, LF line ending hardening, LFS filter, zdiff3 merge, rebase autoStash)
 - **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`) and curated skills (`developer-profile`, `repo-intro`, `ask`)
 - Extensible to any application via `sync.config.json`
 
 > [!CAUTION]
-> **Public Repository Security Notice**: Never commit sensitive secrets, private credentials, or API keys (such as `id_rsa`, `.env`, tokens, or personal passwords) to this repository. Machine-specific credentials and custom aliases should always be stored in local, uncommitted files (`~/.gitconfig.local`, `~/.project-roots`, and `.profile.local.ps1`).
+> **Public Repository Security Notice**: Never commit sensitive secrets, private credentials, or API keys (such as `id_rsa`, `.env`, tokens, or personal passwords) to this repository. Machine-specific credentials and custom aliases should always be stored in local, uncommitted files (`~/.gitconfig`, `~/.project-roots`, and `.profile.local.ps1`). Git uses an **Inverted Include Architecture**: this repo synchronizes `~/.gitconfig.shared`, while your machine's root `~/.gitconfig` includes it and securely stores local credentials (e.g. GitHub CLI `gh auth`) and machine identities.
 
 ---
 
@@ -50,7 +50,7 @@ personal-settings-sync/
 │   ├── terminal/
 │   │   └── settings.json                       # Windows Terminal settings
 │   └── git/
-│       └── .gitconfig                          # Global Git configuration (includes ~/.gitconfig.local)
+│       └── .gitconfig.shared                   # Universal Git configuration (included by ~/.gitconfig)
 ├── scripts/
 │   └── setup-windows.ps1                       # Windows dev tweaks, font installer & identity setup
 ├── .backups/                                   # Auto-generated prior backups (keeps latest 10)

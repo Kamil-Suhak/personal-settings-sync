@@ -96,11 +96,11 @@
     {
       "name": "git",
       "displayName": "Git",
-      "description": "Global Git configuration",
+      "description": "Global Git shared configuration (included by ~/.gitconfig)",
       "files": [
         {
-          "repoPath": "configs/git/.gitconfig",
-          "localPath": "%USERPROFILE%/.gitconfig",
+          "repoPath": "configs/git/.gitconfig.shared",
+          "localPath": "%USERPROFILE%/.gitconfig.shared",
           "required": true
         }
       ]

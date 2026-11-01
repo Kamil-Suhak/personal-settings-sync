@@ -157,39 +157,80 @@ function Install-JetBrainsMonoFont {
 }
 
 function Configure-GitUserSafe {
-    $localGitConfig = Join-Path $HOME ".gitconfig.local"
-    $hasLocalConfig = Test-Path -LiteralPath $localGitConfig
-    $currentEmail = if ($hasLocalConfig) {
-        (& git config --file $localGitConfig user.email 2>$null)
+    $globalGitConfig = Join-Path $HOME ".gitconfig"
+    $sharedInclude = "~/.gitconfig.shared"
+
+    if (-not (Test-Path -LiteralPath $globalGitConfig)) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would create ~/.gitconfig with include for $sharedInclude"
+        } else {
+            [System.IO.File]::WriteAllText($globalGitConfig, "[include]`r`n`tpath = $sharedInclude`r`n", [System.Text.Encoding]::UTF8)
+            Write-Badge "APPLIED" Green "Created ~/.gitconfig with [include] path = $sharedInclude"
+        }
     } else {
-        (& git config --global user.email 2>$null)
+        $existingIncludes = @(& git config --file $globalGitConfig --get-all include.path 2>$null)
+        if ($existingIncludes -notcontains $sharedInclude) {
+            if ($WhatIf) {
+                Write-Badge "WHAT-IF" Cyan "Would add [include] path = $sharedInclude to ~/.gitconfig"
+            } else {
+                $content = Get-Content -LiteralPath $globalGitConfig -Raw
+                $newInclude = "[include]`r`n`tpath = $sharedInclude`r`n"
+                [System.IO.File]::WriteAllText($globalGitConfig, $newInclude + $content, [System.Text.Encoding]::UTF8)
+                Write-Badge "APPLIED" Green "Added [include] path = $sharedInclude to ~/.gitconfig"
+            }
+        }
+    }
+
+    # Migrate legacy ~/.gitconfig.local if present
+    $legacyConfig = Join-Path $HOME ".gitconfig.local"
+    if (Test-Path -LiteralPath $legacyConfig) {
+        $legacyName = (& git config --file $legacyConfig user.name 2>$null)
+        $legacyEmail = (& git config --file $legacyConfig user.email 2>$null)
+        $currentName = (& git config --file $globalGitConfig user.name 2>$null)
+        $currentEmail = (& git config --file $globalGitConfig user.email 2>$null)
+
+        if (-not $WhatIf) {
+            if (-not $currentName -and $legacyName) {
+                & git config --file $globalGitConfig user.name $legacyName
+            }
+            if (-not $currentEmail -and $legacyEmail) {
+                & git config --file $globalGitConfig user.email $legacyEmail
+            }
+            & git config --file $globalGitConfig --unset include.path "^~/\.gitconfig\.local$" 2>$null
+        }
+    }
+
+    $currentEmail = if (Test-Path -LiteralPath $globalGitConfig) {
+        (& git config --file $globalGitConfig user.email 2>$null)
+    } else {
+        $null
     }
 
     if (-not $currentEmail -or $Force) {
         if ($WhatIf) {
-            Write-Badge "WHAT-IF" Cyan "Would prompt for Git user.name and user.email to store in ~/.gitconfig.local"
+            Write-Badge "WHAT-IF" Cyan "Would prompt for Git user.name and user.email to store in ~/.gitconfig"
             return
         }
 
         if ([Environment]::UserInteractive) {
             Write-Host "`n=== Git Identity Setup (Local Only) ===" -ForegroundColor Cyan
-            Write-Host "Your identity is stored in ~/.gitconfig.local and never committed to git." -ForegroundColor DarkGray
+            Write-Host "Your identity is stored in ~/.gitconfig and never committed to git." -ForegroundColor DarkGray
             $namePrompt = Read-Host "Enter Git user name (e.g. Your Name)"
             $emailPrompt = Read-Host "Enter Git user email address"
 
             if ($namePrompt) {
-                & git config --file $localGitConfig user.name $namePrompt
+                & git config --file $globalGitConfig user.name $namePrompt
             }
             if ($emailPrompt) {
-                & git config --file $localGitConfig user.email $emailPrompt
+                & git config --file $globalGitConfig user.email $emailPrompt
             }
 
             if ($namePrompt -or $emailPrompt) {
-                Write-Badge "APPLIED" Green "Saved Git identity to: $localGitConfig"
+                Write-Badge "APPLIED" Green "Saved Git identity to: $globalGitConfig"
             }
         }
     } else {
-        Write-Badge "OK" DarkGray "Git user identity already configured in ~/.gitconfig.local."
+        Write-Badge "OK" DarkGray "Git user identity already configured in ~/.gitconfig."
     }
 }
 

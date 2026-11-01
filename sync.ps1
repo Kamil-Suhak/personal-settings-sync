@@ -291,6 +291,72 @@ function Sync-WingetManifest {
     return $false
 }
 
+function Ensure-GitSharedInclude {
+    param([switch]$WhatIf)
+
+    $globalGitConfig = Resolve-DynamicPath "%USERPROFILE%\.gitconfig"
+    $sharedInclude = "~/.gitconfig.shared"
+
+    if (-not (Test-PathSafe $globalGitConfig -PathType Leaf)) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would create $globalGitConfig with [include] path = $sharedInclude"
+            return
+        }
+        $initialContent = "[include]`r`n`tpath = $sharedInclude`r`n"
+        [System.IO.File]::WriteAllText($globalGitConfig, $initialContent, [System.Text.Encoding]::UTF8)
+        Write-Badge "APPLIED" Green "Created $globalGitConfig with [include] path = $sharedInclude"
+        return
+    }
+
+    $existingIncludes = @(& git config --file $globalGitConfig --get-all include.path 2>$null)
+    $hasShared = $existingIncludes -contains $sharedInclude
+
+    # Migrate legacy ~/.gitconfig.local if present
+    $localGitConfig = Resolve-DynamicPath "%USERPROFILE%\.gitconfig.local"
+    if (Test-PathSafe $localGitConfig -PathType Leaf) {
+        $legacyName = (& git config --file $localGitConfig user.name 2>$null)
+        $legacyEmail = (& git config --file $localGitConfig user.email 2>$null)
+        $currentName = (& git config --file $globalGitConfig user.name 2>$null)
+        $currentEmail = (& git config --file $globalGitConfig user.email 2>$null)
+
+        if (-not $WhatIf) {
+            if (-not $currentName -and $legacyName) {
+                & git config --file $globalGitConfig user.name $legacyName
+            }
+            if (-not $currentEmail -and $legacyEmail) {
+                & git config --file $globalGitConfig user.email $legacyEmail
+            }
+            if ($existingIncludes -contains "~/.gitconfig.local") {
+                & git config --file $globalGitConfig --unset include.path "^~/\.gitconfig\.local$" 2>$null
+            }
+        }
+    }
+
+    # Clean legacy duplicate sections from ~/.gitconfig if present so ~/.gitconfig.shared takes effect
+    if (-not $WhatIf) {
+        $legacySections = @('filter.lfs', 'init')
+        foreach ($section in $legacySections) {
+            & git config --file $globalGitConfig --remove-section $section 2>$null
+        }
+        $existingCoreKeys = @(& git config --file $globalGitConfig --name-only --get-regexp '^core\.' 2>$null)
+        if ($existingCoreKeys.Count -gt 0 -and ($existingCoreKeys | Where-Object { $_ -notin @('core.editor', 'core.autocrlf', 'core.safecrlf') }).Count -eq 0) {
+            & git config --file $globalGitConfig --remove-section "core" 2>$null
+        }
+    }
+
+    if (-not $hasShared) {
+        if ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would add [include] path = $sharedInclude to $globalGitConfig"
+            return
+        }
+        $content = Get-Content -LiteralPath $globalGitConfig -Raw
+        $newInclude = "[include]`r`n`tpath = $sharedInclude`r`n"
+        $newContent = $newInclude + $content
+        [System.IO.File]::WriteAllText($globalGitConfig, $newContent, [System.Text.Encoding]::UTF8)
+        Write-Badge "APPLIED" Green "Added [include] path = $sharedInclude to $globalGitConfig"
+    }
+}
+
 if ($Action -eq 'help') {
     Get-Help $MyInvocation.MyCommand.Path -Detailed
     return
@@ -487,6 +553,10 @@ switch ($Action) {
                 Write-Badge "APPLIED" Green "$($file.repoPath) -> $localFullPath"
                 $appliedCount++
             }
+        }
+
+        if ($AppsToProcess.name -contains "git") {
+            Ensure-GitSharedInclude -WhatIf:$WhatIf
         }
 
         if ($SkillsToProcess.Count -gt 0) {

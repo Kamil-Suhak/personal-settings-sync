@@ -1,13 +1,21 @@
-[include]
-	path = ~/.gitconfig.local
 [core]
 	editor = code --wait
 	autocrlf = false
+	eol = lf
 	safecrlf = false
+	whitespace = cr-at-eol,trailing-space
+[apply]
+	whitespace = nowarn
+[init]
+	defaultBranch = main
+[rebase]
+	autoStash = true
+[merge]
+	conflictStyle = zdiff3
+[diff]
+	renames = true
 [filter "lfs"]
 	clean = git-lfs clean -- %f
 	smudge = git-lfs smudge -- %f
 	process = git-lfs filter-process
 	required = true
-[init]
-	defaultBranch = main
