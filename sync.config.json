@@ -134,7 +134,8 @@
     "developer-profile",
     "repo-intro",
     "ask",
-    "ux"
+    "ux",
+    "readme"
   ],
   "pluginsRepoDir": "configs/plugins",
   "pluginsTargetDir": "%USERPROFILE%/.gemini/config/plugins",
