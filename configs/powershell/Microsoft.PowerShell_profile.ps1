@@ -1128,6 +1128,51 @@ function findstr {
         }
     }
 }
+
+<#
+.SYNOPSIS
+Launches Brave Browser with optional arguments (URLs, flags, incognito, profiles). Supports piped URLs.
+#>
+function brave {
+    $bravePath = if ($global:__brave_path -and (Test-Path -LiteralPath $global:__brave_path)) {
+        $global:__brave_path
+    } else {
+        $candidates = @(
+            (Get-Command brave.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+            ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe' -ErrorAction SilentlyContinue).'(default)'),
+            ((Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe' -ErrorAction SilentlyContinue).'(default)'),
+            "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application\brave.exe",
+            "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe"
+        )
+        $found = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
+        if ($found) { $global:__brave_path = $found }
+        $found
+    }
+
+    if (-not $bravePath) {
+        Write-Host "Brave Browser executable not found. Install it via 'winget install Brave.Brave' or .\sync.ps1 apps." -ForegroundColor Red
+        return
+    }
+
+    $passedArgs = [System.Collections.Generic.List[string]]::new()
+    if ($args) {
+        foreach ($a in $args) { $passedArgs.Add([string]$a) }
+    }
+    if ($null -ne $input) {
+        foreach ($item in $input) {
+            if ($null -ne $item -and [string]$item -match '\S') {
+                $passedArgs.Add([string]$item)
+            }
+        }
+    }
+
+    if ($passedArgs.Count -gt 0) {
+        Start-Process -FilePath $bravePath -ArgumentList $passedArgs
+    } else {
+        Start-Process -FilePath $bravePath
+    }
+}
 #endregion
 
 #region 5. PSReadLine & Predictive IntelliSense

@@ -81,6 +81,7 @@ rev              # Opens current folder in Windows Explorer
 | `which` | `<command> [-h\|--help]`<br>`which profile [-h]` | Locates commands. By default, prints the path for an application or the profile path for a custom function. With `-h`, displays path + manual/help for an application, or path + description for a custom function. Run `which profile` to get the profile path, or `which profile -h` to list all custom profile functions and their descriptions. |
 | `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
 | `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Uses **git grep acceleration** inside repositories (blazing fast in monoliths), falls back to .NET walker outside. Filters piped input (`docker ps \| findstr auth`) or searches codebase files with `-l`, `-v`, `-c`. |
+| `brave` | `[<arguments>...]` | Launches Brave Browser with optional arguments (URLs, flags like `--incognito`, `--app=...`, profiles). Supports piped URLs (`git remote get-url origin \| brave`). Non-blocking. |
 
 ### Development Examples:
 ```powershell
@@ -89,15 +90,16 @@ find user -o          # Searches for files matching 'user' and opens choice in V
 findstr "TODO"        # Fast text search across codebase files (git grep in repos)
 findstr "TODO" -l     # Only print filenames containing matches
 docker ps | findstr auth  # Filters pipeline output for 'auth'
+brave                 # Launches Brave Browser
+brave https://github.com  # Opens URL in Brave
+brave --incognito     # Opens Brave in incognito mode
+git remote get-url origin | brave # Opens current repo remote URL in Brave
 sudo winget upgrade   # Runs single command elevated
 sudo !!               # Re-runs previous command as Administrator
 which python          # Default: prints path C:\Python314\python.exe
 which commit          # Default: prints profile path where function is defined
 which git -h          # Help mode: prints path, version, and manual/help
 which commit -h       # Help mode: prints profile path and description
-which profile         # Prints profile path
-which profile -h      # Lists all custom profile functions and their short descriptions
-```
 which profile         # Prints profile path
 which profile -h      # Lists all custom profile functions and their short descriptions
 ```
