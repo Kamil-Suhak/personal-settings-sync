@@ -84,6 +84,8 @@ rev              # Opens current folder in Windows Explorer
 | `brave` | `[<arguments>...]` | Launches Brave Browser with optional arguments (URLs, flags like `--incognito`, `--app=...`, profiles). Supports piped URLs (`git remote get-url origin \| brave`). Non-blocking. |
 | `copy` | `[<value>]` | Alias for `Set-Clipboard`. Copies input, arguments, or pipeline data directly to the clipboard (`"token" \| copy`). |
 | `paste` | *none* | Alias for `Get-Clipboard`. Retrieves and outputs text from the clipboard (`paste \| findstr api`). |
+| `passbolt` | `[<arguments>...]` | Starts the Passbolt password manager in `~/passbolt` via `docker compose start`. |
+| `passbolt-stop` | `[<arguments>...]` | Stops the Passbolt password manager in `~/passbolt` via `docker compose stop`. |
 
 ### Development Examples:
 ```powershell
@@ -96,6 +98,8 @@ docker ps | findstr auth  # Filters pipeline output for 'auth'
 copy (git status -s)  # Copies git status output to clipboard
 paste                 # Outputs clipboard contents
 paste | findstr auth  # Pipes clipboard text into search filter
+passbolt              # Starts Passbolt containers (~/passbolt)
+passbolt-stop         # Stops Passbolt containers
 brave                 # Launches Brave Browser
 brave https://github.com  # Opens URL in Brave
 brave --incognito     # Opens Brave in incognito mode

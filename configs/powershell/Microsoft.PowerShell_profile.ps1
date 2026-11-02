@@ -1177,6 +1177,66 @@ function brave {
 # Clipboard shortcuts
 Set-Alias -Name copy -Value Set-Clipboard -Option AllScope -Force
 Set-Alias -Name paste -Value Get-Clipboard -Option AllScope -Force
+
+<#
+.SYNOPSIS
+Starts the Passbolt password manager via Docker Compose (in ~/passbolt).
+#>
+function passbolt {
+    $passboltDir = Join-Path $HOME "passbolt"
+    if (-not (Test-Path -LiteralPath $passboltDir)) {
+        Write-Host "Passbolt directory not found at: $passboltDir" -ForegroundColor Red
+        return
+    }
+
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        $dockerBin = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
+        if (Test-Path -LiteralPath "$dockerBin\docker.exe") {
+            $env:Path = "$dockerBin;$env:Path"
+        } else {
+            Write-Host "Docker command not found in PATH." -ForegroundColor Red
+            return
+        }
+    }
+
+    Push-Location $passboltDir
+    try {
+        Write-Host "Starting Passbolt (docker compose start)..." -ForegroundColor Cyan
+        docker compose start @args
+    } finally {
+        Pop-Location
+    }
+}
+
+<#
+.SYNOPSIS
+Stops the Passbolt password manager via Docker Compose (in ~/passbolt).
+#>
+function passbolt-stop {
+    $passboltDir = Join-Path $HOME "passbolt"
+    if (-not (Test-Path -LiteralPath $passboltDir)) {
+        Write-Host "Passbolt directory not found at: $passboltDir" -ForegroundColor Red
+        return
+    }
+
+    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        $dockerBin = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
+        if (Test-Path -LiteralPath "$dockerBin\docker.exe") {
+            $env:Path = "$dockerBin;$env:Path"
+        } else {
+            Write-Host "Docker command not found in PATH." -ForegroundColor Red
+            return
+        }
+    }
+
+    Push-Location $passboltDir
+    try {
+        Write-Host "Stopping Passbolt (docker compose stop)..." -ForegroundColor Cyan
+        docker compose stop @args
+    } finally {
+        Pop-Location
+    }
+}
 #endregion
 
 #region 5. PSReadLine & Predictive IntelliSense
