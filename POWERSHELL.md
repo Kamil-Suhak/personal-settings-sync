@@ -12,7 +12,7 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 | `commit` | `<message>` | Stages all files and creates a commit: `git add -A; git commit -m "<message>"`. |
 | `amend` | `[<message>]` | Stages all local changes and amends the latest commit without editing message (`git commit --amend --no-edit`). If `<message>` is provided, updates commit message. |
 | `catchup` | `[<branch>] [-r\|--rebase] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **merges into current branch**. Use `-r` or `--rebase` for a rebase with autostash, or `-c` / `--check` to preview incoming commits without applying. |
-| `sync` | `[-r\|--rebase]` | Safely syncs current branch: pulls with **merge** (or `-r` for rebase with autostash), then pushes. |
+| `gsync` | `[-r\|--rebase]` | Safely syncs current git branch: pulls with **merge** (or `-r` for rebase with autostash), then pushes. |
 | `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it (`git switch`). If it doesn't exist, **prompts to create it** (`[Y/n]`) with `git switch -c`. Pass `-n` or `-new` to create directly without prompting. |
 | `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly (`git switch -c`). |
 | `main` | *none* | Jumps directly back to `main` via `git switch` (automatically falls back to `master` if repo uses master). |
@@ -86,6 +86,7 @@ rev              # Opens current folder in Windows Explorer
 | `paste` | *none* | Alias for `Get-Clipboard`. Retrieves and outputs text from the clipboard (`paste \| findstr api`). |
 | `passbolt` | `[<arguments>...]` | Starts the Passbolt password manager in `~/passbolt` via `docker compose start`. |
 | `passbolt-stop` | `[<arguments>...]` | Stops the Passbolt password manager in `~/passbolt` via `docker compose stop`. |
+| `pss` | `[<arguments>...]` | Personal Settings Sync CLI runner (`pss.ps1`). Executes workspace and sync operations from any directory. |
 
 ### Development Examples:
 ```powershell

@@ -4,6 +4,9 @@
 # Machine-local overrides & uncommitted credentials
 *.local
 *.local.ps1
+.workspace.local
+.workspace.private.json
+*.private.json
 .gitconfig.local
 .project-roots
 configs/plugins/*/.git

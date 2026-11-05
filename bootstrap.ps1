@@ -74,16 +74,16 @@ try {
 }
 
 # 2. Apply Windows Developer Tweaks, Font, Git Identity, & Project Roots
-$syncScript = Join-Path $TargetDir "sync.ps1"
-if (-not (Test-Path -LiteralPath $syncScript)) {
-    Write-Error "Could not locate sync.ps1 in $TargetDir"
+$pssScript = Join-Path $TargetDir "pss.ps1"
+if (-not (Test-Path -LiteralPath $pssScript)) {
+    Write-Error "Could not locate pss.ps1 in $TargetDir"
     exit 1
 }
 
 if (-not $SkipSetup) {
     Write-Step "Configuring Windows developer preferences, font & local identity..."
     try {
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File $syncScript setup
+        pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript setup
     } catch {
         Write-Warn "Setup script encountered an issue: $($_.Exception.Message)"
     }
@@ -93,7 +93,7 @@ if (-not $SkipSetup) {
 if (-not $SkipApps) {
     Write-Step "Installing applications via Winget..."
     try {
-        powershell.exe -NoProfile -ExecutionPolicy Bypass -File $syncScript apps -Install
+        pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript apps install
     } catch {
         Write-Warn "Winget application installation encountered an issue: $($_.Exception.Message)"
     }
@@ -102,7 +102,7 @@ if (-not $SkipApps) {
 # 4. Deploy Settings
 Write-Step "Deploying configuration files to machine..."
 try {
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File $syncScript apply
+    pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript apply
 } catch {
     Write-Warn "Settings application encountered an issue: $($_.Exception.Message)"
 }

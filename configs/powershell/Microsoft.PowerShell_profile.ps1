@@ -167,9 +167,9 @@ function catchup {
 
 <#
 .SYNOPSIS
-Safely syncs current branch with remote: pulls with merge (or -r for rebase), then pushes.
+Safely syncs current git branch with remote: pulls with merge (or -r for rebase), then pushes.
 #>
-function sync {
+function gsync {
     param([Alias("r")][switch]$Rebase)
     if ($args -contains '--rebase' -or $args -contains '-r') { $Rebase = $true }
 
@@ -1235,6 +1235,19 @@ function passbolt-stop {
         docker compose stop @args
     } finally {
         Pop-Location
+    }
+}
+
+<#
+.SYNOPSIS
+Personal Settings Sync CLI runner (pss.ps1).
+#>
+function pss {
+    $pssScript = Join-Path $HOME "Coding\Projects\personal-settings-sync\pss.ps1"
+    if (Test-Path -LiteralPath $pssScript) {
+        & $pssScript @args
+    } else {
+        Write-Host "pss.ps1 not found at: $pssScript" -ForegroundColor Red
     }
 }
 #endregion

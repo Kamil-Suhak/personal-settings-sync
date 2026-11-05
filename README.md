@@ -1,30 +1,20 @@
-# Personal Settings Sync
+# Personal Settings Sync (PSS)
 
-A lightweight, zero-dependency automation system to synchronize and manage personal developer settings, application configurations, and installed software across multiple machines.
+A modular, context-aware automation system to synchronize and manage personal developer settings, application configurations, and installed software across multiple machines using **Workspaces** (`personal`, `work`, `school`).
 
 Currently configured for:
-- **Applications (Winget)**: VS Code, Brave Browser, Spotify, Git, GitHub CLI, Node.js, Python (Latest)
-- **Developer Fonts**: JetBrains Mono (automated download & user-scope installation, no Admin required)
-- **VS Code**: `settings.json`, `keybindings.json` (and optional extension list)
-- **PowerShell**: Unified `$PROFILE` across both PowerShell 7+ and Windows PowerShell 5.1 — see [POWERSHELL.md](POWERSHELL.md) for command cheatsheet
-- **Windows Terminal**: `settings.json` (profiles, keybindings, JetBrains Mono font, color schemes)
-- **Git**: `.gitconfig.shared` (universal settings, LF line ending hardening, LFS filter, zdiff3 merge, rebase autoStash)
-- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`), curated skills (`developer-profile`, `repo-intro`, `ask`, `ux`, `readme`), and Antigravity plugins (`egm` - Elephant-Goldfish Model)
-- Extensible to any application via `sync.config.json`
+- **Modular Workspaces**: Separate machine profiles (e.g. personal desktop vs. company laptop) sharing a common baseline.
+- **Applications (Winget)**: VS Code, Brave Browser, Spotify, Git, GitHub CLI, Node.js, Python (Latest).
+- **Developer Fonts**: JetBrains Mono (automated download & user-scope installation, no Admin required).
+- **VS Code**: Layered `settings.shared.json` + workspace `settings.json` (recursive deep-merge), `keybindings.json`, and extension lists.
+- **PowerShell**: Unified `$PROFILE` with git shortcuts (`gsync`, `commit`, `amend`) and `pss` CLI runner — see [POWERSHELL.md](POWERSHELL.md) for cheatsheet.
+- **Windows Terminal**: Layered `settings.shared.json` + workspace overrides (profiles, keybindings, JetBrains Mono font, color schemes).
+- **Git**: Global `.gitconfig.shared` combined with workspace-scoped identities (`~/.gitconfig.workspace`).
+- **AI Coding Agents**: Global rules (`AGENTS.md`, `GEMINI.md`), curated skills (`developer-profile`, `repo-intro`, `ask`, `ux`, `readme`), and Antigravity plugins (`egm` - Elephant-Goldfish Model).
+- Extensible to any application via `sync.config.json`.
 
 > [!CAUTION]
-> **Public Repository Security Notice**: Never commit sensitive secrets, private credentials, or API keys (such as `id_rsa`, `.env`, tokens, or personal passwords) to this repository. Machine-specific credentials and custom aliases should always be stored in local, uncommitted files (`~/.gitconfig`, `~/.project-roots`, and `.profile.local.ps1`). Git uses an **Inverted Include Architecture**: this repo synchronizes `~/.gitconfig.shared`, while your machine's root `~/.gitconfig` includes it and securely stores local credentials (e.g. GitHub CLI `gh auth`) and machine identities.
-
----
-
-## Reliable Settings Synchronization on Windows
-
-This repository uses **Copy-Based Synchronization with automated backups and diffing** as its single, dedicated sync mechanism:
-
-- **No Administrator or Developer Mode required**: Runs cleanly in standard user PowerShell sessions across all machines.
-- **Fail-safe with automated backups**: Timestamped backups are created in `.backups/` before any file is overwritten (retaining the 10 most recent backups).
-- **Atomic-save resilient**: Fully immune to editors (like VS Code) that sever symbolic links during atomic save operations.
-- **Auditability & control**: Inspect exact differences via `.\sync.ps1 diff` and verify status with `.\sync.ps1 status` before applying.
+> **Public Repository Security Notice**: Never commit sensitive secrets, private credentials, or enterprise tokens to this repository. Machine-specific credentials and custom aliases should always be stored in local, uncommitted files (`.workspace.local`, `.workspace.private.json`, `~/.gitconfig`, `~/.project-roots`, and `.profile.local.ps1`).
 
 ---
 
@@ -32,149 +22,116 @@ This repository uses **Copy-Based Synchronization with automated backups and dif
 
 ```text
 personal-settings-sync/
-├── configs/
-│   ├── gemini/
-│   │   ├── AGENTS.md                           # Universal AI agent rules & guidelines
-│   │   ├── GEMINI.md                           # Antigravity/Gemini agent rules
-│   │   └── skills.json                         # Global skills discovery manifest (~/.gemini/config/skills.json)
-│   ├── skills/                                 # Agent-agnostic skills (~/.agents/skills)
-│   │   ├── developer-profile/                  # Developer patterns & philosophy
-│   │   ├── repo-intro/                         # Repo onboarding protocol
-│   │   ├── ask/                                # Read-only architectural inquiry protocol (/ask)
-│   │   ├── ux/                                 # UX & visual craft protocol (/ux)
-│   │   └── readme/                             # Human-voiced README interview protocol (/readme)
-│   ├── plugins/                                # Antigravity plugins (~/.gemini/config/plugins)
-│   │   └── egm/                                # Elephant-Goldfish Model (Google) plugin
+├── pss.ps1                                    # Main unified PowerShell automation script
+├── sync.config.json                           # Declarative mapping of apps, workspaces & subsystems
+├── .workspace.local                           # Active workspace name for this machine (git-ignored)
+├── configs/                                   # Shared baseline configurations (all machines)
 │   ├── vscode/
-│   │   ├── settings.json                       # VS Code user settings
-│   │   ├── keybindings.json                    # (Optional) Keybindings
-│   │   └── extensions.txt                      # (Optional) Installed extensions list
+│   │   ├── settings.shared.json               # Shared VS Code settings baseline
+│   │   ├── keybindings.json                   # Shared keybindings
+│   │   └── extensions.txt                     # Installed extensions list
 │   ├── powershell/
-│   │   └── Microsoft.PowerShell_profile.ps1    # Unified profile for PowerShell 7+ & 5.1
+│   │   └── Microsoft.PowerShell_profile.ps1   # Core PowerShell profile (contains pss & gsync)
 │   ├── terminal/
-│   │   └── settings.json                       # Windows Terminal settings
-│   └── git/
-│       └── .gitconfig.shared                   # Universal Git configuration (included by ~/.gitconfig)
+│   │   └── settings.shared.json               # Shared Windows Terminal baseline
+│   ├── git/
+│   │   └── .gitconfig.shared                  # Universal Git configuration (included by ~/.gitconfig)
+│   ├── gemini/                                # AI agent rules (~/.gemini/)
+│   ├── skills/                                # Agent-agnostic skills (~/.agents/skills/)
+│   └── plugins/                               # Antigravity plugins (~/.gemini/config/plugins/)
+├── workspaces/                                # Context-specific workspace overrides
+│   ├── personal/
+│   │   ├── vscode/settings.json               # Personal VS Code overrides
+│   │   ├── powershell/profile.ps1             # Personal shell additions (~/.profile.local.ps1)
+│   │   └── git/.gitconfig                     # Personal user identity (~/.gitconfig.workspace)
+│   └── work/
+│       ├── vscode/settings.json               # Work-specific overrides (proxy, formatting)
+│       ├── powershell/profile.ps1             # Corporate VPN/proxy environment scripts
+│       └── git/.gitconfig                     # Corporate user identity (work email)
 ├── scripts/
-│   └── setup-windows.ps1                       # Windows dev tweaks, font installer & identity setup
-├── .backups/                                   # Auto-generated prior backups (keeps latest 10)
-├── sync.config.json                            # Declarative mapping of apps, fonts & repo files
-├── winget-packages.json                        # Auto-synced Winget import/export manifest
-├── sync.ps1                                    # Main PowerShell automation script
-├── bootstrap.ps1                               # 1-line remote web bootstrapper for new machines
-├── POWERSHELL.md                               # PowerShell profile command reference
+│   └── setup-windows.ps1                      # Windows dev tweaks, font installer & identity setup
+├── .backups/                                  # Auto-generated prior backups (keeps latest 10)
+├── winget-packages.json                       # Winget import/export manifest
+├── POWERSHELL.md                              # PowerShell profile command reference
 └── README.md
 ```
 
 ---
 
-## Complete New Machine Setup
-
-### Option A: 1-Line Remote Setup (No Git or GitHub Login Required)
-
-On a brand-new Windows PC, open Windows PowerShell (or Windows Terminal) and run:
-
-```powershell
-irm https://raw.githubusercontent.com/<YourUsername>/personal-settings-sync/main/bootstrap.ps1 | iex
-```
-
-*This automatically downloads the repository archive, applies Windows developer settings, installs the JetBrains Mono font, prompts for local Git identity and project directories, installs Winget apps, and deploys your configurations.*
-
-### Option B: Local Setup (If already cloned)
-
-```powershell
-# 1. Apply Windows developer tweaks & install JetBrains Mono font
-.\sync.ps1 setup
-
-# 2. Install all essential applications (and fonts) in one go
-.\sync.ps1 apps -Install
-
-# 3. Deploy your personal settings to the system
-.\sync.ps1 apply
-```
-
-*(Alternatively, use native Winget directly: `winget import -i winget-packages.json`)*
-
----
-
 ## Quick Start Workflows
 
-### 1. Application, Font & Software Management (Winget)
+Once cloned, you can run `.\pss.ps1` from the repository root, or simply type `pss` from any folder once your profile is loaded.
 
+### 1. Workspace Management
 ```powershell
-# View configured applications, package IDs, and fonts
-.\sync.ps1 apps
+# View all available workspaces (* marks active)
+pss workspace list
+
+# View current active workspace
+pss workspace current
+
+# Switch this machine to a workspace (persisted in .workspace.local)
+pss workspace use work
+
+# Create a new workspace context directory structure
+pss workspace new school
+```
+
+### 2. Inspecting Status & Differences
+```powershell
+# Compare machine settings against synthesized state (shared + active workspace)
+pss status
+
+# View property-level diff for VS Code
+pss diff -Include vscode
+
+# View diff for all modified subsystems
+pss diff
+```
+
+### 3. Deploying Settings (Repo $\rightarrow$ Machine)
+```powershell
+# Deploy all configurations
+pss apply
+
+# Fetch latest git commits first, then deploy
+pss apply -Pull
+
+# Deploy only specific subsystems
+pss apply -Include vscode,powershell
+
+# Exclude applications and skills
+pss apply -Exclude apps,skills
+
+# Preview changes without modifying disk
+pss apply -WhatIf
+```
+
+### 4. Harvesting Machine Changes (Machine $\rightarrow$ Repo)
+```powershell
+# Interactive export: prompts namespace by namespace to route changes to Shared or Workspace
+pss export
+
+# Non-interactive export routed strictly to active workspace
+pss export -Target Workspace
+
+# Export and push directly to GitHub
+pss export -Target Workspace -Push
+```
+
+### 5. Application & Font Management (Winget)
+```powershell
+# List configured Winget applications
+pss apps
 
 # Install all missing applications and JetBrains Mono font
-.\sync.ps1 apps -Install
+pss apps install
 
-# Download and install JetBrains Mono font standalone
-.\sync.ps1 fonts
+# Upgrade all installed software
+pss apps update
 
-# Upgrade all installed software to the latest versions
-.\sync.ps1 apps -Update
-```
-
-Configured packages in [`sync.config.json`](sync.config.json):
-- **Visual Studio Code** (`Microsoft.VisualStudioCode`)
-- **Brave Browser** (`Brave.Brave`)
-- **Spotify** (`Spotify.Spotify`)
-- **Git** (`Git.Git`)
-- **GitHub CLI** (`GitHub.cli`)
-- **Node.js (LTS)** (`OpenJS.NodeJS.LTS`)
-- **Python 3 (Latest)** (`Python.Latest` - dynamically resolves newest release)
-- **JetBrains Mono Font** (`JetBrains/JetBrainsMono` - automatically downloaded and installed to user fonts)
-
----
-
-### 2. Primary Workflow (Edit in Repo $\rightarrow$ Push $\rightarrow$ Apply Anywhere)
-1. Edit your settings directly inside the `configs/` directory.
-2. Commit and push your changes to GitHub:
-   ```powershell
-   git commit -am "Update VS Code font and PowerShell aliases"
-   git push
-   ```
-3. On another machine (or after pulling updates), run:
-   ```powershell
-   .\sync.ps1 apply -Pull
-   ```
-   *Fetches the latest commits from GitHub and overwrites your local machine settings with your updated repository configuration (automatically backing up the previous local versions first and keeping the 10 most recent backups).*
-
----
-
-### 3. Reverse Workflow (Machine Tweaks $\rightarrow$ Update Repo $\rightarrow$ Upload)
-If you made changes in your local app settings (e.g. inside VS Code settings UI) and want to save them back into the repository:
-```powershell
-.\sync.ps1 export
-```
-Or to harvest and commit/push in one command:
-```powershell
-.\sync.ps1 export -Push
-```
-*Copies the active machine files into `configs/`, synchronizes `winget-packages.json`, and commits/pushes to GitHub.*
-
----
-
-### 4. Inspect Status and Differences
-Check what's in sync or modified before applying:
-```powershell
-# View summary status table
-.\sync.ps1 status
-
-# View colored git diff between machine and repo versions
-.\sync.ps1 diff
-```
-
----
-
-### 5. VS Code Extensions Sync (Optional)
-To export your list of installed VS Code extensions to the repo:
-```powershell
-.\sync.ps1 export -SyncExtensions
-```
-To install all listed extensions on a new machine:
-```powershell
-.\sync.ps1 apply -SyncExtensions
+# Install developer font standalone
+pss fonts
 ```
 
 ---
@@ -183,51 +140,22 @@ To install all listed extensions on a new machine:
 
 | Command | Description |
 | :--- | :--- |
-| `.\sync.ps1 status` | Shows a table comparing repo vs local files (`In Sync`, `Repo Newer`, `Machine Newer`, `Missing`). |
-| `.\sync.ps1 apply` | Copies files from repo $\rightarrow$ machine (creates local backups in `.backups/`, retaining latest 10). |
-| `.\sync.ps1 apply -Pull` | Runs `git pull` first, then deploys repo settings to machine. |
-| `.\sync.ps1 apply -App vscode` | Applies settings only for a specific app (`vscode`, `powershell`, `terminal`, or `git`). |
-| `.\sync.ps1 apply -Force` | Forces overwriting local files even when hashes already match. |
-| `.\sync.ps1 apply -WhatIf` | Dry run: preview what files would be copied without touching anything. |
-| `.\sync.ps1 export` | Copies files from machine $\rightarrow$ repo and syncs `winget-packages.json`. |
-| `.\sync.ps1 export -Push` | Exports machine files $\rightarrow$ repo, then stages, commits, and pushes to remote if changed. |
-| `.\sync.ps1 diff` | Displays unified line-by-line diff for any files that differ. |
-| `.\sync.ps1 apps` | Lists all configured Winget packages, developer fonts, and available actions. |
-| `.\sync.ps1 apps -Install` | Installs all missing software via Winget and installs the JetBrains Mono font. |
-| `.\sync.ps1 apps -Update` | Upgrades all installed software to the latest versions via Winget. |
-| `.\sync.ps1 fonts` | Downloads and installs the JetBrains Mono font to the user font directory (no Admin required). |
-| `.\sync.ps1 setup` | Applies run-once Windows developer settings, Explorer tweaks, and installs JetBrains Mono font. |
-
----
-
-## Adding More Applications & Packages
-
-### Adding New Installed Software (Winget)
-To install another application on every machine, add an entry to the `packages` list in [`sync.config.json`](sync.config.json) (running `.\sync.ps1 export` will automatically update [`winget-packages.json`](winget-packages.json)):
-
-```json
-{
-  "id": "Discord.Discord",
-  "name": "Discord",
-  "category": "Social"
-}
-```
-
-### Adding New Configuration Files
-To sync settings for any other tool (e.g. SSH config, Cursor, Neovim), add an entry to `apps` in [`sync.config.json`](sync.config.json):
-
-```json
-{
-  "name": "ssh",
-  "displayName": "SSH Config",
-  "files": [
-    {
-      "repoPath": "configs/ssh/config",
-      "localPath": "%USERPROFILE%/.ssh/config",
-      "required": false
-    }
-  ]
-}
-```
-
-The script automatically expands `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%`, and `$DOCUMENTS` (which safely handles OneDrive Documents redirection).
+| `pss status` | Shows sync matrix across subsystems evaluated against active workspace synthesis. |
+| `pss apply` | Deep-merges and deploys repo configurations to local machine (creates `.backups/`). |
+| `pss apply -Pull` | Pulls latest git commits first, then deploys settings. |
+| `pss apply -Include <list>` | Targets specific subsystems (`vscode`, `powershell`, `terminal`, `git`, `gemini`, `skills`, `plugins`, `apps`, `fonts`). |
+| `pss apply -Exclude <list>` | Skips specific subsystems. |
+| `pss apply -WhatIf` | Dry run: preview file writes without touching filesystem. |
+| `pss export` | Compares machine files against repo and interactively routes changes to `Shared` or `Workspace`. |
+| `pss export -Target <layer>` | Non-interactive export routing all changes to `Shared` or `Workspace`. |
+| `pss export -Push` | Harvests machine changes, verifies git credentials, commits, and pushes to remote. |
+| `pss diff` | Shows property diffs for structured JSON and unified diffs for flat files. |
+| `pss workspace list` | Lists all workspaces and marks current active workspace. |
+| `pss workspace use <name>` | Sets active workspace in `.workspace.local`. |
+| `pss workspace new <name>` | Creates template directory structure for a new workspace. |
+| `pss workspace delete <name>` | Deletes an inactive workspace. |
+| `pss apps install` | Installs configured software via Winget and installs JetBrains Mono font. |
+| `pss apps update` | Upgrades installed software via Winget. |
+| `pss fonts` | Downloads and installs JetBrains Mono font to user directory. |
+| `pss setup` | Applies Windows developer settings and Explorer tweaks. |
+| `pss help` | Displays full syntax, command descriptions, and examples. |
