@@ -72,21 +72,40 @@ function Set-RegistryValueSafe {
 }
 
 function Install-JetBrainsMonoFont {
+    $fontName = 'JetBrains Mono'
+    $fontRepo = 'JetBrains/JetBrainsMono'
+    $fallbackUrl = 'https://download.jetbrains.com/fonts/JetBrainsMono-2.304.zip'
+    $checkFile = 'JetBrainsMono-Regular.ttf'
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $configFile = Join-Path $repoRoot 'sync.config.json'
+    if (Test-Path -LiteralPath $configFile) {
+        try {
+            $syncCfg = Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+            if ($syncCfg.fonts -and $syncCfg.fonts.Count -gt 0) {
+                $fCfg = $syncCfg.fonts[0]
+                if ($fCfg.name) { $fontName = $fCfg.name }
+                if ($fCfg.repo) { $fontRepo = $fCfg.repo }
+                if ($fCfg.fallbackUrl) { $fallbackUrl = $fCfg.fallbackUrl }
+                if ($fCfg.checkFile) { $checkFile = $fCfg.checkFile }
+            }
+        } catch {}
+    }
+
     $userFontDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
     $sysFontDir = Join-Path $env:WINDIR 'Fonts'
     $fontRegKey = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
-    $checkFile = 'JetBrainsMono-Regular.ttf'
 
     $alreadyInstalled = (Test-Path -LiteralPath (Join-Path $userFontDir $checkFile)) -or
     (Test-Path -LiteralPath (Join-Path $sysFontDir $checkFile))
 
     if ($alreadyInstalled -and -not $Force) {
-        Write-Badge "OK" DarkGray "JetBrains Mono font is already installed."
+        Write-Badge "OK" DarkGray "$fontName font is already installed."
         return
     }
 
     if ($WhatIf) {
-        Write-Badge "WHAT-IF" Cyan "Would download and install JetBrains Mono (.ttf) to $userFontDir"
+        Write-Badge "WHAT-IF" Cyan "Would download and install $fontName (.ttf) to $userFontDir"
         return
     }
 
@@ -95,10 +114,10 @@ function Install-JetBrainsMonoFont {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
-        $downloadUrl = 'https://download.jetbrains.com/fonts/JetBrainsMono-2.304.zip'
+        $downloadUrl = $fallbackUrl
         try {
-            $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/JetBrains/JetBrainsMono/releases/latest' -Headers @{ 'User-Agent' = 'personal-settings-sync' } -TimeoutSec 10 -ErrorAction Stop
-            $asset = $release.assets | Where-Object { $_.name -match '^JetBrainsMono-[\d.]+\.zip$' } | Select-Object -First 1
+            $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$fontRepo/releases/latest" -Headers @{ 'User-Agent' = 'personal-settings-sync' } -TimeoutSec 10 -ErrorAction Stop
+            $asset = $release.assets | Where-Object { $_.name -match '\.zip$' } | Select-Object -First 1
             if ($asset -and $asset.browser_download_url) {
                 $downloadUrl = $asset.browser_download_url
             }
@@ -158,36 +177,14 @@ function Install-JetBrainsMonoFont {
 
 function Configure-GitUserSafe {
     $globalGitConfig = Join-Path $HOME ".gitconfig"
-    $sharedInclude = "~/.gitconfig.shared"
-
-    if (-not (Test-Path -LiteralPath $globalGitConfig)) {
-        if ($WhatIf) {
-            Write-Badge "WHAT-IF" Cyan "Would create ~/.gitconfig with include for $sharedInclude"
-        } else {
-            [System.IO.File]::WriteAllText($globalGitConfig, "[include]`r`n`tpath = $sharedInclude`r`n", [System.Text.Encoding]::UTF8)
-            Write-Badge "APPLIED" Green "Created ~/.gitconfig with [include] path = $sharedInclude"
-        }
-    } else {
-        $existingIncludes = @(& git config --file $globalGitConfig --get-all include.path 2>$null)
-        if ($existingIncludes -notcontains $sharedInclude) {
-            if ($WhatIf) {
-                Write-Badge "WHAT-IF" Cyan "Would add [include] path = $sharedInclude to ~/.gitconfig"
-            } else {
-                $content = Get-Content -LiteralPath $globalGitConfig -Raw
-                $newInclude = "[include]`r`n`tpath = $sharedInclude`r`n"
-                [System.IO.File]::WriteAllText($globalGitConfig, $newInclude + $content, [System.Text.Encoding]::UTF8)
-                Write-Badge "APPLIED" Green "Added [include] path = $sharedInclude to ~/.gitconfig"
-            }
-        }
-    }
 
     # Migrate legacy ~/.gitconfig.local if present
     $legacyConfig = Join-Path $HOME ".gitconfig.local"
     if (Test-Path -LiteralPath $legacyConfig) {
         $legacyName = (& git config --file $legacyConfig user.name 2>$null)
         $legacyEmail = (& git config --file $legacyConfig user.email 2>$null)
-        $currentName = (& git config --file $globalGitConfig user.name 2>$null)
-        $currentEmail = (& git config --file $globalGitConfig user.email 2>$null)
+        $currentName = if (Test-Path -LiteralPath $globalGitConfig) { (& git config --file $globalGitConfig user.name 2>$null) } else { $null }
+        $currentEmail = if (Test-Path -LiteralPath $globalGitConfig) { (& git config --file $globalGitConfig user.email 2>$null) } else { $null }
 
         if (-not $WhatIf) {
             if (-not $currentName -and $legacyName) {
@@ -196,16 +193,13 @@ function Configure-GitUserSafe {
             if (-not $currentEmail -and $legacyEmail) {
                 & git config --file $globalGitConfig user.email $legacyEmail
             }
-            & git config --file $globalGitConfig --unset include.path "^~/\.gitconfig\.local$" 2>$null
+            if (Test-Path -LiteralPath $globalGitConfig) {
+                & git config --file $globalGitConfig --unset include.path "^~/\.gitconfig\.local$" 2>$null
+            }
         }
     }
 
-    $currentEmail = if (Test-Path -LiteralPath $globalGitConfig) {
-        (& git config --file $globalGitConfig user.email 2>$null)
-    } else {
-        $null
-    }
-
+    $currentEmail = (& git config --global user.email 2>$null)
     if (-not $currentEmail -or $Force) {
         if ($WhatIf) {
             Write-Badge "WHAT-IF" Cyan "Would prompt for Git user.name and user.email to store in ~/.gitconfig"

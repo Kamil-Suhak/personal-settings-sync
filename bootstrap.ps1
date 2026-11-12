@@ -3,23 +3,25 @@
     Remote one-line machine bootstrapper for personal-settings-sync.
 
 .DESCRIPTION
-    Designed to run directly from Windows PowerShell on a brand-new machine:
-      irm https://raw.githubusercontent.com/<YourUsername>/personal-settings-sync/main/bootstrap.ps1 | iex
+    Designed to run directly from PowerShell on a brand-new machine:
+      irm https://raw.githubusercontent.com/Kamil-Suhak/personal-settings-sync/main/bootstrap.ps1 | iex
 
     Performs the full machine bootstrap:
       1. Downloads latest repository archive from GitHub (no git or login required)
       2. Extracts project to $HOME\Coding\Projects\personal-settings-sync
-      3. Applies Windows developer tweaks & installs JetBrains Mono font
-      4. Installs configured applications via Winget
-      5. Deploys personal configuration files
+      3. Binds active workspace (if -Workspace is provided)
+      4. Applies Windows developer tweaks & installs JetBrains Mono font
+      5. Installs workspace-appropriate applications via Winget
+      6. Links/deploys PowerShell, Git, and AI Agent configurations
 #>
 
 [CmdletBinding()]
 param(
-    [string]$RepoOwner = "kamilsuhak",
+    [string]$RepoOwner = "Kamil-Suhak",
     [string]$RepoName = "personal-settings-sync",
     [string]$Branch = "main",
     [string]$TargetDir = "$HOME\Coding\Projects\personal-settings-sync",
+    [string]$Workspace = "",
     [switch]$SkipApps,
     [switch]$SkipSetup
 )
@@ -73,36 +75,43 @@ try {
     if (Test-Path -LiteralPath $tempExtract) { Remove-Item -LiteralPath $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-# 2. Apply Windows Developer Tweaks, Font, Git Identity, & Project Roots
 $pssScript = Join-Path $TargetDir "pss.ps1"
 if (-not (Test-Path -LiteralPath $pssScript)) {
-    Write-Error "Could not locate pss.ps1 in $TargetDir"
-    exit 1
+    throw "Could not locate pss.ps1 in $TargetDir"
 }
 
+$pwshExe = if (Get-Command pwsh -ErrorAction SilentlyContinue) { "pwsh" } else { "powershell.exe" }
+
+# 2. Bind Workspace
+if ($Workspace) {
+    Write-Step "Setting active workspace to '$Workspace'..."
+    & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $pssScript workspace use $Workspace -NoApply
+}
+
+# 3. Apply Windows Developer Tweaks, Font, Git Identity, & Project Roots
 if (-not $SkipSetup) {
     Write-Step "Configuring Windows developer preferences, font & local identity..."
     try {
-        pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript setup
+        & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $pssScript setup
     } catch {
         Write-Warn "Setup script encountered an issue: $($_.Exception.Message)"
     }
 }
 
-# 3. Install Configured Applications via Winget
+# 4. Install Configured Applications via Winget
 if (-not $SkipApps) {
     Write-Step "Installing applications via Winget..."
     try {
-        pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript apps install
+        & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $pssScript apps install
     } catch {
         Write-Warn "Winget application installation encountered an issue: $($_.Exception.Message)"
     }
 }
 
-# 4. Deploy Settings
-Write-Step "Deploying configuration files to machine..."
+# 5. Link & Deploy Configurations
+Write-Step "Linking configuration files to machine..."
 try {
-    pwsh -NoProfile -ExecutionPolicy Bypass -File $pssScript apply
+    & $pwshExe -NoProfile -ExecutionPolicy Bypass -File $pssScript apply
 } catch {
     Write-Warn "Settings application encountered an issue: $($_.Exception.Message)"
 }
@@ -110,4 +119,3 @@ try {
 Write-Host "`n==========================================================" -ForegroundColor Green
 Write-Host "   Bootstrap Complete! Restart terminal to activate prompt. " -ForegroundColor Green
 Write-Host "==========================================================`n" -ForegroundColor Green
-

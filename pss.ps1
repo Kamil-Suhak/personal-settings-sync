@@ -1,63 +1,23 @@
 <#
 .SYNOPSIS
-    Personal Settings Sync (PSS) - Modular context-aware settings & workspace manager.
+    Personal Settings Sync (PSS) - Repo-as-source-of-truth workspace manager.
 
 .DESCRIPTION
-    Synchronizes configurations between this repository and local system paths across
-    multiple machines using modular workspaces (personal, work, school).
-    Supports layered JSON merging, interactive export reconciliation, and Winget app management.
+    Manages shared and workspace-scoped configurations (PowerShell, Git, AI Agent Rules,
+    Skills, and Plugins) using native includes, directory junctions, and one-way synthesis.
 
 .PARAMETER Action
-    The primary action to execute:
-      status    : Show sync matrix across all configured subsystems
-      apply     : Deploy settings from repository to this machine
-      export    : Harvest current settings from machine into repository
-      diff      : Show color-coded git diffs for modified settings
-      workspace : Manage workspaces (list, use, current, new, delete)
-      apps      : Manage applications via Winget (list, install, update)
-      fonts     : Download and install developer fonts (JetBrains Mono)
-      setup     : Apply Windows developer system optimizations
-      help      : Display exhaustive help documentation
-
-.PARAMETER SubAction
-    Secondary verb for 'workspace' (list, use, current, new, delete) or 'apps' (list, install, update).
-
-.PARAMETER TargetName
-    Target name for 'workspace use <name>', 'workspace new <name>', or 'workspace delete <name>'.
-
-.PARAMETER Include
-    Comma-separated list of subsystems to include:
-    vscode, powershell, terminal, git, gemini, skills, plugins, apps, fonts
-
-.PARAMETER Exclude
-    Comma-separated list of subsystems to exclude from execution.
-
-.PARAMETER Target
-    Destination layer for non-interactive export: 'Shared' or 'Workspace'.
-
-.PARAMETER Force
-    Overwrite files or reinstall packages even when already in sync.
-
-.PARAMETER WhatIf
-    Simulate actions without writing to disk.
-
-.PARAMETER NoBackup
-    Skip creating backups in .backups/ before modifying machine files.
-
-.PARAMETER Push
-    Commit and push repository changes to GitHub after export or workspace mutation.
-
-.PARAMETER Pull
-    Pull latest changes from git remote before applying.
-
-.EXAMPLE
-    pss status
-    pss apply -Include vscode,powershell
-    pss export -Target Workspace
-    pss workspace list
-    pss workspace use work
-    pss diff
-    pss apps install
+    Primary action:
+      status     : Show sync state across all subsystems for the active workspace
+      apply      : Link/deploy repo configurations to local machine (alias: link)
+      diff       : Show diffs between local files and repo state
+      edit       : Open a shared or workspace config file in the repo
+      bootstrap  : Interactively harvest functions/sections from existing machine configs
+      workspace  : Manage workspaces (list, current, use, new, delete)
+      apps       : Manage Winget packages (list, install, update)
+      fonts      : Download and install developer fonts (JetBrains Mono)
+      setup      : Run one-time Windows developer optimizations
+      help       : Show help reference
 #>
 
 [CmdletBinding()]
@@ -74,16 +34,20 @@ param(
     [string[]]$Include,
     [string[]]$Exclude,
 
-    [ValidateSet('Shared', 'Workspace', '')]
-    [string]$Target = '',
-
     [switch]$Force,
     [switch]$WhatIf,
     [switch]$NoBackup,
+    [switch]$NoApply,
     [switch]$Push,
     [switch]$Pull,
-    [switch]$SyncExtensions,
-    [switch]$Help
+    [switch]$PathOnly,
+    [switch]$Help,
+
+    [string]$HomeOverride,
+    [string]$DocumentsOverride,
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$ExtraArgs
 )
 
 Set-StrictMode -Off
@@ -92,10 +56,10 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ConfigFile = Join-Path $ScriptDir 'sync.config.json'
 $WorkspaceLocalFile = Join-Path $ScriptDir '.workspace.local'
-$ValidSubsystems = @('vscode', 'powershell', 'terminal', 'git', 'gemini', 'skills', 'plugins', 'apps', 'fonts')
+$ValidSubsystems = @('powershell', 'git', 'gemini', 'skills', 'plugins')
 $MaxBackups = 10
 
-#region 1. Output & Formatting Utilities
+#region 1. Output & Help
 function Write-Badge {
     param(
         [string]$Badge,
@@ -109,180 +73,176 @@ function Write-Badge {
 
 function Show-Help {
     Write-Host "`n=== Personal Settings Sync (PSS) ===" -ForegroundColor Cyan
-    Write-Host "Modular, context-aware developer environment synchronizer.`n" -ForegroundColor DarkGray
+    Write-Host "Repo-as-source-of-truth environment manager (PowerShell, Git, AI).`n" -ForegroundColor DarkGray
 
     Write-Host "Usage:" -ForegroundColor Yellow
-    Write-Host "  pss <action> [<subaction>] [<target>] [options]`n" -ForegroundColor White
+    Write-Host "  pss <action> [<args...>] [options]`n" -ForegroundColor White
 
     Write-Host "Primary Actions:" -ForegroundColor Yellow
-    Write-Host "  status                Show sync status for all subsystems vs active workspace"
-    Write-Host "  apply                 Deploy repository configurations to local machine"
-    Write-Host "  export                Harvest local machine changes into repository"
-    Write-Host "  diff                  Show differences between local files and synthesized repo state"
-    Write-Host "  workspace <command>   Manage workspaces (list, use, current, new, delete)"
-    Write-Host "  apps <command>        Manage Winget packages (list, install, update)"
-    Write-Host "  fonts                 Download and install JetBrains Mono font"
-    Write-Host "  setup                 Run run-once Windows developer optimizations"
-    Write-Host "  help                  Display this reference guide`n"
+    Write-Host "  status                 Show sync state across all subsystems"
+    Write-Host "  apply | link           Link/deploy repo configs to this machine"
+    Write-Host "  diff                   Show diffs for out-of-sync files"
+    Write-Host "  edit <layer> <target>  Open repo file (layer: shared|<workspace>; target: powershell|git|agents|gemini|skills.json)"
+    Write-Host "  bootstrap              Interactively migrate existing local profile/gitconfig/AGENTS.md into repo layers"
+    Write-Host "  workspace <cmd>        Manage workspaces (list, current, use, new, delete)"
+    Write-Host "  apps <cmd>             Manage Winget packages for active workspace (list, install, update)"
+    Write-Host "  fonts                  Install JetBrains Mono font"
+    Write-Host "  setup                  Run one-time Windows developer tweaks"
+    Write-Host "  help                   Show this guide`n"
 
-    Write-Host "Workspace Commands:" -ForegroundColor Yellow
-    Write-Host "  workspace list        List all configured workspaces (* indicates active)"
-    Write-Host "  workspace current     Display current active workspace"
-    Write-Host "  workspace use <name>  Switch local machine to specified workspace"
-    Write-Host "  workspace new <name>  Create a new workspace context directory structure"
-    Write-Host "  workspace delete <n>  Remove a workspace context directory`n"
-
-    Write-Host "Filtering & Layering Options:" -ForegroundColor Yellow
-    Write-Host "  -Include <list>       Filter subsystems (comma-separated or array):"
-    Write-Host "                        vscode, powershell, terminal, git, gemini, skills, plugins, apps, fonts"
-    Write-Host "  -Exclude <list>       Exclude specific subsystems from execution"
-    Write-Host "  -Target <layer>       Export destination in non-interactive sessions: 'Shared' or 'Workspace'"
-    Write-Host "  -Pull                 Run 'git pull' before applying"
-    Write-Host "  -Push                 Commit and push changes to GitHub after export or workspace update"
-    Write-Host "  -Force                Bypass hash comparisons and force write/install"
-    Write-Host "  -WhatIf               Dry run; preview changes without modifying filesystem"
-    Write-Host "  -NoBackup             Skip automated backup creation before overwriting local files`n"
+    Write-Host "Options:" -ForegroundColor Yellow
+    Write-Host "  -Include <list>        Subsystems: $($ValidSubsystems -join ', ')"
+    Write-Host "  -Exclude <list>        Exclude specific subsystems"
+    Write-Host "  -Pull                  Run 'git pull' before applying"
+    Write-Host "  -Push                  Commit and push after workspace/bootstrap mutations"
+    Write-Host "  -Force                 Force overwrite or relink even if already in sync"
+    Write-Host "  -WhatIf                Dry run; preview changes without writing to disk"
+    Write-Host "  -NoBackup              Skip .backups/ creation before overwriting"
+    Write-Host "  -NoApply               Skip automatic re-link on 'workspace use'"
+    Write-Host "  -PathOnly              Print resolved repo path on 'pss edit'`n"
 
     Write-Host "Examples:" -ForegroundColor DarkGray
     Write-Host "  pss status"
-    Write-Host "  pss apply -Include vscode,powershell"
     Write-Host "  pss apply -Pull"
-    Write-Host "  pss export"
-    Write-Host "  pss export -Target Workspace -Push"
     Write-Host "  pss workspace use work"
-    Write-Host "  pss diff -Include vscode"
-    Write-Host "  pss apps install`n"
+    Write-Host "  pss edit work powershell"
+    Write-Host "  pss edit shared agents"
+    Write-Host "  pss bootstrap`n"
 }
 #endregion
 
-#region 2. POSIX Flag Normalization & Help Interception
-# Normalize common POSIX arguments or show help
+#region 2. Argument Normalization
 if ($Help -or ($Action -in @('help', '--help', '-h', '/?'))) {
     Show-Help
     return
 }
 
-# Normalize positional or POSIX aliases
 $posixAliases = @{
     '--force'     = { $script:Force = $true }
     '--what-if'   = { $script:WhatIf = $true }
     '--whatif'    = { $script:WhatIf = $true }
     '--no-backup' = { $script:NoBackup = $true }
     '--nobackup'  = { $script:NoBackup = $true }
+    '--no-apply'  = { $script:NoApply = $true }
     '--push'      = { $script:Push = $true }
     '--pull'      = { $script:Pull = $true }
+    '--path-only' = { $script:PathOnly = $true }
 }
 
-$unboundArgs = @($args)
-$sanitizedArgs = @()
-foreach ($argItem in $unboundArgs) {
-    if (-not $argItem) { continue }
+$rawPositionals = @($SubAction, $TargetName) + @($ExtraArgs)
+$sanitizedArgs = [System.Collections.Generic.List[string]]::new()
+foreach ($argItem in $rawPositionals) {
+    if ([string]::IsNullOrEmpty($argItem)) { continue }
     if ($posixAliases.ContainsKey($argItem)) {
         & $posixAliases[$argItem]
-        Write-Badge "NOTE" DarkYellow "Mapped POSIX flag '$argItem' to PowerShell parameter equivalent."
+        Write-Badge "NOTE" DarkYellow "Mapped POSIX flag '$argItem' to PowerShell parameter."
     } elseif ($argItem -like '--*') {
-        Write-Badge "ERROR" Red "Unsupported POSIX flag '$argItem'. Use standard PowerShell parameter syntax (e.g., -Include, -Force)."
-        Show-Help
+        Write-Badge "ERROR" Red "Unsupported POSIX flag '$argItem'. Use PowerShell switches (e.g. -Include, -Force)."
         exit 1
     } else {
-        $sanitizedArgs += $argItem
+        $sanitizedArgs.Add($argItem)
     }
 }
 
-if ($sanitizedArgs.Count -gt 0 -and -not $SubAction) {
-    $SubAction = $sanitizedArgs[0]
-    if ($sanitizedArgs.Count -gt 1 -and -not $TargetName) {
-        $TargetName = $sanitizedArgs[1]
-    }
-}
+$SubAction = if ($sanitizedArgs.Count -gt 0) { $sanitizedArgs[0] } else { $null }
+$TargetName = if ($sanitizedArgs.Count -gt 1) { $sanitizedArgs[1] } else { $null }
 #endregion
 
-#region 3. Core Path & Environment Helpers
+#region 3. Path, File & Text Helpers
 function Test-PathSafe {
-    param([string]$Path, [string]$PathType = 'Leaf')
+    param([string]$Path, [string]$PathType = 'Any')
     try {
+        if ($PathType -eq 'Any') { return (Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue) }
         return (Test-Path -LiteralPath $Path -PathType $PathType -ErrorAction SilentlyContinue)
     } catch {
         return $false
     }
 }
 
+function Get-EffectiveHome {
+    if ($HomeOverride) { return [System.IO.Path]::GetFullPath($HomeOverride) }
+    return $HOME
+}
+
+function Get-EffectiveDocuments {
+    if ($DocumentsOverride) { return [System.IO.Path]::GetFullPath($DocumentsOverride) }
+    return [Environment]::GetFolderPath('MyDocuments')
+}
+
 function Resolve-DynamicPath {
     param([string]$PathPattern)
-    $resolved = $PathPattern
-    $docFolder = [Environment]::GetFolderPath('MyDocuments')
-    $resolved = $resolved.Replace('$DOCUMENTS', $docFolder)
+    $homeDir = Get-EffectiveHome
+    $docsDir = Get-EffectiveDocuments
+    $resolved = $PathPattern.Replace('$DOCUMENTS', $docsDir).Replace('%USERPROFILE%', $homeDir)
     $resolved = [Environment]::ExpandEnvironmentVariables($resolved)
     try {
-        $resolved = [System.IO.Path]::GetFullPath($resolved)
-    } catch {}
-    return $resolved
+        return [System.IO.Path]::GetFullPath($resolved)
+    } catch {
+        return $resolved
+    }
+}
+
+function ConvertTo-ForwardPath {
+    param([string]$Path)
+    return ($Path -replace '\\', '/')
+}
+
+function Normalize-TextLF {
+    param([string]$Text)
+    if ($null -eq $Text) { return "" }
+    return $Text.Replace("`r`n", "`n").TrimEnd("`r", "`n")
+}
+
+function Get-TextHash {
+    param([string]$Text)
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes((Normalize-TextLF $Text))
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
+    } finally {
+        $sha.Dispose()
+    }
 }
 
 function Get-FileHashSafe {
     param([string]$Path)
-    try {
-        if (Test-PathSafe $Path -PathType Leaf) {
-            $text = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-            $normalized = $text.Replace("`r`n", "`n").TrimEnd("`r", "`n")
-            $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
-            $sha = [System.Security.Cryptography.SHA256]::Create()
-            try {
-                return [System.BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '')
-            } finally {
-                $sha.Dispose()
-            }
-        }
-    } catch {}
-    return $null
+    if (-not (Test-PathSafe $Path -PathType Leaf)) { return $null }
+    return Get-TextHash ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8))
 }
 
 function Write-Utf8File {
     param([string]$Path, [string]$Content)
     $dir = Split-Path -Parent $Path
-    if (-not (Test-PathSafe $dir -PathType Container)) {
+    if ($dir -and -not (Test-PathSafe $dir -PathType Container)) {
         [System.IO.Directory]::CreateDirectory($dir) | Out-Null
     }
-    $normalized = $Content.Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+    $normalized = (Normalize-TextLF $Content) + "`n"
     [System.IO.File]::WriteAllText($Path, $normalized, [System.Text.UTF8Encoding]::new($false))
+}
+
+function Append-Utf8File {
+    param([string]$Path, [string]$Content)
+    $existing = if (Test-PathSafe $Path -PathType Leaf) {
+        Normalize-TextLF ([System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8))
+    } else { "" }
+    $combined = if ($existing) { "$existing`n`n$(Normalize-TextLF $Content)" } else { Normalize-TextLF $Content }
+    Write-Utf8File -Path $Path -Content $combined
 }
 #endregion
 
-#region 4. Workspace Management Engine
-function Get-AvailableWorkspaces {
-    $wsDir = Join-Path $ScriptDir 'workspaces'
-    if (-not (Test-PathSafe $wsDir -PathType Container)) {
-        return @('personal')
-    }
-    $dirs = @(Get-ChildItem -LiteralPath $wsDir -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
-    if ($dirs.Count -eq 0) { return @('personal') }
-    return $dirs
+#region 4. Workspace & Config Resolution
+if (-not (Test-PathSafe $ConfigFile -PathType Leaf)) {
+    Write-Badge "ERROR" Red "Configuration file missing at: $ConfigFile"
+    exit 1
 }
+$Config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
 
-function Get-ActiveWorkspace {
-    if (Test-PathSafe $WorkspaceLocalFile -PathType Leaf) {
-        $active = (Get-Content -LiteralPath $WorkspaceLocalFile -Raw).Trim()
-        if ($active) { return $active }
-    }
-
-    # First run or uninitialized
-    $available = Get-AvailableWorkspaces
-    $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
-
-    if (-not $isInteractive) {
-        Write-Badge "ERROR" Red "No active workspace configured in .workspace.local. Run 'pss workspace use <name>' first."
-        exit 1
-    }
-
-    Write-Host "`n=== First-Run Workspace Selection ===" -ForegroundColor Cyan
-    Write-Host "This machine does not have an active workspace configured." -ForegroundColor Yellow
-    Write-Host "Available workspaces: $($available -join ', ')" -ForegroundColor White
-
-    $selection = Read-Host "Enter workspace to use (default: '$($available[0])')"
-    if (-not $selection) { $selection = $available[0] }
-
-    Set-ActiveWorkspace -Name $selection
-    return $selection
+function Get-AvailableWorkspaces {
+    $wsDir = Join-Path $ScriptDir $Config.workspacesDir
+    if (-not (Test-PathSafe $wsDir -PathType Container)) { return @($Config.defaultWorkspace) }
+    $dirs = @(Get-ChildItem -LiteralPath $wsDir -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+    if ($dirs.Count -eq 0) { return @($Config.defaultWorkspace) }
+    return $dirs
 }
 
 function Set-ActiveWorkspace {
@@ -292,10 +252,9 @@ function Set-ActiveWorkspace {
         exit 1
     }
     $Name = $Name.Trim().ToLowerInvariant()
-    $wsPath = Join-Path $ScriptDir "workspaces\$Name"
+    $wsPath = Join-Path (Join-Path $ScriptDir $Config.workspacesDir) $Name
     if (-not (Test-PathSafe $wsPath -PathType Container)) {
-        [System.IO.Directory]::CreateDirectory($wsPath) | Out-Null
-        Write-Badge "CREATED" Green "Created workspace directory: workspaces/$Name"
+        New-WorkspaceContext -Name $Name
     }
     Write-Utf8File -Path $WorkspaceLocalFile -Content $Name
     Write-Badge "ACTIVE" Green "Active workspace set to: $Name"
@@ -308,179 +267,62 @@ function New-WorkspaceContext {
         exit 1
     }
     $Name = $Name.Trim().ToLowerInvariant()
-    $wsPath = Join-Path $ScriptDir "workspaces\$Name"
+    $wsPath = Join-Path (Join-Path $ScriptDir $Config.workspacesDir) $Name
     if (Test-PathSafe $wsPath -PathType Container) {
         Write-Badge "WARN" Yellow "Workspace '$Name' already exists at workspaces/$Name"
         return
     }
 
-    $dirs = @(
-        (Join-Path $wsPath 'vscode'),
-        (Join-Path $wsPath 'powershell'),
-        (Join-Path $wsPath 'git')
-    )
-    foreach ($d in $dirs) {
-        [System.IO.Directory]::CreateDirectory($d) | Out-Null
+    foreach ($sub in @('powershell', 'git', 'gemini')) {
+        [System.IO.Directory]::CreateDirectory((Join-Path $wsPath $sub)) | Out-Null
     }
+    Write-Utf8File -Path (Join-Path $wsPath 'powershell\profile.ps1') -Content "# PowerShell overrides for workspace: $Name"
+    Write-Utf8File -Path (Join-Path $wsPath 'git\.gitconfig') -Content "# Git overrides for workspace: $Name`n[user]`n`t# email = user@$Name.local"
+    Write-Utf8File -Path (Join-Path $wsPath 'gemini\AGENTS.md') -Content "## $($Name.Substring(0,1).ToUpperInvariant() + $Name.Substring(1)) Workspace Context"
 
-    Write-Utf8File -Path (Join-Path $wsPath 'vscode\settings.json') -Content "{}`n"
-    Write-Utf8File -Path (Join-Path $wsPath 'powershell\profile.ps1') -Content "# PowerShell additions for workspace: $Name`n"
-    Write-Utf8File -Path (Join-Path $wsPath 'git\.gitconfig') -Content "# Git user overrides for workspace: $Name`n[user]`n`t# email = user@$Name.local`n"
-
-    Write-Badge "CREATED" Green "Created new workspace '$Name' with templates in workspaces/$Name"
-}
-#endregion
-
-#region 5. Layered JSON Recursive Merge & Diff Engine
-function Merge-HashtableRecursive {
-    param(
-        [System.Collections.IDictionary]$Base,
-        [System.Collections.IDictionary]$Override
-    )
-    if (-not $Base) {
-        return if ($Override) { [ordered]@{} + $Override } else { [ordered]@{} }
-    }
-    if (-not $Override) {
-        return [ordered]@{} + $Base
-    }
-
-    $result = [ordered]@{}
-    foreach ($key in $Base.Keys) {
-        $result[$key] = $Base[$key]
-    }
-
-    foreach ($key in $Override.Keys) {
-        if ($result.Contains($key) -and ($result[$key] -is [System.Collections.IDictionary]) -and ($Override[$key] -is [System.Collections.IDictionary])) {
-            $result[$key] = Merge-HashtableRecursive -Base $result[$key] -Override $Override[$key]
-        } else {
-            $result[$key] = $Override[$key]
-        }
-    }
-    return $result
+    Write-Badge "CREATED" Green "Created workspace '$Name' in workspaces/$Name"
 }
 
-function Read-JsonAsHashtable {
-    param([string]$Path)
-    if (-not (Test-PathSafe $Path -PathType Leaf)) {
-        return [ordered]@{}
-    }
-    try {
-        $raw = [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
-        # Strip single-line comments for resilience
-        $clean = [regex]::Replace($raw, '(?m)^\s*//.*$', '')
-        if (-not $clean.Trim()) { return [ordered]@{} }
-        $obj = ConvertFrom-Json -InputObject $clean -AsHashtable
-        if ($obj -is [System.Collections.IDictionary]) { return $obj }
-        return [ordered]@{}
-    } catch {
-        Write-Badge "WARN" Yellow "Could not parse JSON in $Path : $_"
-        return [ordered]@{}
-    }
-}
-
-function Get-SynthesizedJsonContent {
-    param(
-        [string]$SharedRepoPath,
-        [string]$WorkspaceRepoPath
-    )
-    $sharedFull = if ($SharedRepoPath) { Join-Path $ScriptDir $SharedRepoPath } else { $null }
-    $wsFull     = if ($WorkspaceRepoPath) { Join-Path $ScriptDir $WorkspaceRepoPath } else { $null }
-
-    $baseMap = Read-JsonAsHashtable -Path $sharedFull
-    $wsMap   = Read-JsonAsHashtable -Path $wsFull
-
-    $merged = Merge-HashtableRecursive -Base $baseMap -Override $wsMap
-    if ($merged.Count -eq 0 -and -not (Test-PathSafe $sharedFull -PathType Leaf)) {
-        return $null
-    }
-    return ($merged | ConvertTo-Json -Depth 100).Replace("`r`n", "`n").TrimEnd("`r", "`n") + "`n"
-}
-
-function Compare-JsonProperties {
-    param(
-        [System.Collections.IDictionary]$LocalMap,
-        [System.Collections.IDictionary]$EffectiveMap,
-        [string]$Prefix = ""
-    )
-    $diffs = [System.Collections.Generic.List[PSCustomObject]]::new()
-
-    # Check for Modified and Deleted keys
-    foreach ($k in $EffectiveMap.Keys) {
-        $propName = if ($Prefix) { "$Prefix.$k" } else { "$k" }
-        $expected = $EffectiveMap[$k]
-
-        if (-not $LocalMap.Contains($k)) {
-            $diffs.Add([PSCustomObject]@{
-                Property = $propName
-                Type     = 'DELETED'
-                RepoVal  = $expected
-                LocalVal = $null
-            })
-        } elseif (($expected -is [System.Collections.IDictionary]) -and ($LocalMap[$k] -is [System.Collections.IDictionary])) {
-            $childDiffs = Compare-JsonProperties -LocalMap $LocalMap[$k] -EffectiveMap $expected -Prefix $propName
-            foreach ($cd in $childDiffs) {
-                $diffs.Add($cd)
-            }
-        } else {
-            $localVal = $LocalMap[$k]
-            $expJson = ($expected | ConvertTo-Json -Compress -Depth 50)
-            $locJson = ($localVal | ConvertTo-Json -Compress -Depth 50)
-            if ($expJson -ne $locJson) {
-                $diffs.Add([PSCustomObject]@{
-                    Property = $propName
-                    Type     = 'MODIFIED'
-                    RepoVal  = $expected
-                    LocalVal = $localVal
-                })
-            }
+function Get-ActiveWorkspace {
+    if (Test-PathSafe $WorkspaceLocalFile -PathType Leaf) {
+        $raw = Get-Content -LiteralPath $WorkspaceLocalFile -Raw -ErrorAction SilentlyContinue
+        if ($raw) {
+            $active = $raw.Trim()
+            if ($active) { return $active }
         }
     }
 
-    # Check for New keys
-    foreach ($k in $LocalMap.Keys) {
-        $propName = if ($Prefix) { "$Prefix.$k" } else { "$k" }
-        if (-not $EffectiveMap.Contains($k)) {
-            $diffs.Add([PSCustomObject]@{
-                Property = $propName
-                Type     = 'NEW'
-                RepoVal  = $null
-                LocalVal = $LocalMap[$k]
-            })
-        }
+    $available = Get-AvailableWorkspaces
+    $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+    if (-not $isInteractive) {
+        Write-Badge "ERROR" Red "No active workspace in .workspace.local. Run 'pss workspace use <name>' first."
+        exit 1
     }
 
-    return $diffs
-}
-#endregion
-
-#region 6. Subsystem Filtering & Config Resolution
-if (-not (Test-PathSafe $ConfigFile -PathType Leaf)) {
-    Write-Badge "ERROR" Red "Configuration file missing at: $ConfigFile"
-    exit 1
+    Write-Host "`n=== First-Run Workspace Selection ===" -ForegroundColor Cyan
+    Write-Host "Available workspaces: $($available -join ', ')" -ForegroundColor White
+    $selection = Read-Host "Enter workspace to use (default: '$($available[0])')"
+    if (-not $selection) { $selection = $available[0] }
+    Set-ActiveWorkspace -Name $selection
+    return $selection.Trim().ToLowerInvariant()
 }
 
-$Config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json
-$ActiveWorkspace = Get-ActiveWorkspace
-
-# Parse -Include and -Exclude arrays (supporting comma-separated items)
 function Parse-SubsystemList {
     param([string[]]$Items)
-    $result = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    if ($Items) {
-        foreach ($item in $Items) {
-            foreach ($sub in ($item -split '[,;]')) {
-                $cleaned = $sub.Trim().ToLowerInvariant()
-                if ($cleaned) {
-                    if ($cleaned -notin $ValidSubsystems) {
-                        Write-Badge "ERROR" Red "Invalid subsystem '$cleaned'. Valid: $($ValidSubsystems -join ', ')"
-                        exit 1
-                    }
-                    $result.Add($cleaned) | Out-Null
-                }
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @($Items)) {
+        if (-not $item) { continue }
+        foreach ($sub in ($item -split '[,;]')) {
+            $cleaned = $sub.Trim().ToLowerInvariant()
+            if (-not $cleaned) { continue }
+            if ($cleaned -notin $ValidSubsystems) {
+                Write-Badge "ERROR" Red "Invalid subsystem '$cleaned'. Valid: $($ValidSubsystems -join ', ')"
+                exit 1
             }
+            [void]$set.Add($cleaned)
         }
     }
-    return $result
+    return ,$set
 }
 
 $script:IncludedSubsystems = Parse-SubsystemList -Items $Include
@@ -488,46 +330,27 @@ $script:ExcludedSubsystems = Parse-SubsystemList -Items $Exclude
 
 function Should-ProcessSubsystem {
     param([string]$SubsystemName)
-    if (-not $SubsystemName) { return $true }
     $name = $SubsystemName.ToLowerInvariant()
-    if ($script:ExcludedSubsystems -and $script:ExcludedSubsystems.Contains($name)) { return $false }
-    if ($script:IncludedSubsystems -and ($script:IncludedSubsystems.Count -gt 0) -and -not $script:IncludedSubsystems.Contains($name)) { return $false }
+    if ($script:ExcludedSubsystems.Contains($name)) { return $false }
+    if ($script:IncludedSubsystems.Count -gt 0 -and -not $script:IncludedSubsystems.Contains($name)) { return $false }
     return $true
-}
-
-function Resolve-WorkspaceFilePaths {
-    param([PSCustomObject]$FileEntry, [string]$Workspace)
-    $repoRel = $FileEntry.repoPath
-    $wsRel   = if ($FileEntry.workspacePath) {
-        $FileEntry.workspacePath.Replace('{workspace}', $Workspace)
-    } else { $null }
-
-    return [PSCustomObject]@{
-        RepoPath      = $repoRel
-        WorkspacePath = $wsRel
-        LocalPath     = Resolve-DynamicPath $FileEntry.localPath
-        Layered       = [bool]$FileEntry.layered
-        Required      = [bool]$FileEntry.required
-    }
 }
 #endregion
 
-#region 7. Backup Management
+#region 5. Backups & Git Remote Safeguards
 function New-BackupSnapshot {
-    param(
-        [string]$BackupRoot,
-        [string]$RelativePath,
-        [string]$LocalFullPath
-    )
-    if (-not (Test-PathSafe $LocalFullPath -PathType Leaf)) { return }
-    $dest = Join-Path $BackupRoot $RelativePath
+    param([string]$BackupRoot, [string]$RelativeName, [string]$LocalPath)
+    if ($NoBackup -or $WhatIf) { return }
+    if (-not (Test-PathSafe $LocalPath)) { return }
+
+    $dest = Join-Path $BackupRoot $RelativeName
     $parent = Split-Path -Parent $dest
     if (-not (Test-PathSafe $parent -PathType Container)) {
         [System.IO.Directory]::CreateDirectory($parent) | Out-Null
     }
-    Copy-Item -LiteralPath $LocalFullPath -Destination $dest -Force
+    Copy-Item -LiteralPath $LocalPath -Destination $dest -Recurse -Force
     $relBackup = $dest.Substring($ScriptDir.Length).TrimStart('\', '/')
-    Write-Badge "BACKUP" DarkCyan "Backed up: $relBackup"
+    Write-Badge "BACKUP" DarkCyan "Backed up -> $relBackup"
 }
 
 function Prune-Backups {
@@ -542,31 +365,34 @@ function Prune-Backups {
         Write-Badge "CLEANUP" DarkGray "Pruned $($toRemove.Count) old backup folder(s)."
     }
 }
-#endregion
 
-#region 8. Git Push/Pull Safeguards
-function Test-GitRemoteWritable {
-    $pushCheck = & git push --dry-run 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Badge "ERROR" Red "Git remote write access check failed:`n$($pushCheck -join "`n")"
-        return $false
+function Invoke-GitCmd {
+    param([string[]]$GitArgs)
+    try {
+        & git @GitArgs
+    } catch [System.ComponentModel.Win32Exception] {
+        # Fallback when Carbon Black / AppLocker blocks direct git.exe invocation under -NoProfile
+        $escaped = $GitArgs | ForEach-Object {
+            if ($_ -match '[\s&|<>^()%"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+        }
+        cmd.exe /d /c "git $($escaped -join ' ')"
     }
-    return $true
 }
 
 function Invoke-GitRemotePush {
     param([string]$CommitMessage)
     Write-Host "`n=== Pushing Changes to Remote ===" -ForegroundColor Cyan
-    if (-not (Test-GitRemoteWritable)) {
-        Write-Badge "ERROR" Red "Cannot push changes: Remote check failed."
+    $pushCheck = Invoke-GitCmd @('-C', $ScriptDir, 'push', '--dry-run') 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Badge "ERROR" Red "Git remote write check failed:`n$($pushCheck -join "`n")"
         exit 1
     }
-    git add -A
-    git commit -m $CommitMessage
+    Invoke-GitCmd @('-C', $ScriptDir, 'add', '-A')
+    Invoke-GitCmd @('-C', $ScriptDir, 'commit', '-m', $CommitMessage)
     if ($LASTEXITCODE -eq 0) {
-        git push
+        Invoke-GitCmd @('-C', $ScriptDir, 'push')
         if ($LASTEXITCODE -eq 0) {
-            Write-Badge "PUSHED" Green "Pushed changes to GitHub."
+            Write-Badge "PUSHED" Green "Pushed changes to remote."
         } else {
             Write-Badge "ERROR" Red "git push failed with code $LASTEXITCODE."
             exit 1
@@ -575,15 +401,633 @@ function Invoke-GitRemotePush {
 }
 #endregion
 
-#region 9. Execution Dispatcher
-Write-Host "`n[PSS] Active Workspace: " -ForegroundColor Cyan -NoNewline
-Write-Host "$ActiveWorkspace" -ForegroundColor Green
+#region 6. Subsystem Engines (PowerShell, Git, AI Rules, Junctions)
+function Get-ExpectedProfileLoaderContent {
+    $sharedProfile = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir $Config.subsystems.powershell.sharedPath))
+    return "# Managed by personal-settings-sync (pss). Edit files in the repository, not here.`n. `"$sharedProfile`""
+}
+
+function Test-IsManagedProfileLoader {
+    param([string]$LocalProfilePath)
+    if (-not (Test-PathSafe $LocalProfilePath -PathType Leaf)) { return $false }
+    $raw = [System.IO.File]::ReadAllText($LocalProfilePath, [System.Text.Encoding]::UTF8)
+    return ($raw -match '(?m)^#\s*Managed by personal-settings-sync \(pss\)')
+}
+
+function Get-PowerShellStatus {
+    $localPath = Resolve-DynamicPath $Config.subsystems.powershell.localTarget
+    $expected = Get-ExpectedProfileLoaderContent
+    if (-not (Test-PathSafe $localPath -PathType Leaf)) {
+        return [PSCustomObject]@{ Status = "Missing on Machine"; LocalPath = $localPath; Expected = $expected }
+    }
+    $localText = [System.IO.File]::ReadAllText($localPath, [System.Text.Encoding]::UTF8)
+    if ((Get-TextHash $localText) -eq (Get-TextHash $expected)) {
+        return [PSCustomObject]@{ Status = "In Sync"; LocalPath = $localPath; Expected = $expected }
+    }
+    if (Test-IsManagedProfileLoader $localPath) {
+        return [PSCustomObject]@{ Status = "Needs Relink"; LocalPath = $localPath; Expected = $expected }
+    }
+    return [PSCustomObject]@{ Status = "Unmanaged Local File"; LocalPath = $localPath; Expected = $expected }
+}
+
+function Get-GitIncludeTargets {
+    param([string]$Workspace)
+    $sharedAbs = ConvertTo-ForwardPath (Join-Path $ScriptDir $Config.subsystems.git.sharedPath)
+    $wsRel = $Config.subsystems.git.workspacePath.Replace('{workspace}', $Workspace)
+    $wsAbs = ConvertTo-ForwardPath (Join-Path $ScriptDir $wsRel)
+    $targets = [System.Collections.Generic.List[string]]::new()
+    $targets.Add($sharedAbs)
+    if (Test-PathSafe (Join-Path $ScriptDir $wsRel) -PathType Leaf) {
+        $targets.Add($wsAbs)
+    }
+    return $targets
+}
+
+function Unquote-GitIncludeValue {
+    param([string]$RawValue)
+    $val = $RawValue.Trim()
+    # Strip trailing inline comment only when outside quotes
+    if ($val -match '^"([^"]+)"(?:\s*[#;].*)?$') {
+        $val = $matches[1]
+    } elseif ($val -match "^'([^']+)'(?:\s*[#;].*)?$") {
+        $val = $matches[1]
+    } else {
+        $val = ($val -split '\s+[#;]', 2)[0].Trim()
+    }
+    return (ConvertTo-ForwardPath $val)
+}
+
+function Test-IsPssManagedGitInclude {
+    param([string]$IncludePath)
+    $norm = Unquote-GitIncludeValue $IncludePath
+    return (
+        $norm -in @('~/.gitconfig.shared', '~/.gitconfig.workspace', '~/.gitconfig.local') -or
+        $norm -match '/configs/git/\.gitconfig\.shared$' -or
+        $norm -match '/workspaces/[^/]+/git/\.gitconfig$'
+    )
+}
+
+function Build-UpdatedGitConfigContent {
+    param([string]$ExistingContent, [string[]]$DesiredIncludes)
+
+    $lines = if ($ExistingContent) { @(Normalize-TextLF $ExistingContent) -split "`n" } else { @() }
+    $keptLines = [System.Collections.Generic.List[string]]::new()
+
+    $i = 0
+    while ($i -lt $lines.Count) {
+        $line = $lines[$i]
+        if ($line -match '^\s*\[include\]\s*(?:[#;].*)?$') {
+            $sectionBody = [System.Collections.Generic.List[string]]::new()
+            $j = $i + 1
+            while ($j -lt $lines.Count -and $lines[$j] -notmatch '^\s*\[') {
+                $bodyLine = $lines[$j]
+                if ($bodyLine -match '^\s*path\s*=\s*(.+)$') {
+                    if (-not (Test-IsPssManagedGitInclude $matches[1])) {
+                        $sectionBody.Add($bodyLine)
+                    }
+                } elseif ($bodyLine.Trim() -ne '') {
+                    $sectionBody.Add($bodyLine)
+                }
+                $j++
+            }
+            if ($sectionBody.Count -gt 0) {
+                $keptLines.Add($line)
+                foreach ($b in $sectionBody) { $keptLines.Add($b) }
+            }
+            $i = $j
+            continue
+        }
+        $keptLines.Add($line)
+        $i++
+    }
+
+    $headerLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($inc in $DesiredIncludes) {
+        $formattedInc = if ($inc -match '\s') { "`"$inc`"" } else { $inc }
+        $headerLines.Add("[include]")
+        $headerLines.Add("`tpath = $formattedInc")
+    }
+
+    $trimmedBody = ($keptLines -join "`n").TrimStart("`n")
+    if ($trimmedBody) {
+        return ($headerLines -join "`n") + "`n" + $trimmedBody
+    }
+    return ($headerLines -join "`n")
+}
+
+function Get-GitConfigStatus {
+    param([string]$Workspace)
+    $localPath = Resolve-DynamicPath $Config.subsystems.git.localTarget
+    $desired = @(Get-GitIncludeTargets -Workspace $Workspace)
+
+    if (-not (Test-PathSafe $localPath -PathType Leaf)) {
+        return [PSCustomObject]@{ Status = "Missing on Machine"; LocalPath = $localPath; Desired = $desired }
+    }
+
+    $raw = [System.IO.File]::ReadAllText($localPath, [System.Text.Encoding]::UTF8)
+    $expected = Build-UpdatedGitConfigContent -ExistingContent $raw -DesiredIncludes $desired
+    if ((Get-TextHash $raw) -eq (Get-TextHash $expected)) {
+        return [PSCustomObject]@{ Status = "In Sync"; LocalPath = $localPath; Desired = $desired }
+    }
+    return [PSCustomObject]@{ Status = "Needs Update"; LocalPath = $localPath; Desired = $desired }
+}
+
+function Get-ExpectedGeminiFileContent {
+    param([PSCustomObject]$FileEntry, [string]$Workspace)
+    $repoAbs = Join-Path $ScriptDir $FileEntry.repoPath
+    if (-not (Test-PathSafe $repoAbs -PathType Leaf)) { return $null }
+
+    $sharedRaw = Normalize-TextLF ([System.IO.File]::ReadAllText($repoAbs, [System.Text.Encoding]::UTF8))
+    if ($FileEntry.mode -eq 'template') {
+        $homeForward = ConvertTo-ForwardPath (Get-EffectiveHome)
+        return $sharedRaw.Replace('~/', "$homeForward/")
+    }
+
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($FileEntry.name -eq 'AGENTS.md') {
+        $parts.Add("<!-- Managed by pss (shared + $Workspace). Edit repo files, not this output. -->")
+    }
+    $parts.Add($sharedRaw)
+
+    if ($FileEntry.workspacePath) {
+        $wsRel = $FileEntry.workspacePath.Replace('{workspace}', $Workspace)
+        $wsAbs = Join-Path $ScriptDir $wsRel
+        if (Test-PathSafe $wsAbs -PathType Leaf) {
+            $wsRaw = (Normalize-TextLF ([System.IO.File]::ReadAllText($wsAbs, [System.Text.Encoding]::UTF8))).Trim()
+            if ($wsRaw) { $parts.Add($wsRaw) }
+        }
+    }
+    return ($parts -join "`n`n")
+}
+
+function Get-JunctionTarget {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if (-not $item -or -not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $null }
+    if ($item.Target) {
+        $t = @($item.Target)[0]
+        try { return [System.IO.Path]::GetFullPath($t) } catch { return $t }
+    }
+    return ""
+}
+
+function Get-DesiredSkillLinks {
+    param([string]$Workspace)
+    $skillsCfg = $Config.subsystems.skills
+    $targetBase = Resolve-DynamicPath $skillsCfg.targetDir
+    $sharedBase = Join-Path $ScriptDir $skillsCfg.repoDir
+    $wsBase = if ($skillsCfg.workspaceDir) { Join-Path $ScriptDir ($skillsCfg.workspaceDir.Replace('{workspace}', $Workspace)) } else { $null }
+
+    $links = [System.Collections.Generic.List[PSCustomObject]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    if ($wsBase -and (Test-PathSafe $wsBase -PathType Container)) {
+        foreach ($d in @(Get-ChildItem -LiteralPath $wsBase -Directory -ErrorAction SilentlyContinue)) {
+            [void]$seen.Add($d.Name)
+            $links.Add([PSCustomObject]@{ Name = $d.Name; Source = $d.FullName; Target = (Join-Path $targetBase $d.Name) })
+        }
+    }
+
+    foreach ($name in @($skillsCfg.items)) {
+        if ($seen.Contains($name)) { continue }
+        $src = Join-Path $sharedBase $name
+        if (Test-PathSafe $src -PathType Container) {
+            [void]$seen.Add($name)
+            $links.Add([PSCustomObject]@{ Name = $name; Source = $src; Target = (Join-Path $targetBase $name) })
+        }
+    }
+
+    foreach ($mirror in @($skillsCfg.mirrorLinks)) {
+        if ($mirror) {
+            $links.Add([PSCustomObject]@{ Name = "skills-mirror"; Source = $targetBase; Target = (Resolve-DynamicPath $mirror) })
+        }
+    }
+
+    return $links
+}
+
+function Get-DesiredPluginLinks {
+    $plugCfg = $Config.subsystems.plugins
+    $targetBase = Resolve-DynamicPath $plugCfg.targetDir
+    $sharedBase = Join-Path $ScriptDir $plugCfg.repoDir
+    $links = [System.Collections.Generic.List[PSCustomObject]]::new()
+    foreach ($name in @($plugCfg.items)) {
+        $src = Join-Path $sharedBase $name
+        if (Test-PathSafe $src -PathType Container) {
+            $links.Add([PSCustomObject]@{ Name = $name; Source = $src; Target = (Join-Path $targetBase $name) })
+        }
+    }
+    return $links
+}
+
+function Get-JunctionStatus {
+    param([string]$Source, [string]$Target)
+    $item = Get-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    if (-not $item) { return "Missing on Machine" }
+    if (-not ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return "Directory (Not Linked)" }
+    $currentTarget = Get-JunctionTarget $Target
+    if ([string]::IsNullOrEmpty($currentTarget)) { return "Stale Link" }
+    $expectedFull = [System.IO.Path]::GetFullPath($Source).TrimEnd('\', '/')
+    if ($currentTarget.TrimEnd('\', '/') -eq $expectedFull) { return "Linked" }
+    return "Stale Link"
+}
+
+function Sync-JunctionLink {
+    param([string]$Source, [string]$Target, [string]$BackupName, [string]$BackupRoot)
+    $state = Get-JunctionStatus -Source $Source -Target $Target
+    if ($state -eq 'Linked' -and -not $Force) {
+        Write-Badge "OK" DarkGray "Already linked: $Target -> $Source"
+        return $false
+    }
+
+    if ($WhatIf) {
+        Write-Badge "WHAT-IF" Cyan "Would junction $Target -> $Source (current: $state)"
+        return $false
+    }
+
+    $parent = Split-Path -Parent $Target
+    if (-not (Test-PathSafe $parent -PathType Container)) {
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    }
+
+    $existingItem = Get-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
+    if ($existingItem) {
+        if ($existingItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            # Remove reparse point directly without recursing into target contents
+            if ($existingItem.PSIsContainer) {
+                [System.IO.Directory]::Delete($Target)
+            } else {
+                [System.IO.File]::Delete($Target)
+            }
+        } else {
+            New-BackupSnapshot -BackupRoot $BackupRoot -RelativeName $BackupName -LocalPath $Target
+            Remove-Item -LiteralPath $Target -Recurse -Force
+        }
+    }
+
+    New-Item -ItemType Junction -Path $Target -Target $Source | Out-Null
+    Write-Badge "LINKED" Green "$Target -> $Source"
+    return $true
+}
+
+function Invoke-ApplySubsystems {
+    param([string]$Workspace, [string]$BackupDir)
+
+    Write-Host "`n=== Applying Settings (Repo -> Machine: $Workspace) ===" -ForegroundColor Cyan
+    $appliedCount = 0
+
+    if (Should-ProcessSubsystem 'powershell') {
+        Write-Host "`n[PowerShell Profile]" -ForegroundColor Yellow
+        $psState = Get-PowerShellStatus
+        if ($psState.Status -eq 'In Sync' -and -not $Force) {
+            Write-Badge "OK" DarkGray "Already linked: $($psState.LocalPath)"
+        } elseif ($WhatIf) {
+            Write-Badge "WHAT-IF" Cyan "Would write profile loader -> $($psState.LocalPath)"
+        } else {
+            if ((Test-PathSafe $psState.LocalPath -PathType Leaf) -and -not (Test-IsManagedProfileLoader $psState.LocalPath)) {
+                New-BackupSnapshot -BackupRoot $BackupDir -RelativeName 'powershell\Microsoft.PowerShell_profile.ps1' -LocalPath $psState.LocalPath
+            }
+            Write-Utf8File -Path $psState.LocalPath -Content $psState.Expected
+            Write-Badge "LINKED" Green "Profile loader -> $($psState.LocalPath)"
+            $appliedCount++
+        }
+    }
+
+    if (Should-ProcessSubsystem 'git') {
+        Write-Host "`n[Git Config]" -ForegroundColor Yellow
+        $gitState = Get-GitConfigStatus -Workspace $Workspace
+        if ($gitState.Status -eq 'In Sync' -and -not $Force) {
+            Write-Badge "OK" DarkGray "Includes up to date in $($gitState.LocalPath)"
+        } else {
+            $existing = if (Test-PathSafe $gitState.LocalPath -PathType Leaf) {
+                [System.IO.File]::ReadAllText($gitState.LocalPath, [System.Text.Encoding]::UTF8)
+            } else { "" }
+            $updated = Build-UpdatedGitConfigContent -ExistingContent $existing -DesiredIncludes $gitState.Desired
+            if ($WhatIf) {
+                Write-Badge "WHAT-IF" Cyan "Would update [include] blocks in $($gitState.LocalPath)"
+            } else {
+                if ($existing) {
+                    New-BackupSnapshot -BackupRoot $BackupDir -RelativeName 'git\.gitconfig' -LocalPath $gitState.LocalPath
+                }
+                Write-Utf8File -Path $gitState.LocalPath -Content $updated
+                Write-Badge "APPLIED" Green "Updated [include] layers (shared + $Workspace) -> $($gitState.LocalPath)"
+                $appliedCount++
+            }
+        }
+    }
+
+    if (Should-ProcessSubsystem 'gemini') {
+        Write-Host "`n[AI Agent Rules]" -ForegroundColor Yellow
+        foreach ($f in $Config.subsystems.gemini.files) {
+            $localPath = Resolve-DynamicPath $f.localPath
+            $expected = Get-ExpectedGeminiFileContent -FileEntry $f -Workspace $Workspace
+            if ($null -eq $expected) { continue }
+
+            $localHash = Get-FileHashSafe $localPath
+            $expHash = Get-TextHash $expected
+            if (-not $Force -and $localHash -and ($localHash -eq $expHash)) {
+                Write-Badge "OK" DarkGray "Already in sync: $localPath"
+                continue
+            }
+            if ($WhatIf) {
+                Write-Badge "WHAT-IF" Cyan "Would build $($f.name) -> $localPath"
+                continue
+            }
+            if (Test-PathSafe $localPath -PathType Leaf) {
+                New-BackupSnapshot -BackupRoot $BackupDir -RelativeName "gemini\$($f.name)" -LocalPath $localPath
+            }
+            Write-Utf8File -Path $localPath -Content $expected
+            Write-Badge "APPLIED" Green "Built $($f.name) ($Workspace) -> $localPath"
+            $appliedCount++
+        }
+    }
+
+    if (Should-ProcessSubsystem 'skills') {
+        Write-Host "`n[AI Skills]" -ForegroundColor Yellow
+        $skillsDir = Resolve-DynamicPath $Config.subsystems.skills.targetDir
+        if (-not $WhatIf -and -not (Test-PathSafe $skillsDir -PathType Container)) {
+            [System.IO.Directory]::CreateDirectory($skillsDir) | Out-Null
+        }
+        $desiredLinks = Get-DesiredSkillLinks -Workspace $Workspace
+        $desiredTargets = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($l in $desiredLinks) { [void]$desiredTargets.Add([System.IO.Path]::GetFullPath($l.Target)) }
+
+        # Remove stale junctions in skillsDir pointing to other workspaces in this repo
+        $wsRootPrefix = [System.IO.Path]::GetFullPath((Join-Path $ScriptDir $Config.workspacesDir)).TrimEnd('\', '/') + '\'
+        if (Test-PathSafe $skillsDir -PathType Container) {
+            foreach ($entry in @(Get-ChildItem -LiteralPath $skillsDir -Force -ErrorAction SilentlyContinue)) {
+                if (-not ($entry.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { continue }
+                $jt = Get-JunctionTarget $entry.FullName
+                if ($jt -and $jt.StartsWith($wsRootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and -not $desiredTargets.Contains([System.IO.Path]::GetFullPath($entry.FullName))) {
+                    if ($WhatIf) {
+                        Write-Badge "WHAT-IF" Cyan "Would unlink stale workspace skill: $($entry.FullName)"
+                    } else {
+                        [System.IO.Directory]::Delete($entry.FullName)
+                        Write-Badge "UNLINKED" DarkYellow "Removed stale workspace skill link: $($entry.FullName)"
+                        $appliedCount++
+                    }
+                }
+            }
+        }
+
+        foreach ($link in $desiredLinks) {
+            if (Sync-JunctionLink -Source $link.Source -Target $link.Target -BackupName "skills\$($link.Name)" -BackupRoot $BackupDir) {
+                $appliedCount++
+            }
+        }
+    }
+
+    if (Should-ProcessSubsystem 'plugins') {
+        Write-Host "`n[AI Plugins]" -ForegroundColor Yellow
+        foreach ($link in (Get-DesiredPluginLinks)) {
+            if (Sync-JunctionLink -Source $link.Source -Target $link.Target -BackupName "plugins\$($link.Name)" -BackupRoot $BackupDir) {
+                $appliedCount++
+            }
+        }
+    }
+
+    if (-not $WhatIf) {
+        Write-Host "`nDone. Updated $appliedCount item(s)." -ForegroundColor Green
+        if ($appliedCount -gt 0) { Prune-Backups }
+    }
+}
+#endregion
+
+#region 7. Bootstrap Interactive Migration Engine
+function Get-GitSections {
+    param([string]$Text)
+    $sections = [System.Collections.Generic.List[PSCustomObject]]::new()
+    if (-not $Text) { return $sections }
+
+    $currentHeader = $null
+    $currentLines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in ((Normalize-TextLF $Text) -split "`n")) {
+        if ($line -match '^\s*\[([^\]]+)\]\s*(?:[#;].*)?$') {
+            if ($currentHeader) {
+                $sections.Add([PSCustomObject]@{ Header = $currentHeader; Text = ($currentLines -join "`n").TrimEnd() })
+            }
+            $currentHeader = $matches[1].Trim()
+            $currentLines = [System.Collections.Generic.List[string]]::new()
+            $currentLines.Add($line)
+        } elseif ($currentHeader) {
+            $currentLines.Add($line)
+        }
+    }
+    if ($currentHeader) {
+        $sections.Add([PSCustomObject]@{ Header = $currentHeader; Text = ($currentLines -join "`n").TrimEnd() })
+    }
+    return $sections
+}
+
+function Invoke-BootstrapWizard {
+    param([string]$Workspace)
+    $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+    Write-Host "`n=== PSS Machine Bootstrapper (Workspace: $Workspace) ===" -ForegroundColor Cyan
+
+    # 1. PowerShell Profile AST inspection
+    if (Should-ProcessSubsystem 'powershell') {
+        $localPs = Resolve-DynamicPath $Config.subsystems.powershell.localTarget
+        $sharedPs = Join-Path $ScriptDir $Config.subsystems.powershell.sharedPath
+        $wsPs = Join-Path $ScriptDir ($Config.subsystems.powershell.workspacePath.Replace('{workspace}', $Workspace))
+
+        if (-not (Test-PathSafe $localPs -PathType Leaf)) {
+            Write-Badge "INFO" DarkGray "No local PowerShell profile found at $localPs."
+        } elseif (Test-IsManagedProfileLoader $localPs) {
+            Write-Badge "OK" Green "PowerShell profile is already managed by pss loader."
+        } else {
+            $parseFuncs = {
+                param([string]$Path)
+                $map = [ordered]@{}
+                if (-not (Test-PathSafe $Path -PathType Leaf)) { return $map }
+                $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+                foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false)) {
+                    $map[$fn.Name] = $fn.Extent.Text
+                }
+                return $map
+            }
+
+            $localFuncs = & $parseFuncs $localPs
+            $sharedFuncs = & $parseFuncs $sharedPs
+            $wsFuncs = & $parseFuncs $wsPs
+
+            $pending = [System.Collections.Generic.List[PSCustomObject]]::new()
+            foreach ($name in $localFuncs.Keys) {
+                $localHash = Get-TextHash $localFuncs[$name]
+                $sharedHash = if ($sharedFuncs.Contains($name)) { Get-TextHash $sharedFuncs[$name] } else { $null }
+                $wsHash = if ($wsFuncs.Contains($name)) { Get-TextHash $wsFuncs[$name] } else { $null }
+                if ($localHash -eq $sharedHash -or $localHash -eq $wsHash) { continue }
+
+                $kind = if ($sharedFuncs.Contains($name) -or $wsFuncs.Contains($name)) { "Modified" } else { "New" }
+                $pending.Add([PSCustomObject]@{ Name = $name; Kind = $kind; Code = $localFuncs[$name] })
+            }
+
+            if ($pending.Count -eq 0) {
+                Write-Badge "OK" Green "All functions in local PowerShell profile already match repo."
+            } else {
+                Write-Host "`nFound $($pending.Count) new/modified PowerShell function(s) in ${localPs}:" -ForegroundColor Yellow
+                foreach ($item in $pending) {
+                    Write-Host "  - [$($item.Kind)] function $($item.Name)" -ForegroundColor Cyan
+                    if ($WhatIf) { continue }
+                    if (-not $isInteractive) {
+                        Write-Badge "ERROR" Red "Interactive session required to route '$($item.Name)'."
+                        exit 1
+                    }
+
+                    $choice = (Read-Host "    Route 'function $($item.Name)' to: [S]hared, [W]orkspace ($Workspace), [L]ocal (~/.profile.local.ps1), [I]gnore, [Q]uit").Trim().ToUpperInvariant()
+                    switch ($choice) {
+                        'Q' { Write-Host "Bootstrap aborted."; return }
+                        'S' {
+                            $targetText = if (Test-PathSafe $sharedPs -PathType Leaf) { Normalize-TextLF ([System.IO.File]::ReadAllText($sharedPs, [System.Text.Encoding]::UTF8)) } else { "" }
+                            if ($item.Kind -eq 'Modified' -and $sharedFuncs.Contains($item.Name)) {
+                                $sharedAst = [System.Management.Automation.Language.Parser]::ParseFile($sharedPs, [ref]$null, [ref]$null)
+                                $oldAst = $sharedAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
+                                if ($oldAst) {
+                                    $updated = $sharedAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $sharedAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
+                                    Write-Utf8File -Path $sharedPs -Content $updated
+                                }
+                            } elseif ($targetText -match '(?m)^#region 7\.') {
+                                $m = [regex]::Match($targetText, '(?m)^#region 7\.')
+                                $updated = $targetText.Substring(0, $m.Index) + $item.Code + "`n`n" + $targetText.Substring($m.Index)
+                                Write-Utf8File -Path $sharedPs -Content $updated
+                            } else {
+                                Append-Utf8File -Path $sharedPs -Content $item.Code
+                            }
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> $($Config.subsystems.powershell.sharedPath)"
+                        }
+                        'W' {
+                            if ($item.Kind -eq 'Modified' -and $wsFuncs.Contains($item.Name)) {
+                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($wsPs, [ref]$null, [ref]$null)
+                                $oldAst = $wsAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
+                                if ($oldAst) {
+                                    $updated = $wsAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $wsAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
+                                    Write-Utf8File -Path $wsPs -Content $updated
+                                }
+                            } else {
+                                Append-Utf8File -Path $wsPs -Content $item.Code
+                            }
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> workspaces/$Workspace/powershell/profile.ps1"
+                        }
+                        'L' {
+                            $localOverride = Join-Path (Get-EffectiveHome) ".profile.local.ps1"
+                            Append-Utf8File -Path $localOverride -Content $item.Code
+                            Write-Badge "ROUTED" Green "Added '$($item.Name)' -> $localOverride"
+                        }
+                        default {
+                            Write-Badge "SKIP" DarkGray "Ignored function '$($item.Name)'."
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # 2. Git Config section inspection
+    if (Should-ProcessSubsystem 'git') {
+        $localGit = Resolve-DynamicPath $Config.subsystems.git.localTarget
+        $sharedGit = Join-Path $ScriptDir $Config.subsystems.git.sharedPath
+        $wsGit = Join-Path $ScriptDir ($Config.subsystems.git.workspacePath.Replace('{workspace}', $Workspace))
+
+        if (Test-PathSafe $localGit -PathType Leaf) {
+            $localSections = Get-GitSections ([System.IO.File]::ReadAllText($localGit, [System.Text.Encoding]::UTF8))
+            $sharedText = if (Test-PathSafe $sharedGit -PathType Leaf) { [System.IO.File]::ReadAllText($sharedGit, [System.Text.Encoding]::UTF8) } else { "" }
+            $wsText = if (Test-PathSafe $wsGit -PathType Leaf) { [System.IO.File]::ReadAllText($wsGit, [System.Text.Encoding]::UTF8) } else { "" }
+
+            $sharedHashes = @((Get-GitSections $sharedText) | ForEach-Object { Get-TextHash $_.Text })
+            $wsHashes = @((Get-GitSections $wsText) | ForEach-Object { Get-TextHash $_.Text })
+
+            $candidates = @($localSections | Where-Object {
+                $_.Header -notmatch '^include(?:\b|$)|^includeIf\b|^credential' -and
+                (Get-TextHash $_.Text) -notin $sharedHashes -and
+                (Get-TextHash $_.Text) -notin $wsHashes
+            })
+
+            if ($candidates.Count -eq 0) {
+                Write-Badge "OK" Green "All local .gitconfig sections are accounted for."
+            } else {
+                Write-Host "`nFound $($candidates.Count) non-managed section(s) in ${localGit}:" -ForegroundColor Yellow
+                foreach ($sec in $candidates) {
+                    Write-Host "  - [$($sec.Header)]" -ForegroundColor Cyan
+                    if ($WhatIf) { continue }
+                    if (-not $isInteractive) {
+                        Write-Badge "ERROR" Red "Interactive session required to route git section [$($sec.Header)]."
+                        exit 1
+                    }
+
+                    $choice = (Read-Host "    Route [$($sec.Header)] to: [S]hared, [W]orkspace ($Workspace), [L]ocal (keep in ~/.gitconfig), [Q]uit").Trim().ToUpperInvariant()
+                    switch ($choice) {
+                        'Q' { Write-Host "Bootstrap aborted."; return }
+                        'S' {
+                            Append-Utf8File -Path $sharedGit -Content $sec.Text
+                            Write-Badge "ROUTED" Green "Added [$($sec.Header)] -> $($Config.subsystems.git.sharedPath)"
+                        }
+                        'W' {
+                            Append-Utf8File -Path $wsGit -Content $sec.Text
+                            Write-Badge "ROUTED" Green "Added [$($sec.Header)] -> workspaces/$Workspace/git/.gitconfig"
+                        }
+                        default {
+                            Write-Badge "KEEP" DarkGray "Kept [$($sec.Header)] local in ~/.gitconfig"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    # 3. AI AGENTS.md inspection
+    if (Should-ProcessSubsystem 'gemini') {
+        $agentsEntry = $Config.subsystems.gemini.files | Where-Object { $_.name -eq 'AGENTS.md' } | Select-Object -First 1
+        if ($agentsEntry) {
+            $localAgents = Resolve-DynamicPath $agentsEntry.localPath
+            $expected = Get-ExpectedGeminiFileContent -FileEntry $agentsEntry -Workspace $Workspace
+            if ((Test-PathSafe $localAgents -PathType Leaf) -and $expected) {
+                $localHash = Get-FileHashSafe $localAgents
+                if ($localHash -ne (Get-TextHash $expected)) {
+                    Write-Host "`nLocal AGENTS.md differs from synthesized ($Workspace) output:" -ForegroundColor Yellow
+                    $tempExpected = Join-Path ([System.IO.Path]::GetTempPath()) "pss-agents-$([guid]::NewGuid().ToString('N')).md"
+                    try {
+                        Write-Utf8File -Path $tempExpected -Content $expected
+                        Invoke-GitCmd @('diff', '--no-index', '--color', $tempExpected, $localAgents) | Out-Host
+                    } finally {
+                        Remove-Item -LiteralPath $tempExpected -Force -ErrorAction SilentlyContinue
+                    }
+                    if (-not $WhatIf -and $isInteractive) {
+                        Write-Host "Use 'pss edit shared agents' or 'pss edit $Workspace agents' to port any rules you want to keep, then run 'pss apply -Include gemini'." -ForegroundColor DarkGray
+                    }
+                } else {
+                    Write-Badge "OK" Green "AGENTS.md matches synthesized repo state."
+                }
+            }
+        }
+    }
+
+    if ($Push -and -not $WhatIf) {
+        Invoke-GitRemotePush -CommitMessage "chore: bootstrap $Workspace configs from $env:COMPUTERNAME"
+    }
+}
+#endregion
+
+#region 8. Execution Dispatcher
+$subLower = if ($SubAction) { $SubAction.ToLowerInvariant() } else { '' }
+$actionsWithoutActiveWs = ($Action.ToLowerInvariant() -eq 'workspace' -and ($subLower -in @('', 'list', 'current', 'use', 'new')))
+$ActiveWorkspace = if ($actionsWithoutActiveWs) {
+    if (Test-PathSafe $WorkspaceLocalFile -PathType Leaf) {
+        $wsRaw = Get-Content -LiteralPath $WorkspaceLocalFile -Raw -ErrorAction SilentlyContinue
+        if ($wsRaw) { $wsRaw.Trim() } else { '' }
+    } else { '' }
+} else {
+    Get-ActiveWorkspace
+}
+
+if ($ActiveWorkspace) {
+    Write-Host "`n[PSS] Active Workspace: " -ForegroundColor Cyan -NoNewline
+    Write-Host "$ActiveWorkspace" -ForegroundColor Green
+}
 
 if ($Pull) {
     Write-Host "`n=== Pulling Latest Changes From Git ===" -ForegroundColor Cyan
-    git pull
+    Invoke-GitCmd @('-C', $ScriptDir, 'pull')
     if ($LASTEXITCODE -ne 0) {
-        Write-Badge "WARN" Yellow "git pull completed with code $LASTEXITCODE"
+        Write-Badge "WARN" Yellow "git pull exited with code $LASTEXITCODE"
     }
 }
 
@@ -596,8 +1040,7 @@ switch ($Action.ToLowerInvariant()) {
         switch ($sub) {
             'list' {
                 Write-Host "`n=== Available Workspaces ===" -ForegroundColor Cyan
-                $all = Get-AvailableWorkspaces
-                foreach ($w in $all) {
+                foreach ($w in (Get-AvailableWorkspaces)) {
                     if ($w -eq $ActiveWorkspace) {
                         Write-Host " * $w (active)" -ForegroundColor Green
                     } else {
@@ -607,34 +1050,59 @@ switch ($Action.ToLowerInvariant()) {
                 Write-Host "`nSwitch workspace: pss workspace use <name>" -ForegroundColor DarkGray
             }
             'current' {
-                Write-Host "`nActive workspace: $ActiveWorkspace" -ForegroundColor Green
-                Write-Host "Path: $(Join-Path $ScriptDir "workspaces\$ActiveWorkspace")" -ForegroundColor DarkGray
+                if ($ActiveWorkspace) {
+                    Write-Host "`nActive workspace: $ActiveWorkspace" -ForegroundColor Green
+                    Write-Host "Path: $(Join-Path $ScriptDir "workspaces\$ActiveWorkspace")" -ForegroundColor DarkGray
+                } else {
+                    Write-Host "`nNo active workspace configured. Run 'pss workspace use <name>'." -ForegroundColor Yellow
+                }
             }
             'use' {
-                Set-ActiveWorkspace -Name $TargetName
+                if (-not $TargetName) {
+                    Write-Badge "ERROR" Red "Workspace name required: pss workspace use <name>"
+                    exit 1
+                }
+                $wsNorm = $TargetName.Trim().ToLowerInvariant()
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would set active workspace to '$wsNorm'"
+                    if (-not $NoApply) {
+                        Invoke-ApplySubsystems -Workspace $wsNorm -BackupDir $backupDir
+                    }
+                    break
+                }
+                Set-ActiveWorkspace -Name $wsNorm
+                $ActiveWorkspace = $wsNorm
+                if (-not $NoApply) {
+                    Invoke-ApplySubsystems -Workspace $ActiveWorkspace -BackupDir $backupDir
+                }
             }
             'new' {
-                New-WorkspaceContext -Name $TargetName
-                if ($Push) {
-                    Invoke-GitRemotePush -CommitMessage "chore: add workspace context $TargetName"
+                if ($WhatIf) {
+                    Write-Badge "WHAT-IF" Cyan "Would create workspace '$TargetName'"
+                    break
                 }
+                New-WorkspaceContext -Name $TargetName
+                if ($Push) { Invoke-GitRemotePush -CommitMessage "chore: add workspace $TargetName" }
             }
             'delete' {
                 if (-not $TargetName) {
                     Write-Badge "ERROR" Red "Workspace name required: pss workspace delete <name>"
                     exit 1
                 }
+                $TargetName = $TargetName.Trim().ToLowerInvariant()
                 if ($TargetName -eq $ActiveWorkspace) {
-                    Write-Badge "ERROR" Red "Cannot delete active workspace '$TargetName'. Switch to another workspace first."
+                    Write-Badge "ERROR" Red "Cannot delete active workspace '$TargetName'."
                     exit 1
                 }
-                $targetDir = Join-Path $ScriptDir "workspaces\$TargetName"
+                $targetDir = Join-Path (Join-Path $ScriptDir $Config.workspacesDir) $TargetName
                 if (Test-PathSafe $targetDir -PathType Container) {
+                    if ($WhatIf) {
+                        Write-Badge "WHAT-IF" Cyan "Would delete workspace '$TargetName'"
+                        break
+                    }
                     Remove-Item -LiteralPath $targetDir -Recurse -Force
                     Write-Badge "DELETED" Green "Deleted workspace '$TargetName'"
-                    if ($Push) {
-                        Invoke-GitRemotePush -CommitMessage "chore: remove workspace context $TargetName"
-                    }
+                    if ($Push) { Invoke-GitRemotePush -CommitMessage "chore: remove workspace $TargetName" }
                 } else {
                     Write-Badge "WARN" Yellow "Workspace '$TargetName' not found."
                 }
@@ -648,420 +1116,241 @@ switch ($Action.ToLowerInvariant()) {
 
     'status' {
         Write-Host "`n=== Personal Settings Sync Status ===" -ForegroundColor Cyan
-        $results = @()
+        $rows = [System.Collections.Generic.List[PSCustomObject]]::new()
 
-        foreach ($app in $Config.apps) {
-            if (-not (Should-ProcessSubsystem $app.name)) { continue }
+        if (Should-ProcessSubsystem 'powershell') {
+            $psState = Get-PowerShellStatus
+            $rows.Add([PSCustomObject]@{ Subsystem = "PowerShell"; Target = "Profile Loader"; Mode = "Loader"; Status = $psState.Status; Path = $psState.LocalPath })
+        }
 
-            foreach ($fileConfig in $app.files) {
-                $paths = Resolve-WorkspaceFilePaths -FileEntry $fileConfig -Workspace $ActiveWorkspace
-                $localExists = Test-PathSafe $paths.LocalPath -PathType Leaf
+        if (Should-ProcessSubsystem 'git') {
+            $gitState = Get-GitConfigStatus -Workspace $ActiveWorkspace
+            $rows.Add([PSCustomObject]@{ Subsystem = "Git"; Target = ".gitconfig"; Mode = "Include"; Status = $gitState.Status; Path = $gitState.LocalPath })
+        }
 
-                $statusText = "Unknown"
-                if ($paths.Layered) {
-                    $synth = Get-SynthesizedJsonContent -SharedRepoPath $paths.RepoPath -WorkspaceRepoPath $paths.WorkspacePath
-                    if (-not $synth -and -not $localExists) {
-                        $statusText = "Missing Both"
-                    } elseif (-not $synth) {
-                        $statusText = "Missing in Repo"
-                    } elseif (-not $localExists) {
-                        $statusText = "Missing on Machine"
-                    } else {
-                        $localText = [System.IO.File]::ReadAllText($paths.LocalPath, [System.Text.Encoding]::UTF8)
-                        $cleanLocal = [regex]::Replace($localText, '(?m)^\s*//.*$', '')
-                        try {
-                            $localMap = ConvertFrom-Json -InputObject $cleanLocal -AsHashtable
-                            $synthMap = ConvertFrom-Json -InputObject $synth -AsHashtable
-                            $diffs = Compare-JsonProperties -LocalMap $localMap -EffectiveMap $synthMap
-                            if ($diffs.Count -eq 0) {
-                                $statusText = "In Sync"
-                            } else {
-                                $statusText = "Modified ($($diffs.Count) keys)"
-                            }
-                        } catch {
-                            $statusText = "Format Error"
-                        }
-                    }
+        if (Should-ProcessSubsystem 'gemini') {
+            foreach ($f in $Config.subsystems.gemini.files) {
+                $localPath = Resolve-DynamicPath $f.localPath
+                $expected = Get-ExpectedGeminiFileContent -FileEntry $f -Workspace $ActiveWorkspace
+                if ($null -eq $expected) { continue }
+                $statusText = if (-not (Test-PathSafe $localPath -PathType Leaf)) {
+                    "Missing on Machine"
+                } elseif ((Get-FileHashSafe $localPath) -eq (Get-TextHash $expected)) {
+                    "In Sync"
                 } else {
-                    $repoFull = if ($paths.RepoPath) { Join-Path $ScriptDir $paths.RepoPath } else { Join-Path $ScriptDir $paths.WorkspacePath }
-                    $repoExists = Test-PathSafe $repoFull -PathType Leaf
-
-                    if (-not $repoExists -and -not $localExists) {
-                        $statusText = "Missing Both"
-                    } elseif (-not $repoExists) {
-                        $statusText = "Missing in Repo"
-                    } elseif (-not $localExists) {
-                        $statusText = "Missing on Machine"
-                    } else {
-                        $repoHash = Get-FileHashSafe $repoFull
-                        $localHash = Get-FileHashSafe $paths.LocalPath
-                        if ($repoHash -and ($repoHash -eq $localHash)) {
-                            $statusText = "In Sync"
-                        } else {
-                            $statusText = "Modified"
-                        }
-                    }
+                    "Modified"
                 }
-
-                $results += [PSCustomObject]@{
-                    Subsystem = $app.displayName
-                    File      = Split-Path -Leaf $paths.LocalPath
-                    Status    = $statusText
-                    LocalPath = $paths.LocalPath
-                }
+                $rows.Add([PSCustomObject]@{ Subsystem = "AI Rules"; Target = $f.name; Mode = $f.mode; Status = $statusText; Path = $localPath })
             }
         }
 
-        # Skills & Plugins
-        if ((Should-ProcessSubsystem 'skills') -and $Config.skills) {
-            $skillsBase = Resolve-DynamicPath "%USERPROFILE%\.agents\skills"
-            foreach ($s in $Config.skills) {
-                $localSkill = Join-Path $skillsBase $s
-                $statusText = if (Test-PathSafe $localSkill -PathType Container) { "In Sync" } else { "Missing on Machine" }
-                $results += [PSCustomObject]@{
-                    Subsystem = "Skill"
-                    File      = $s
-                    Status    = $statusText
-                    LocalPath = $localSkill
-                }
+        if (Should-ProcessSubsystem 'skills') {
+            foreach ($link in (Get-DesiredSkillLinks -Workspace $ActiveWorkspace)) {
+                $rows.Add([PSCustomObject]@{
+                    Subsystem = "AI Skill"
+                    Target    = $link.Name
+                    Mode      = "Junction"
+                    Status    = (Get-JunctionStatus -Source $link.Source -Target $link.Target)
+                    Path      = $link.Target
+                })
             }
         }
 
-        if ((Should-ProcessSubsystem 'plugins') -and $Config.plugins) {
-            $pluginsBase = Resolve-DynamicPath "%USERPROFILE%\.gemini\config\plugins"
-            foreach ($p in $Config.plugins) {
-                $localPlugin = Join-Path $pluginsBase $p
-                $statusText = if (Test-PathSafe $localPlugin -PathType Container) { "In Sync" } else { "Missing on Machine" }
-                $results += [PSCustomObject]@{
-                    Subsystem = "Plugin"
-                    File      = $p
-                    Status    = $statusText
-                    LocalPath = $localPlugin
-                }
+        if (Should-ProcessSubsystem 'plugins') {
+            foreach ($link in (Get-DesiredPluginLinks)) {
+                $rows.Add([PSCustomObject]@{
+                    Subsystem = "AI Plugin"
+                    Target    = $link.Name
+                    Mode      = "Junction"
+                    Status    = (Get-JunctionStatus -Source $link.Source -Target $link.Target)
+                    Path      = $link.Target
+                })
             }
         }
 
-        $results | Format-Table -Property Subsystem, File, Status, LocalPath -AutoSize
+        $rows | Format-Table -Property Subsystem, Target, Mode, Status, Path -AutoSize
     }
 
-    'apply' {
-        Write-Host "`n=== Applying Settings (Repo -> Machine) ===" -ForegroundColor Cyan
-        $appliedCount = 0
-
-        foreach ($app in $Config.apps) {
-            if (-not (Should-ProcessSubsystem $app.name)) { continue }
-            Write-Host "`n[$($app.displayName)]" -ForegroundColor Yellow
-
-            foreach ($fileConfig in $app.files) {
-                $paths = Resolve-WorkspaceFilePaths -FileEntry $fileConfig -Workspace $ActiveWorkspace
-                $localExists = Test-PathSafe $paths.LocalPath -PathType Leaf
-
-                if ($paths.Layered) {
-                    $synth = Get-SynthesizedJsonContent -SharedRepoPath $paths.RepoPath -WorkspaceRepoPath $paths.WorkspacePath
-                    if (-not $synth) {
-                        if ($paths.Required) { Write-Badge "WARN" Yellow "No layered configuration found for $($paths.RepoPath)" }
-                        continue
-                    }
-
-                    # Check if already in sync
-                    if (-not $Force -and $localExists) {
-                        try {
-                            $localText = [System.IO.File]::ReadAllText($paths.LocalPath, [System.Text.Encoding]::UTF8)
-                            $localMap = ConvertFrom-Json -InputObject ($localText -replace '(?m)^\s*//.*$', '') -AsHashtable
-                            $synthMap = ConvertFrom-Json -InputObject $synth -AsHashtable
-                            $diffs = Compare-JsonProperties -LocalMap $localMap -EffectiveMap $synthMap
-                            if ($diffs.Count -eq 0) {
-                                Write-Badge "OK" DarkGray "Already in sync: $($paths.LocalPath)"
-                                continue
-                            }
-                        } catch {}
-                    }
-
-                    if ($WhatIf) {
-                        Write-Badge "WHAT-IF" Cyan "Would write synthesized JSON -> $($paths.LocalPath)"
-                        continue
-                    }
-
-                    if ($localExists -and -not $NoBackup) {
-                        New-BackupSnapshot -BackupRoot $backupDir -RelativePath $paths.RepoPath -LocalFullPath $paths.LocalPath
-                    }
-
-                    Write-Utf8File -Path $paths.LocalPath -Content $synth
-                    Write-Badge "APPLIED" Green "Synthesized (shared + $ActiveWorkspace) -> $($paths.LocalPath)"
-                    $appliedCount++
-                } else {
-                    $repoFull = if ($paths.RepoPath) { Join-Path $ScriptDir $paths.RepoPath } else { Join-Path $ScriptDir $paths.WorkspacePath }
-                    if (-not (Test-PathSafe $repoFull -PathType Leaf)) {
-                        if ($paths.Required) { Write-Badge "WARN" Yellow "Repo file missing: $repoFull" }
-                        continue
-                    }
-
-                    $repoHash = Get-FileHashSafe $repoFull
-                    $localHash = if ($localExists) { Get-FileHashSafe $paths.LocalPath } else { $null }
-
-                    if (-not $Force -and $localExists -and ($repoHash -eq $localHash)) {
-                        Write-Badge "OK" DarkGray "Already in sync: $($paths.LocalPath)"
-                        continue
-                    }
-
-                    if ($WhatIf) {
-                        Write-Badge "WHAT-IF" Cyan "Would deploy $repoFull -> $($paths.LocalPath)"
-                        continue
-                    }
-
-                    if ($localExists -and -not $NoBackup) {
-                        New-BackupSnapshot -BackupRoot $backupDir -RelativePath $paths.RepoPath -LocalFullPath $paths.LocalPath
-                    }
-
-                    $parentDir = Split-Path -Parent $paths.LocalPath
-                    if (-not (Test-PathSafe $parentDir -PathType Container)) {
-                        [System.IO.Directory]::CreateDirectory($parentDir) | Out-Null
-                    }
-                    Copy-Item -LiteralPath $repoFull -Destination $paths.LocalPath -Force
-                    Write-Badge "APPLIED" Green "$repoFull -> $($paths.LocalPath)"
-                    $appliedCount++
-                }
-            }
-        }
-
-        # Deploy workspace profile additions to ~/.profile.local.ps1 if present
-        $wsProfile = Join-Path $ScriptDir "workspaces\$ActiveWorkspace\powershell\profile.ps1"
-        if ((Should-ProcessSubsystem 'powershell') -and (Test-PathSafe $wsProfile -PathType Leaf)) {
-            $localProfileTarget = Resolve-DynamicPath "%USERPROFILE%\.profile.local.ps1"
-            if (-not $WhatIf) {
-                Copy-Item -LiteralPath $wsProfile -Destination $localProfileTarget -Force
-                Write-Badge "APPLIED" Green "workspaces/$ActiveWorkspace/powershell/profile.ps1 -> $localProfileTarget"
-                $appliedCount++
-            } else {
-                Write-Badge "WHAT-IF" Cyan "Would deploy workspace profile additions -> $localProfileTarget"
-            }
-        }
-
-        if (-not $WhatIf) {
-            Write-Host "`nDone. Successfully applied $appliedCount file(s)." -ForegroundColor Green
-            if ($appliedCount -gt 0 -and -not $NoBackup) {
-                Prune-Backups
-            }
-        }
-    }
-
-    'export' {
-        Write-Host "`n=== Exporting Settings (Machine -> Repo) ===" -ForegroundColor Cyan
-        $exportedCount = 0
-        $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
-
-        foreach ($app in $Config.apps) {
-            if (-not (Should-ProcessSubsystem $app.name)) { continue }
-            Write-Host "`n[$($app.displayName)]" -ForegroundColor Yellow
-
-            foreach ($fileConfig in $app.files) {
-                $paths = Resolve-WorkspaceFilePaths -FileEntry $fileConfig -Workspace $ActiveWorkspace
-                if (-not (Test-PathSafe $paths.LocalPath -PathType Leaf)) { continue }
-
-                if ($paths.Layered) {
-                    $sharedFull = Join-Path $ScriptDir $paths.RepoPath
-                    $wsFull     = Join-Path $ScriptDir $paths.WorkspacePath
-
-                    $sharedMap = Read-JsonAsHashtable -Path $sharedFull
-                    $wsMap     = Read-JsonAsHashtable -Path $wsFull
-                    $effective = Merge-HashtableRecursive -Base $sharedMap -Override $wsMap
-
-                    $localText = [System.IO.File]::ReadAllText($paths.LocalPath, [System.Text.Encoding]::UTF8)
-                    $cleanLocal = [regex]::Replace($localText, '(?m)^\s*//.*$', '')
-                    $localMap = ConvertFrom-Json -InputObject $cleanLocal -AsHashtable
-
-                    $diffs = Compare-JsonProperties -LocalMap $localMap -EffectiveMap $effective
-                    if ($diffs.Count -eq 0) {
-                        Write-Badge "OK" DarkGray "Already in sync: $($paths.LocalPath)"
-                        continue
-                    }
-
-                    Write-Host "Found $($diffs.Count) modified/new key(s) in $($paths.LocalPath)." -ForegroundColor Cyan
-
-                    # Group diffs by root namespace (e.g. editor, workbench, git)
-                    $groups = $diffs | Group-Object { ($_.Property -split '\.')[0] }
-
-                    foreach ($g in $groups) {
-                        $targetLayer = $Target
-                        if (-not $targetLayer) {
-                            if (-not $isInteractive) {
-                                Write-Badge "ERROR" Red "Non-interactive export requires -Target Shared or -Target Workspace."
-                                exit 1
-                            }
-
-                            Write-Host "`n--- Namespace: $($g.Name) ($($g.Count) change(s)) ---" -ForegroundColor Yellow
-                            foreach ($d in $g.Group) {
-                                if ($d.Type -eq 'DELETED') {
-                                    Write-Host "  [DEL] $($d.Property) (present in repo, removed locally)" -ForegroundColor Red
-                                } elseif ($d.Type -eq 'NEW') {
-                                    Write-Host "  [NEW] $($d.Property) = $(ConvertTo-Json $d.LocalVal -Compress)" -ForegroundColor Green
-                                } else {
-                                    Write-Host "  [MOD] $($d.Property) : $(ConvertTo-Json $d.RepoVal -Compress) -> $(ConvertTo-Json $d.LocalVal -Compress)" -ForegroundColor Cyan
-                                }
-                            }
-
-                            Write-Host "Route changes for '$($g.Name)': [S]hared (all machines), [W]orkspace ('$ActiveWorkspace' only), [K]eep repo values, [Q]uit?" -ForegroundColor White
-                            $choice = (Read-Host "Choice [S/W/K/Q]").Trim().ToUpperInvariant()
-
-                            switch ($choice) {
-                                'S' { $targetLayer = 'Shared' }
-                                'W' { $targetLayer = 'Workspace' }
-                                'Q' { Write-Host "Export aborted."; return }
-                                default { $targetLayer = 'Keep' }
-                            }
-                        }
-
-                        if ($targetLayer -eq 'Shared') {
-                            foreach ($d in $g.Group) {
-                                if ($d.Type -eq 'DELETED') {
-                                    $sharedMap.Remove($d.Property)
-                                } else {
-                                    $sharedMap[$d.Property] = $d.LocalVal
-                                }
-                            }
-                        } elseif ($targetLayer -eq 'Workspace') {
-                            foreach ($d in $g.Group) {
-                                if ($d.Type -eq 'DELETED') {
-                                    $wsMap.Remove($d.Property)
-                                } else {
-                                    $wsMap[$d.Property] = $d.LocalVal
-                                }
-                            }
-                        }
-                    }
-
-                    if (-not $WhatIf) {
-                        Write-Utf8File -Path $sharedFull -Content (($sharedMap | ConvertTo-Json -Depth 100))
-                        Write-Utf8File -Path $wsFull     -Content (($wsMap | ConvertTo-Json -Depth 100))
-                        Write-Badge "EXPORTED" Green "Reconciled $($paths.LocalPath) into repo layers"
-                        $exportedCount++
-                    } else {
-                        Write-Badge "WHAT-IF" Cyan "Would export $($paths.LocalPath) into repo layers"
-                    }
-                } else {
-                    $repoFull = if ($paths.RepoPath) { Join-Path $ScriptDir $paths.RepoPath } else { Join-Path $ScriptDir $paths.WorkspacePath }
-                    $repoHash = Get-FileHashSafe $repoFull
-                    $localHash = Get-FileHashSafe $paths.LocalPath
-
-                    if ($repoHash -and ($repoHash -eq $localHash)) {
-                        Write-Badge "OK" DarkGray "Already in sync: $($paths.LocalPath)"
-                        continue
-                    }
-
-                    if ($WhatIf) {
-                        Write-Badge "WHAT-IF" Cyan "Would export $($paths.LocalPath) -> $repoFull"
-                        continue
-                    }
-
-                    Copy-Item -LiteralPath $paths.LocalPath -Destination $repoFull -Force
-                    Write-Badge "EXPORTED" Green "$($paths.LocalPath) -> $repoFull"
-                    $exportedCount++
-                }
-            }
-        }
-
-        if (-not $WhatIf) {
-            Write-Host "`nDone. Successfully exported $exportedCount file(s)." -ForegroundColor Green
-            if ($Push) {
-                Invoke-GitRemotePush -CommitMessage "sync: update settings from $env:COMPUTERNAME ($ActiveWorkspace)"
-            }
-        }
+    { $_ -in @('apply', 'link') } {
+        Invoke-ApplySubsystems -Workspace $ActiveWorkspace -BackupDir $backupDir
     }
 
     'diff' {
-        Write-Host "`n=== Comparing Local Machine vs Synthesized State ===" -ForegroundColor Cyan
+        Write-Host "`n=== Comparing Local Machine vs Repo ($ActiveWorkspace) ===" -ForegroundColor Cyan
         $diffCount = 0
 
-        foreach ($app in $Config.apps) {
-            if (-not (Should-ProcessSubsystem $app.name)) { continue }
-
-            foreach ($fileConfig in $app.files) {
-                $paths = Resolve-WorkspaceFilePaths -FileEntry $fileConfig -Workspace $ActiveWorkspace
-                if (-not (Test-PathSafe $paths.LocalPath -PathType Leaf)) { continue }
-
-                if ($paths.Layered) {
-                    $synth = Get-SynthesizedJsonContent -SharedRepoPath $paths.RepoPath -WorkspaceRepoPath $paths.WorkspacePath
-                    if (-not $synth) { continue }
-
-                    $localText = [System.IO.File]::ReadAllText($paths.LocalPath, [System.Text.Encoding]::UTF8)
-                    $localMap = ConvertFrom-Json -InputObject ($localText -replace '(?m)^\s*//.*$', '') -AsHashtable
-                    $synthMap = ConvertFrom-Json -InputObject $synth -AsHashtable
-                    $diffs = Compare-JsonProperties -LocalMap $localMap -EffectiveMap $synthMap
-
-                    if ($diffs.Count -gt 0) {
-                        $diffCount++
-                        Write-Host "`n--- Property Diff for $($app.displayName): $($paths.LocalPath) vs Synthesized ($ActiveWorkspace) ---" -ForegroundColor Magenta
-                        foreach ($d in $diffs) {
-                            if ($d.Type -eq 'DELETED') {
-                                Write-Host " - $($d.Property) (Deleted locally)" -ForegroundColor Red
-                            } elseif ($d.Type -eq 'NEW') {
-                                Write-Host " + $($d.Property) = $(ConvertTo-Json $d.LocalVal -Compress)" -ForegroundColor Green
-                            } else {
-                                Write-Host " ~ $($d.Property) : $(ConvertTo-Json $d.RepoVal -Compress) -> $(ConvertTo-Json $d.LocalVal -Compress)" -ForegroundColor Cyan
-                            }
-                        }
-                    }
+        if (Should-ProcessSubsystem 'powershell') {
+            $psState = Get-PowerShellStatus
+            if ($psState.Status -ne 'In Sync') {
+                $diffCount++
+                Write-Host "`n--- PowerShell Profile ($($psState.Status)) ---" -ForegroundColor Magenta
+                if ($psState.Status -eq 'Unmanaged Local File') {
+                    $sharedPs = Join-Path $ScriptDir $Config.subsystems.powershell.sharedPath
+                    Invoke-GitCmd @('diff', '--no-index', '--color', $sharedPs, $psState.LocalPath)
                 } else {
-                    $repoFull = if ($paths.RepoPath) { Join-Path $ScriptDir $paths.RepoPath } else { Join-Path $ScriptDir $paths.WorkspacePath }
-                    $repoHash = Get-FileHashSafe $repoFull
-                    $localHash = Get-FileHashSafe $paths.LocalPath
-                    if ($repoHash -ne $localHash) {
-                        $diffCount++
-                        Write-Host "`n--- File Diff for $($app.displayName): $($paths.LocalPath) vs $repoFull ---" -ForegroundColor Magenta
-                        git diff --no-index --color $paths.LocalPath $repoFull
+                    Write-Host "Local: $($psState.LocalPath)" -ForegroundColor DarkGray
+                    Write-Host "Expected loader:`n$($psState.Expected)" -ForegroundColor Green
+                }
+            }
+        }
+
+        if (Should-ProcessSubsystem 'git') {
+            $gitState = Get-GitConfigStatus -Workspace $ActiveWorkspace
+            if ($gitState.Status -ne 'In Sync') {
+                $diffCount++
+                Write-Host "`n--- Git Config ($($gitState.Status)) ---" -ForegroundColor Magenta
+                Write-Host "Expected includes in $($gitState.LocalPath):" -ForegroundColor Cyan
+                $gitState.Desired | ForEach-Object { Write-Host "  + $_" -ForegroundColor Green }
+            }
+        }
+
+        if (Should-ProcessSubsystem 'gemini') {
+            foreach ($f in $Config.subsystems.gemini.files) {
+                $localPath = Resolve-DynamicPath $f.localPath
+                $expected = Get-ExpectedGeminiFileContent -FileEntry $f -Workspace $ActiveWorkspace
+                if (-not $expected) { continue }
+                if (-not (Test-PathSafe $localPath -PathType Leaf)) {
+                    $diffCount++
+                    Write-Host "`n--- AI Rules: $($f.name) (Missing on Machine) ---" -ForegroundColor Magenta
+                    continue
+                }
+                if ((Get-FileHashSafe $localPath) -ne (Get-TextHash $expected)) {
+                    $diffCount++
+                    Write-Host "`n--- AI Rules: $($f.name) ---" -ForegroundColor Magenta
+                    $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) "pss-diff-$([guid]::NewGuid().ToString('N')).txt"
+                    try {
+                        Write-Utf8File -Path $tempFile -Content $expected
+                        Invoke-GitCmd @('diff', '--no-index', '--color', $tempFile, $localPath)
+                    } finally {
+                        Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
                     }
                 }
             }
         }
 
         if ($diffCount -eq 0) {
-            Write-Badge "OK" Green "All configurations are in sync with active workspace '$ActiveWorkspace'."
+            Write-Badge "OK" Green "All inspected configurations are in sync with '$ActiveWorkspace'."
         }
+    }
+
+    'edit' {
+        $knownTargets = @('powershell', 'ps', 'profile', 'git', 'agents', 'gemini', 'skills.json')
+        if ($SubAction -and -not $TargetName -and ($SubAction.ToLowerInvariant() -in $knownTargets)) {
+            $layer = 'shared'
+            $target = $SubAction.ToLowerInvariant()
+        } else {
+            $layer = if ($SubAction) { $SubAction.ToLowerInvariant() } else { 'shared' }
+            $target = if ($TargetName) { $TargetName.ToLowerInvariant() } else { '' }
+        }
+        if (-not $target) {
+            Write-Badge "ERROR" Red "Usage: pss edit [<shared|workspace>] <powershell|git|agents|gemini|skills.json>"
+            exit 1
+        }
+
+        $relPath = if ($layer -eq 'shared') {
+            switch ($target) {
+                { $_ -in @('powershell', 'ps', 'profile') } { $Config.subsystems.powershell.sharedPath }
+                'git'         { $Config.subsystems.git.sharedPath }
+                'agents'      { 'configs/gemini/AGENTS.md' }
+                'gemini'      { 'configs/gemini/GEMINI.md' }
+                'skills.json' { 'configs/gemini/skills.json' }
+                default       { $null }
+            }
+        } else {
+            $wsName = if ($layer -eq 'workspace') { $ActiveWorkspace } else { $layer }
+            $wsRoot = Join-Path (Join-Path $ScriptDir $Config.workspacesDir) $wsName
+            if (-not (Test-PathSafe $wsRoot -PathType Container)) {
+                Write-Badge "ERROR" Red "Workspace '$wsName' does not exist. Create it with 'pss workspace new $wsName'."
+                exit 1
+            }
+            switch ($target) {
+                { $_ -in @('powershell', 'ps', 'profile') } { $Config.subsystems.powershell.workspacePath.Replace('{workspace}', $wsName) }
+                'git'    { $Config.subsystems.git.workspacePath.Replace('{workspace}', $wsName) }
+                'agents' { "workspaces/$wsName/gemini/AGENTS.md" }
+                'gemini' { "workspaces/$wsName/gemini/GEMINI.md" }
+                default  { $null }
+            }
+        }
+
+        if (-not $relPath) {
+            Write-Badge "ERROR" Red "Unknown edit target '$target' for layer '$layer'."
+            exit 1
+        }
+
+        $fullPath = Join-Path $ScriptDir $relPath
+        if ($PathOnly) {
+            Write-Output $fullPath
+            break
+        }
+
+        if (-not (Test-PathSafe $fullPath -PathType Leaf)) {
+            Write-Utf8File -Path $fullPath -Content ""
+            Write-Badge "CREATED" Green "Created $relPath"
+        }
+
+        if ($env:EDITOR) {
+            $editorTokens = [System.Management.Automation.PSParser]::Tokenize($env:EDITOR, [ref]$null) |
+                Where-Object { $_.Type -in @('Command', 'CommandArgument', 'String') } |
+                ForEach-Object { $_.Content }
+            $editorExe = $editorTokens | Select-Object -First 1
+            $editorArgs = @($editorTokens | Select-Object -Skip 1) + $fullPath
+            & $editorExe @editorArgs
+        } elseif (Get-Command code -ErrorAction SilentlyContinue) {
+            & code $fullPath
+        } else {
+            Invoke-Item -LiteralPath $fullPath
+        }
+    }
+
+    'bootstrap' {
+        Invoke-BootstrapWizard -Workspace $ActiveWorkspace
     }
 
     'apps' {
         $sub = if ($SubAction) { $SubAction.ToLowerInvariant() } else { 'list' }
-        $wingetCmd = (Get-Command winget.exe -ErrorAction SilentlyContinue)
-        if (-not $wingetCmd) {
-            $candidate = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
-            if (Test-PathSafe $candidate -PathType Leaf) { $wingetCmd = $candidate }
-        }
+        $packages = @($Config.packages | Where-Object {
+            -not $_.workspaces -or ($ActiveWorkspace -in $_.workspaces)
+        })
 
-        switch ($sub) {
-            'install' {
-                Write-Host "`n=== Installing Configured Applications (Winget) ===" -ForegroundColor Cyan
-                foreach ($pkg in $Config.packages) {
+        if ($sub -in @('install', 'update')) {
+            $wingetCmd = Get-Command winget.exe -ErrorAction SilentlyContinue
+            if (-not $wingetCmd) {
+                $candidate = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\winget.exe'
+                if (Test-PathSafe $candidate -PathType Leaf) { $wingetCmd = $candidate }
+            }
+            if (-not $wingetCmd) {
+                Write-Badge "ERROR" Red "winget.exe not found."
+                exit 1
+            }
+
+            if ($sub -eq 'install') {
+                Write-Host "`n=== Installing Applications for '$ActiveWorkspace' (Winget) ===" -ForegroundColor Cyan
+                foreach ($pkg in $packages) {
                     Write-Host "--> Installing $($pkg.name) ($($pkg.id))..." -ForegroundColor Cyan
                     if (-not $WhatIf) {
                         & $wingetCmd install --id $pkg.id -e --accept-package-agreements --accept-source-agreements
                     }
                 }
-            }
-            'update' {
+            } else {
                 Write-Host "`n=== Upgrading Applications (Winget) ===" -ForegroundColor Cyan
                 if (-not $WhatIf) {
                     & $wingetCmd upgrade --all --accept-package-agreements --accept-source-agreements
                 }
             }
-            default {
-                Write-Host "`n=== Configured Applications ===" -ForegroundColor Cyan
-                $Config.packages | Format-Table -Property Name, Id, Category -AutoSize
-            }
+        } else {
+            Write-Host "`n=== Configured Applications ($ActiveWorkspace) ===" -ForegroundColor Cyan
+            $packages | Format-Table -Property Name, Id, Category -AutoSize
         }
     }
 
     'fonts' {
         $setupScript = Join-Path $ScriptDir 'scripts\setup-windows.ps1'
-        if (Test-PathSafe $setupScript -PathType Leaf) {
-            & $setupScript -FontsOnly
-        }
+        if (Test-PathSafe $setupScript -PathType Leaf) { & $setupScript -FontsOnly -WhatIf:$WhatIf }
     }
 
     'setup' {
         $setupScript = Join-Path $ScriptDir 'scripts\setup-windows.ps1'
-        if (Test-PathSafe $setupScript -PathType Leaf) {
-            & $setupScript
-        }
+        if (Test-PathSafe $setupScript -PathType Leaf) { & $setupScript -WhatIf:$WhatIf }
     }
 
     default {
@@ -1069,3 +1358,4 @@ switch ($Action.ToLowerInvariant()) {
         exit 1
     }
 }
+#endregion
