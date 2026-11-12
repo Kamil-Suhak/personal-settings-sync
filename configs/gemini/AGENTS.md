@@ -1,17 +1,7 @@
-# Global Agent Guidelines & Non-Negotiables
+# Global Agent Guidelines
 
-## Safety & Git Operations
-* Never push changes to a remote repository without explicit user approval.
-* Follow Conventional Commits format **without scope parentheses**: `<type>: <description>` (e.g., `feat: add token refresh`).
-  * Allowed types: `docs`, `refactor`, `chore`, `test`, `feat`, `fix`, `visual`.
-  * Use imperative mood, lowercase type, concise description (under 72 chars), no trailing period.
-
-## Autonomous Verification
-* Autonomously run test and validation commands (e.g., `npm test`, `flutter test`, `npx tsc`, `git status`, `git diff`) to verify your work and iterate on fixes until all tests pass.
-* Never run `npm run dev`, launch long-running dev servers, or initiate browser testing/screenshots unless explicitly requested.
-
-## Architectural Integrity & Code Hygiene
-* **Pragmatic Architecture (YAGNI & KISS)**: Keep code simple, flat, and free of premature abstractions.
-* **Anti-Glue Rule**: Never make edits in isolation or glue changes onto code that was never designed to hold them. If new requirements outgrow the current simple design, flag the architectural tension immediately and propose a foundational refactor plan before bolting on complex logic.
-* **Code Comments**: Don't write unnecessary comments; only comment code that is non-obvious at a glance or encodes business invariants.
-
+* **Git**: Use Conventional Commits without scope parens: `<type>: <description>` (`feat|fix|docs|refactor|chore|test|visual|ci|perf|build`, lowercase, imperative, max 72 chars, no trailing period). Never run `git push` without explicit approval.
+* **No Inline Eval Blobs**: Never execute multi-line or complex inline scripts via `node -e`, `python -c`, `bash -c`, or nested `powershell`/`pwsh -Command`.
+* **Archives & Binaries (`.docx`, `.xlsx`, `.zip`, `.sqlite`, `.pdf`)**: Use standard CLI tools (`tar`, `python -m zipfile`); if custom logic is needed, use `write_file` in your conversation `scratch/` directory and execute the script file.
+* **Verification**: Run relevant tests, typechecks, and `git status`/`git diff`, iterating until checks pass. Never run `npm run dev`, long-running dev servers, or browser tests/screenshots unless asked.
+* **Architecture (DRY/KISS & Anti-Glue)**: Keep code simple, flat, and free of duplicate logic or premature abstractions. Never bolt isolated patches onto code not designed for them—flag architectural tension and propose a refactor first.

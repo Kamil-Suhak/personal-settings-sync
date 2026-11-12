@@ -2,3 +2,8 @@
 [user]
 	# name = Kamil
 	# email = work@company.com
+[core]
+	fsmonitor = true
+	untrackedCache = true
+[feature]
+	manyFiles = true

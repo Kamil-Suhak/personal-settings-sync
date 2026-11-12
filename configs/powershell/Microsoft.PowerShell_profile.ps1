@@ -1,4 +1,4 @@
-#region 1. Core Environment & Encodings
+﻿#region 1. Core Environment & Encodings
 # Bail out immediately if session is non-interactive or streams are redirected (e.g. AGY, automated agent runners, CI/CD)
 if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) { return }
 
@@ -10,36 +10,24 @@ $env:VIRTUAL_ENV_DISABLE_PROMPT = 1
 
 # Cache elevated admin state once at startup to avoid expensive reflection on every prompt render
 $global:__is_admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Resolve repository root dynamically from this shared profile's location
+$global:__pss_root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+
+function Get-PssActiveWorkspace {
+    $wsFile = Join-Path $global:__pss_root ".workspace.local"
+    if (Test-Path -LiteralPath $wsFile) {
+        $rawWs = Get-Content -LiteralPath $wsFile -Raw -ErrorAction SilentlyContinue
+        if ($rawWs) {
+            $ws = $rawWs.Trim()
+            if ($ws) { return $ws }
+        }
+    }
+    return "personal"
+}
 #endregion
 
 #region 2. Git Automation & Workflows
-
-# Carbon Black / AppLocker Process Execution Compatibility
-$canRunGitDirectly = $false
-$gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($gitCmd) {
-    try {
-        # Test running git.exe directly without showing output
-        $null = & $gitCmd.Source --version 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $canRunGitDirectly = $true
-        }
-    }
-    catch {
-        # Carbon Black / AppLocker blocked process execution
-        $canRunGitDirectly = $false
-    }
-}
-
-if (-not $canRunGitDirectly) {
-    <#
-    .SYNOPSIS
-    Carbon Black / AppLocker bypass wrapper: executes git through cmd.exe /c when direct execution is blocked.
-    #>
-    function git {
-        cmd.exe /c git @args
-    }
-}
 
 # In-memory branch cache state to eliminate subprocess overhead on prompt
 $global:__git_cache_repo = $null
@@ -300,15 +288,22 @@ function wip {
     param(
         [Parameter(Position = 0)]
         [string]$Message,
-        [Alias("a")][switch]$All
+        [Alias("a")][switch]$All,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ExtraArgs
     )
 
     # Support POSIX style -a / --all
-    if ($args -contains '-a' -or $args -contains '--all' -or $Message -in @('-a', '--all')) {
+    if ($ExtraArgs -contains '-a' -or $ExtraArgs -contains '--all' -or $Message -in @('-a', '--all')) {
         $All = $true
+        $remaining = @($ExtraArgs | Where-Object { $_ -notin @('-a', '--all') })
         if ($Message -in @('-a', '--all')) {
-            $Message = if ($args.Count -gt 0) { $args -join ' ' } else { $null }
+            $Message = if ($remaining.Count -gt 0) { $remaining -join ' ' } else { $null }
+        } elseif ($remaining.Count -gt 0) {
+            $Message = "$Message $($remaining -join ' ')"
         }
+    } elseif ($ExtraArgs.Count -gt 0) {
+        $Message = (@($Message) + @($ExtraArgs) | Where-Object { $_ }) -join ' '
     }
 
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -379,6 +374,19 @@ function stashes {
     }
     Write-Host ""
 }
+
+<#
+.SYNOPSIS
+Jumps to the root directory of the current git repository.
+#>
+function groot {
+    $root = (& git rev-parse --show-toplevel 2>$null)
+    if ($root) {
+        Set-Location -LiteralPath $root
+    } else {
+        Write-Host "Not inside a git repository." -ForegroundColor Yellow
+    }
+}
 #endregion
 
 #region 3. Navigation & Project Switcher
@@ -412,7 +420,9 @@ function p {
         [string]$Name,
         [Alias("a")][switch]$Add,
         [Alias("r", "rm")][switch]$Remove,
-        [Alias("l")][switch]$List
+        [Alias("l")][switch]$List,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ExtraArgs
     )
 
     $rootsFile = Join-Path $HOME ".project-roots"
@@ -449,7 +459,7 @@ function p {
 
     # 2. Add new project root (p -add [<path>])
     if ($Add -or ($Name -in @('-a', '--add', 'add'))) {
-        $candidatePath = if ($args.Count -gt 0) { $args[0] } elseif ($Name -and $Name -notin @('-a', '--add', 'add')) { $Name } else { $null }
+        $candidatePath = if ($ExtraArgs.Count -gt 0) { $ExtraArgs[0] } elseif ($Name -and $Name -notin @('-a', '--add', 'add')) { $Name } else { $null }
         if (-not $candidatePath) {
             $candidatePath = Read-Host "Enter directory path to add to project roots (press Enter for current folder: $pwd)"
             if (-not $candidatePath) { $candidatePath = $pwd.Path }
@@ -482,7 +492,7 @@ function p {
             return
         }
 
-        $targetToRemove = if ($args.Count -gt 0) { $args[0] } elseif ($Name -and $Name -notin @('-r', '--remove', '-remove', 'remove', '-rm', '--rm', 'rm')) { $Name } else { $null }
+        $targetToRemove = if ($ExtraArgs.Count -gt 0) { $ExtraArgs[0] } elseif ($Name -and $Name -notin @('-r', '--remove', '-remove', 'remove', '-rm', '--rm', 'rm')) { $Name } else { $null }
 
         if (-not $targetToRemove) {
             Write-Host "`nConfigured project roots ($rootsFile):" -ForegroundColor Cyan
@@ -651,31 +661,28 @@ function which {
     # Special Profile Inspection Mode: which profile [-h] | which -profile [-h]
     $isProfile = $Profile -or ($Name -in @('profile', '$profile', '-profile', '--profile'))
     if ($isProfile) {
-        $targetProfile = if ((Get-Command which -ErrorAction SilentlyContinue).ScriptBlock.File) {
-            (Get-Command which).ScriptBlock.File
-        } elseif ($PROFILE.CurrentUserCurrentHost -and (Test-Path -LiteralPath $PROFILE.CurrentUserCurrentHost)) {
-            $PROFILE.CurrentUserCurrentHost
-        } elseif ($PROFILE) {
-            $PROFILE.ToString()
-        } else {
-            "PowerShell Profile"
+        $targetProfile = Join-Path $PSScriptRoot "Microsoft.PowerShell_profile.ps1"
+        if (-not (Test-Path -LiteralPath $targetProfile)) {
+            $targetProfile = if ($PROFILE) { $PROFILE.ToString() } else { "PowerShell Profile" }
         }
 
         if (-not $Help) {
             return $targetProfile
         }
 
-        Write-Host "`n${cyan}=== [PROFILE] $targetProfile ===${reset}"
-        if (Test-Path -LiteralPath $targetProfile) {
-            $ast = [System.Management.Automation.Language.Parser]::ParseFile($targetProfile, [ref]$null, [ref]$null)
-            $funcAsts = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) |
-                Where-Object { $_.Name -notin @('prompt', 'Clear-GitBranchCache') }
+        $activeWs = Get-PssActiveWorkspace
+        $wsProfile = Join-Path $global:__pss_root "workspaces\$activeWs\powershell\profile.ps1"
 
-            Write-Host "${yellow}Custom Profile Functions ($($funcAsts.Count)):${reset}`n"
-            $maxLen = 0
-            foreach ($f in $funcAsts) {
-                if ($f.Name.Length -gt $maxLen) { $maxLen = $f.Name.Length }
-            }
+        $showProfileFuncs = {
+            param([string]$FilePath, [string]$Heading)
+            if (-not (Test-Path -LiteralPath $FilePath)) { return }
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($FilePath, [ref]$null, [ref]$null)
+            $funcAsts = @($ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) |
+                Where-Object { $_.Name -notmatch '^(prompt|Clear-GitBranchCache|Get-PssActiveWorkspace|Get-TerminalAskContext|Invoke-)' }
+
+            if ($funcAsts.Count -eq 0) { return }
+            Write-Host "${yellow}${Heading} ($($funcAsts.Count)):${reset}`n"
+            $maxLen = ($funcAsts | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum
             $pad = [math]::Max($maxLen + 2, 12)
             foreach ($f in $funcAsts) {
                 $h = $f.GetHelpContent()
@@ -683,12 +690,16 @@ function which {
                     $h.Synopsis.Trim()
                 } else {
                     $live = Get-Help $f.Name -ErrorAction SilentlyContinue
-                    if ($live.Synopsis) { $live.Synopsis.Trim() } else { "" }
+                    if ($live.Synopsis -and $live.Synopsis.Trim() -ne $f.Name) { $live.Synopsis.Trim() } else { "" }
                 }
                 Write-Host "  ${green}$($f.Name.PadRight($pad))${reset} $syn"
             }
             Write-Host ""
         }
+
+        Write-Host "`n${cyan}=== [PROFILE] $targetProfile (workspace: $activeWs) ===${reset}"
+        & $showProfileFuncs $targetProfile "Shared Functions"
+        & $showProfileFuncs $wsProfile "Workspace '$activeWs' Functions"
         return
     }
 
@@ -869,12 +880,14 @@ function find {
         [Parameter(Position = 1)]
         [string]$Path = ".",
         [Alias("o")]
-        [switch]$Open
+        [switch]$Open,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ExtraArgs
     )
 
     # Support POSIX style flags (--open, -o)
     if ($Path -in @('--open', '-open', '-o')) { $Open = $true; $Path = "." }
-    if ($args -contains '--open' -or $args -contains '-o') { $Open = $true }
+    if ($ExtraArgs -contains '--open' -or $ExtraArgs -contains '-open' -or $ExtraArgs -contains '-o') { $Open = $true }
 
     $cleanedTokens = $Name -split '[\s-_.]+' | Where-Object { $_ }
     $regexPattern = ($cleanedTokens | ForEach-Object { [regex]::Escape($_) }) -join '.?'
@@ -1006,7 +1019,9 @@ function findstr {
         [Alias("c")]
         [switch]$CaseSensitive,
         [Alias("l")]
-        [switch]$FilesOnly
+        [switch]$FilesOnly,
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ExtraArgs
     )
 
     begin {
@@ -1020,9 +1035,9 @@ function findstr {
         elseif ($Path -in @('--case', '-case', '-c')) { $CaseSensitive = $true; $Path = "." }
         elseif ($Path -in @('--files-only', '-files-only', '-l')) { $FilesOnly = $true; $Path = "." }
 
-        if ($args -contains '--invert' -or $args -contains '-v') { $Invert = $true }
-        if ($args -contains '--case' -or $args -contains '-c') { $CaseSensitive = $true }
-        if ($args -contains '--files-only' -or $args -contains '-l') { $FilesOnly = $true }
+        if ($ExtraArgs -contains '--invert' -or $ExtraArgs -contains '-invert' -or $ExtraArgs -contains '-v') { $Invert = $true }
+        if ($ExtraArgs -contains '--case' -or $ExtraArgs -contains '-case' -or $ExtraArgs -contains '-c') { $CaseSensitive = $true }
+        if ($ExtraArgs -contains '--files-only' -or $ExtraArgs -contains '-files-only' -or $ExtraArgs -contains '-l') { $FilesOnly = $true }
 
         $regexOptions = if ($CaseSensitive) {
             [System.Text.RegularExpressions.RegexOptions]::None
@@ -1129,121 +1144,341 @@ function findstr {
     }
 }
 
-<#
-.SYNOPSIS
-Launches Brave Browser with optional arguments (URLs, flags, incognito, profiles). Supports piped URLs.
-#>
-function brave {
-    $bravePath = if ($global:__brave_path -and (Test-Path -LiteralPath $global:__brave_path)) {
-        $global:__brave_path
-    } else {
-        $candidates = @(
-            (Get-Command brave.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
-            ((Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe' -ErrorAction SilentlyContinue).'(default)'),
-            ((Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe' -ErrorAction SilentlyContinue).'(default)'),
-            "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe",
-            "${env:ProgramFiles(x86)}\BraveSoftware\Brave-Browser\Application\brave.exe",
-            "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe"
-        )
-        $found = $candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1
-        if ($found) { $global:__brave_path = $found }
-        $found
-    }
-
-    if (-not $bravePath) {
-        Write-Host "Brave Browser executable not found. Install it via 'winget install Brave.Brave' or .\sync.ps1 apps." -ForegroundColor Red
-        return
-    }
-
-    $passedArgs = [System.Collections.Generic.List[string]]::new()
-    if ($args) {
-        foreach ($a in $args) { $passedArgs.Add([string]$a) }
-    }
-    if ($null -ne $input) {
-        foreach ($item in $input) {
-            if ($null -ne $item -and [string]$item -match '\S') {
-                $passedArgs.Add([string]$item)
-            }
-        }
-    }
-
-    if ($passedArgs.Count -gt 0) {
-        Start-Process -FilePath $bravePath -ArgumentList $passedArgs
-    } else {
-        Start-Process -FilePath $bravePath
-    }
-}
-
 # Clipboard shortcuts
 Set-Alias -Name copy -Value Set-Clipboard -Option AllScope -Force
 Set-Alias -Name paste -Value Get-Clipboard -Option AllScope -Force
 
 <#
 .SYNOPSIS
-Starts the Passbolt password manager via Docker Compose (in ~/passbolt).
+Decodes a JWT header and payload offline without making any network calls. Supports arguments or pipeline input.
 #>
-function passbolt {
-    $passboltDir = Join-Path $HOME "passbolt"
-    if (-not (Test-Path -LiteralPath $passboltDir)) {
-        Write-Host "Passbolt directory not found at: $passboltDir" -ForegroundColor Red
-        return
-    }
+function jwt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromPipeline = $true)]
+        [string]$Token
+    )
 
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        $dockerBin = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
-        if (Test-Path -LiteralPath "$dockerBin\docker.exe") {
-            $env:Path = "$dockerBin;$env:Path"
-        } else {
-            Write-Host "Docker command not found in PATH." -ForegroundColor Red
+    process {
+        if ([string]::IsNullOrWhiteSpace($Token)) { return }
+        $raw = $Token.Trim() -replace '^Bearer\s+', ''
+        $parts = $raw -split '\.'
+        if ($parts.Count -lt 2) {
+            Write-Error "Invalid JWT format (expected header.payload[.signature])."
             return
         }
-    }
 
-    Push-Location $passboltDir
-    try {
-        Write-Host "Starting Passbolt (docker compose start)..." -ForegroundColor Cyan
-        docker compose start @args
-    } finally {
-        Pop-Location
+        $decodePart = {
+            param([string]$Segment)
+            $b64 = $Segment.Replace('-', '+').Replace('_', '/')
+            switch ($b64.Length % 4) {
+                2 { $b64 += '==' }
+                3 { $b64 += '=' }
+            }
+            $jsonText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+            return ($jsonText | ConvertFrom-Json)
+        }
+
+        try {
+            $header = & $decodePart $parts[0]
+            $payload = & $decodePart $parts[1]
+
+            Write-Host "`n--- JWT Header ---" -ForegroundColor Cyan
+            $header | ConvertTo-Json -Depth 10 | Write-Host
+
+            Write-Host "`n--- JWT Payload ---" -ForegroundColor Cyan
+            $payload | ConvertTo-Json -Depth 10 | Write-Host
+
+            if ($payload.exp) {
+                $expUtc = [DateTimeOffset]::FromUnixTimeSeconds([long]$payload.exp).ToLocalTime()
+                $state = if ($expUtc -lt [DateTimeOffset]::Now) { "EXPIRED" } else { "VALID" }
+                $color = if ($state -eq "EXPIRED") { "Red" } else { "Green" }
+                Write-Host "`nExpires: $($expUtc.ToString('yyyy-MM-dd HH:mm:ss zzz')) [$state]" -ForegroundColor $color
+            }
+            Write-Host ""
+        } catch {
+            Write-Error "Failed to decode JWT: $($_.Exception.Message)"
+        }
     }
 }
 
 <#
 .SYNOPSIS
-Stops the Passbolt password manager via Docker Compose (in ~/passbolt).
+Runs a polling wait loop with a green ASCII spinner and cancellation cleanup.
 #>
-function passbolt-stop {
-    $passboltDir = Join-Path $HOME "passbolt"
-    if (-not (Test-Path -LiteralPath $passboltDir)) {
-        Write-Host "Passbolt directory not found at: $passboltDir" -ForegroundColor Red
-        return
+function Invoke-WithSpinner {
+    param(
+        [Parameter(Mandatory = $true)]
+        [scriptblock]$IsDone,
+        [scriptblock]$OnCancel
+    )
+
+    $frames = @('|', '/', '-', '\')
+    $green = if ($PSStyle) { $PSStyle.Foreground.Green } else { "" }
+    $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
+    $esc = [char]0x1b
+    $animate = -not [Console]::IsOutputRedirected
+    $i = 0
+
+    try {
+        if ($animate) { Write-Host "${esc}[?25l" -NoNewline }
+        while (-not (& $IsDone)) {
+            if ($animate) {
+                $frame = $frames[$i % $frames.Length]
+                Write-Host "`r${green}${frame}${reset} " -NoNewline
+                $i++
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    } finally {
+        if ($animate) {
+            Write-Host "`r${esc}[2K${esc}[?25h" -NoNewline
+        }
+        if (-not (& $IsDone) -and $OnCancel) {
+            & $OnCancel
+        }
+    }
+}
+
+function Get-TerminalAskContext {
+    param(
+        [string]$Question,
+        [string]$Piped,
+        [switch]$Clean
+    )
+
+    $pipedSection = if (-not [string]::IsNullOrWhiteSpace($Piped)) {
+        "`n[Context: Piped Input]`n$Piped`n"
+    } else { "" }
+
+    $promptQuestion = if (-not [string]::IsNullOrWhiteSpace($Question)) {
+        $Question
+    } else {
+        "Analyze or answer based on the piped input above."
     }
 
-    if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-        $dockerBin = "$env:LOCALAPPDATA\Programs\DockerDesktop\resources\bin"
-        if (Test-Path -LiteralPath "$dockerBin\docker.exe") {
-            $env:Path = "$dockerBin;$env:Path"
-        } else {
-            Write-Host "Docker command not found in PATH." -ForegroundColor Red
-            return
+    if ($Clean) {
+        $historyCmds = "<empty>"
+        $recentOutput = "<empty>"
+    } else {
+        $historyCmds = (Get-History -Count 5 | ForEach-Object { "$($_.Id): $($_.CommandLine)" }) -join "`n"
+        $recentOutput = ""
+        try {
+            $rawUi = $Host.UI.RawUI
+            $cursorY = $rawUi.CursorPosition.Y
+            $startY = [Math]::Max(0, $cursorY - 30)
+            $rect = [System.Management.Automation.Host.Rectangle]::new(0, $startY, $rawUi.BufferSize.Width - 1, $cursorY)
+            $buffer = $rawUi.GetBufferContents($rect)
+            $lines = for ($y = 0; $y -lt $buffer.GetLength(0); $y++) {
+                $line = -join $(for ($x = 0; $x -lt $buffer.GetLength(1); $x++) { $buffer[$y, $x].Character })
+                $line.TrimEnd()
+            }
+            $recentOutput = ($lines | Where-Object { $_ -ne "" }) -join "`n"
+        } catch {
+            $recentOutput = "(Screen buffer capture unavailable)"
         }
     }
 
-    Push-Location $passboltDir
-    try {
-        Write-Host "Stopping Passbolt (docker compose stop)..." -ForegroundColor Cyan
-        docker compose stop @args
-    } finally {
-        Pop-Location
+    return [PSCustomObject]@{
+        History      = $historyCmds
+        Output       = $recentOutput
+        PipedSection = $pipedSection
+        Question     = $promptQuestion
     }
 }
+
+function Invoke-AskCliProcess {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments,
+        [Parameter(Mandatory = $true)]
+        [string]$Label
+    )
+
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($ExecutablePath)
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+    $psi.WorkingDirectory = $pwd.Path
+    foreach ($arg in $Arguments) {
+        $psi.ArgumentList.Add($arg)
+    }
+
+    $proc = $null
+    $stdout = ""
+    $stderr = ""
+    try {
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+
+        Invoke-WithSpinner -IsDone { $proc.HasExited } -OnCancel { try { $proc.Kill($true) } catch {} }
+
+        $proc.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+    } finally {
+        if ($proc) {
+            if (-not $proc.HasExited) { try { $proc.Kill($true) } catch {} }
+            $proc.Dispose()
+        }
+    }
+
+    $cyan = if ($PSStyle) { $PSStyle.Foreground.Cyan } else { "" }
+    $gray = if ($PSStyle) { $PSStyle.Foreground.BrightBlack } else { "" }
+    $red = if ($PSStyle) { $PSStyle.Foreground.Red } else { "" }
+    $reset = if ($PSStyle) { $PSStyle.Reset } else { "" }
+
+    if ($stdout) {
+        Write-Host "`n${cyan}▸ ask${reset} ${gray}($Label)${reset}"
+        $stdout.TrimEnd("`r", "`n") -split "`r?`n" | ForEach-Object { Write-Host "  $_" }
+        Write-Host ""
+    }
+    if ($stderr) {
+        Write-Host "`n${red}✖ ask error:${reset}"
+        $stderr.TrimEnd("`r", "`n") -split "`r?`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        Write-Host ""
+    }
+}
+
+<#
+.SYNOPSIS
+Evaluates a scenario or piped context using the Gemini Decision API and renders a confidence verdict.
+#>
+function decide {
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$Question,
+        [string[]]$Choices = @("yes", "no"),
+        [string]$Instructions = "Evaluate the scenario and pick the best option.",
+        [Parameter(ValueFromPipeline = $true)]
+        [psobject]$InputObject
+    )
+
+    begin {
+        $pipeLines = [System.Collections.Generic.List[string]]::new()
+    }
+
+    process {
+        if ($null -ne $InputObject) {
+            $pipeLines.Add([string]$InputObject)
+        }
+    }
+
+    end {
+        if ([string]::IsNullOrWhiteSpace($env:GEMINI_API_KEY)) {
+            Write-Error "GEMINI_API_KEY environment variable is not set."
+            return
+        }
+
+        if ($Choices.Count -lt 2) {
+            Write-Error "Choices must contain at least 2 options."
+            return
+        }
+
+        $piped = $pipeLines -join "`n"
+        $qText = if ($Question) { $Question -join ' ' } else { "" }
+
+        if ([string]::IsNullOrWhiteSpace($qText) -and [string]::IsNullOrWhiteSpace($piped)) {
+            Write-Warning "Usage: decide [-Choices <a,b>] [-Instructions <text>] <question>"
+            return
+        }
+
+        if ([string]::IsNullOrWhiteSpace($qText)) {
+            $qText = "What is the recommended decision?"
+        }
+
+        $target = if (-not [string]::IsNullOrWhiteSpace($piped)) {
+            "Context / Input:`n$piped`n`nQuestion: $qText"
+        } else {
+            $qText
+        }
+
+        $criteria = [ordered]@{}
+        foreach ($c in $Choices) {
+            $criteria[$c] = "Option: $c"
+        }
+
+        $payload = [ordered]@{
+            model     = "gemini-decision-1"
+            input     = $target
+            questions = [ordered]@{
+                verdict = [ordered]@{
+                    type         = "choice"
+                    instructions = $Instructions
+                    criteria     = $criteria
+                }
+            }
+        } | ConvertTo-Json -Depth 5 -Compress
+
+        $cts = [System.Threading.CancellationTokenSource]::new()
+        $client = [System.Net.Http.HttpClient]::new()
+        $client.DefaultRequestHeaders.Add("x-goog-api-key", $env:GEMINI_API_KEY)
+        $content = [System.Net.Http.StringContent]::new($payload, [System.Text.Encoding]::UTF8, "application/json")
+
+        $res = $null
+        try {
+            $httpTask = $client.PostAsync(
+                "https://generativelanguage.googleapis.com/v1beta/decisions",
+                $content,
+                $cts.Token
+            )
+            Invoke-WithSpinner -IsDone { $httpTask.IsCompleted } -OnCancel { $cts.Cancel() }
+
+            $response = $httpTask.GetAwaiter().GetResult()
+            $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            if (-not $response.IsSuccessStatusCode) {
+                Write-Error "Decisions API error ($([int]$response.StatusCode) $($response.ReasonPhrase)): $body"
+                return
+            }
+            $res = $body | ConvertFrom-Json
+        } finally {
+            $content.Dispose()
+            $client.Dispose()
+            $cts.Dispose()
+        }
+
+        $verdict = $res.answers.verdict
+        $choice = [string]$verdict.choice
+        $p = [double]$verdict.confidence
+        $pct = [int][Math]::Round($p * 100)
+        $filled = [Math]::Clamp([int][Math]::Round($p * 10), 0, 10)
+        $bar = ("█" * $filled) + ("░" * (10 - $filled))
+
+        $badgeColor = switch ($choice.ToLowerInvariant()) {
+            "yes" { "Green" }
+            "no"  { "Red" }
+            default { "Cyan" }
+        }
+        $barColor = if ($p -ge 0.8) { "Green" } elseif ($p -ge 0.5) { "Yellow" } else { "Red" }
+
+        Write-Host ""
+        Write-Host "  [$($choice.ToUpperInvariant())]" -ForegroundColor $badgeColor -NoNewline
+        Write-Host ("  {0,3}%  " -f $pct) -ForegroundColor White -NoNewline
+        Write-Host $bar -ForegroundColor $barColor -NoNewline
+        Write-Host "  $qText" -ForegroundColor DarkGray
+
+        if ($Choices.Count -gt 2 -and $verdict.probabilities) {
+            $breakdown = foreach ($prop in $verdict.probabilities.PSObject.Properties) {
+                "{0} {1:P0}" -f $prop.Name, [double]$prop.Value
+            }
+            Write-Host "  $($breakdown -join ' · ')" -ForegroundColor DarkGray
+        }
+        Write-Host ""
+    }
+}
+Set-Alias -Name decision -Value decide -Option AllScope -Force
 
 <#
 .SYNOPSIS
 Personal Settings Sync CLI runner (pss.ps1).
 #>
 function pss {
-    $pssScript = Join-Path $HOME "Coding\Projects\personal-settings-sync\pss.ps1"
+    $pssScript = Join-Path $global:__pss_root "pss.ps1"
     if (Test-Path -LiteralPath $pssScript) {
         & $pssScript @args
     } else {
@@ -1305,7 +1540,7 @@ function prompt {
     }
 
     # 2. Directory Logic (2-tier path to eliminate folder ambiguity)
-    $normalizedPath = $pwd.Path.Replace($HOME, '~')
+    $normalizedPath = $pwd.Path -replace ('^' + [regex]::Escape($HOME)), '~'
     if ($normalizedPath -eq '~') {
         $currentDir = '~'
     } else {
@@ -1439,11 +1674,23 @@ function prompt {
 }
 #endregion
 
-#region 7. Machine-Local Custom Overrides
-# Load optional machine-local configuration (git-ignored, never synced)
-$localProfile = Join-Path (Split-Path -Parent $PROFILE) ".profile.local.ps1"
-if (Test-Path -LiteralPath $localProfile) {
-    . $localProfile
+#region 7. Workspace & Machine-Local Overrides
+$activeWorkspace = Get-PssActiveWorkspace
+$workspaceProfile = Join-Path $global:__pss_root "workspaces\$activeWorkspace\powershell\profile.ps1"
+if (Test-Path -LiteralPath $workspaceProfile) {
+    . $workspaceProfile
+}
+
+# Load optional machine-local overrides (git-ignored, never synced)
+$localCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+[void]$localCandidates.Add((Join-Path $HOME ".profile.local.ps1"))
+if ($PROFILE) {
+    [void]$localCandidates.Add((Join-Path (Split-Path -Parent $PROFILE) ".profile.local.ps1"))
+}
+foreach ($localFile in $localCandidates) {
+    if (Test-Path -LiteralPath $localFile) {
+        . $localFile
+    }
 }
 #endregion
 
