@@ -859,6 +859,16 @@ function Invoke-BootstrapWizard {
             $localFuncs = & $parseFuncs $localPs
             $sharedFuncs = & $parseFuncs $sharedPs
             $wsFuncs = & $parseFuncs $wsPs
+            $wsFunctionPaths = @{}
+            if ($Workspace -eq 'work') {
+                $worksetPath = Join-Path $ScriptDir 'workspaces\work\powershell\worksets.ps1'
+                $worksetFuncs = & $parseFuncs $worksetPath
+                foreach ($name in $worksetFuncs.Keys) {
+                    if ($wsFuncs.Contains($name)) { throw "Duplicate workspace function '$name' in '$wsPs' and '$worksetPath'." }
+                    $wsFuncs[$name] = $worksetFuncs[$name]
+                    $wsFunctionPaths[$name] = $worksetPath
+                }
+            }
 
             $pending = [System.Collections.Generic.List[PSCustomObject]]::new()
             foreach ($name in $localFuncs.Keys) {
@@ -906,16 +916,17 @@ function Invoke-BootstrapWizard {
                         }
                         'W' {
                             if ($item.Kind -eq 'Modified' -and $wsFuncs.Contains($item.Name)) {
-                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($wsPs, [ref]$null, [ref]$null)
+                                $targetWsPs = if ($wsFunctionPaths.ContainsKey($item.Name)) { $wsFunctionPaths[$item.Name] } else { $wsPs }
+                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($targetWsPs, [ref]$null, [ref]$null)
                                 $oldAst = $wsAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
                                 if ($oldAst) {
                                     $updated = $wsAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $wsAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
-                                    Write-Utf8File -Path $wsPs -Content $updated
+                                    Write-Utf8File -Path $targetWsPs -Content $updated
                                 }
                             } else {
                                 Append-Utf8File -Path $wsPs -Content $item.Code
                             }
-                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> workspaces/$Workspace/powershell/profile.ps1"
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' to the $Workspace workspace profile."
                         }
                         'L' {
                             $localOverride = $PssLocalState.LocalProfile

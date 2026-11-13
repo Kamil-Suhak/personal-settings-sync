@@ -1175,6 +1175,9 @@ function which {
         Write-Host "`n${cyan}=== [PROFILE] $targetProfile (workspace: $activeWs) ===${reset}"
         & $showProfileFuncs $targetProfile "Shared Functions"
         & $showProfileFuncs $wsProfile "Workspace '$activeWs' Functions"
+        if ($activeWs -eq 'work') {
+            & $showProfileFuncs (Join-Path $global:__pss_root 'workspaces\work\powershell\worksets.ps1') 'Workset Functions'
+        }
         return
     }
 
@@ -1719,7 +1722,8 @@ function vs {
         [Parameter(Position = 0)]
         [string]$Path = ".",
         [ValidateRange(0, 20)]
-        [int]$MaxDepth = 5
+        [int]$MaxDepth = 5,
+        [string[]]$Files
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -1731,6 +1735,14 @@ function vs {
     $selectedSolution = $null
     $targetFile = $null
     $searchStartDir = $null
+    $targetFiles = @()
+    foreach ($file in $Files) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            Write-Error "File not found: $file"
+            return
+        }
+        $targetFiles += (Get-Item -LiteralPath $file).FullName
+    }
 
     if (-not $item.PSIsContainer -and $item.Extension -in @('.sln', '.slnx')) {
         $selectedSolution = $item
@@ -1788,6 +1800,8 @@ function vs {
         }
     }
 
+    if ($targetFile) { $targetFiles = @($targetFile) + $targetFiles }
+    $targetFiles = @($targetFiles | Select-Object -Unique)
     $devenvPath = if ($global:__devenv_path -and (Test-Path -LiteralPath $global:__devenv_path)) {
         $global:__devenv_path
     }
@@ -1808,8 +1822,8 @@ function vs {
         $hit
     }
 
-    $actionDesc = if ($targetFile) {
-        "Open '$($selectedSolution.FullName)' and '$targetFile'"
+    $actionDesc = if ($targetFiles.Count) {
+        "Open '$($selectedSolution.FullName)' and '$($targetFiles -join "', '")'"
     }
     else {
         "Open '$($selectedSolution.FullName)'"
@@ -1822,11 +1836,15 @@ function vs {
 
     if ($devenvPath) {
         $rawArgs = @($selectedSolution.FullName)
-        if ($targetFile) { $rawArgs += $targetFile }
+        $rawArgs += $targetFiles
         $quotedArgs = @($rawArgs | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
         Start-Process -FilePath $devenvPath -ArgumentList $quotedArgs
     }
     else {
+        if ($Files.Count) {
+            Write-Error "devenv.exe not found; cannot open the selected files."
+            return
+        }
         if ($targetFile) {
             Write-Warning "devenv.exe not found in PATH or Visual Studio Installer; opening solution without '$targetFile'."
         }

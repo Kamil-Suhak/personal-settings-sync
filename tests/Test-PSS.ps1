@@ -40,7 +40,8 @@ $psFiles = @(
     'scripts\local-state.ps1',
     'configs\powershell\Microsoft.PowerShell_profile.ps1',
     'workspaces\personal\powershell\profile.ps1',
-    'workspaces\work\powershell\profile.ps1'
+    'workspaces\work\powershell\profile.ps1',
+    'workspaces\work\powershell\worksets.ps1'
 )
 foreach ($rel in $psFiles) {
     $full = Join-Path $RepoRoot $rel
@@ -253,6 +254,71 @@ try {
     Push-Location $sandbox
     try {
         & $testPss apply -Pull -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
+        Write-Host "`n=== 4. Workset Tests ===" -ForegroundColor Cyan
+        . (Join-Path $RepoRoot 'workspaces\work\powershell\worksets.ps1')
+        $global:__pss_state = $testState
+        $repoOne = Join-Path $sandbox 'workset-repo-one'
+        $repoTwo = Join-Path $sandbox 'workset-repo-two'
+        [void][System.IO.Directory]::CreateDirectory($repoOne)
+        [void][System.IO.Directory]::CreateDirectory($repoTwo)
+        & git init -b '123/dashboard' $repoOne 2>&1 | Out-Null
+        & git init -b 'feature/policy' $repoTwo 2>&1 | Out-Null
+        $fileOne = Join-Path $repoOne 'one file.cs'
+        $fileTwo = Join-Path $repoTwo 'policy.xml'
+        [System.IO.File]::WriteAllText($fileOne, 'one')
+        [System.IO.File]::WriteAllText($fileTwo, 'two')
+        function code { $global:testCodeArguments = @($args); $global:LASTEXITCODE = 0 }
+        function vs { param($Path, $Files) $global:testVsPath = $Path; $global:testVsFiles = $Files }
+        Push-Location $repoOne
+        try {
+            workset new
+            $worksetDir = Get-WorksetDirectory '123-dashboard'
+            Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset derives a Windows-safe name from branch'
+            workset add $fileOne
+            workset open
+            Assert-True ($global:testVsPath -eq $repoOne -and $global:testVsFiles -contains $fileOne) 'single-repository workset selects VS'
+            workset add '123-dashboard' $fileTwo
+            workset open
+            Assert-True ($global:testCodeArguments -contains $repoOne -and $global:testCodeArguments -contains $repoTwo -and
+                $global:testCodeArguments -contains $fileOne -and $global:testCodeArguments -contains $fileTwo) 'cross-repository workset opens all roots and files in VS Code'
+            $rejectedVs = $false
+            try { workset open -Vs } catch { $rejectedVs = $true }
+            Assert-True $rejectedVs 'cross-repository workset rejects Visual Studio'
+            & git -C $repoTwo symbolic-ref HEAD refs/heads/changed
+            $branchWarnings = @(workset open 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+            Assert-True (($branchWarnings | Out-String) -match 'Branch mismatch') 'workset warns when a recorded repository branch changes'
+            $docDir = Join-Path $sandbox 'documentation'
+            [void][System.IO.Directory]::CreateDirectory($docDir)
+            $docFile = Join-Path $docDir 'document.md'
+            [System.IO.File]::WriteAllText($docFile, 'docs')
+            workset add '123-dashboard' $docFile
+            workset open 3>$null
+            Assert-True ($global:testCodeArguments -contains $docDir -and $global:testCodeArguments -contains $docFile) 'workset supports files outside repositories'
+            $collision = $false
+            try { workset new '123-dashboard' } catch { $collision = $true }
+            Assert-True $collision 'workset name collisions do not overwrite existing data'
+            Remove-Item -LiteralPath $fileTwo
+            $missing = $false
+            try { workset open } catch { $missing = $true }
+            Assert-True $missing 'workset rejects missing files before launching an editor'
+            [System.IO.File]::WriteAllText($fileTwo, 'two')
+            workset archive
+            Assert-True (Test-Path (Get-WorksetDirectory '123-dashboard' -Archived)) 'workset archive preserves the list'
+            workset restore '123-dashboard'
+            Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset restore returns the list'
+            workset delete -WhatIf
+            Assert-True ((Test-Path $worksetDir) -and (Test-Path $fileOne)) 'workset delete what-if preserves list and source'
+            $synopsis = (Get-Help workset).Synopsis
+            Assert-True ($synopsis -match 'issue file sets') 'dot-sourced workset exposes synopsis'
+            function Read-Host { 'y' }
+            workset delete
+            Remove-Item function:\Read-Host
+            Assert-True ((-not (Test-Path $worksetDir)) -and (Test-Path $fileOne) -and (Test-Path $fileTwo)) 'workset delete removes only the list'
+        } finally {
+            Pop-Location
+            Remove-Item function:\code, function:\vs -ErrorAction SilentlyContinue
+            Remove-Item function:\Read-Host -ErrorAction SilentlyContinue
+        }
     } finally {
         Pop-Location
     }
@@ -395,7 +461,6 @@ try {
         try {
             pwsh -NoProfile -File $pJumpScript 2>&1 | Out-String
         } finally {
-            $env:LOCALAPPDATA = $previousLocalAppData
             $env:USERPROFILE = $prevProf
         }
     }
@@ -596,6 +661,7 @@ try {
         Pop-Location
     }
 } finally {
+    $env:LOCALAPPDATA = $previousLocalAppData
     # Clean up junctions safely before removing sandbox
     foreach ($j in @((Join-Path $testHome '.gemini\skills'), (Join-Path $testHome '.agents\skills\ask'), (Join-Path $testHome '.agents\skills\ux'), (Join-Path $testHome '.agents\skills\readme'), (Join-Path $testHome '.agents\skills\repo-intro'), (Join-Path $testHome '.agents\skills\developer-profile'), (Join-Path $testHome '.agents\skills\ws-skill'), (Join-Path $testHome '.gemini\config\plugins\egm'))) {
         if (Test-Path -LiteralPath $j) {
