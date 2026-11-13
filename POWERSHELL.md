@@ -29,7 +29,7 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 | `..` / `...` / `....` | *none* | Jump up 1, 2, or 3 directory levels. |
 | `back` | *none* | Toggles back to the previous working directory. |
 | `mkcd` | `<path>` | Creates directory (including parents) and navigates into it. |
-| `p` | `[<name>] [-a\|-r\|-l]` | Project jumper reading roots from `~/.project-roots` (`-a` add, `-r` remove, `-l` list). |
+| `p` | `[<name>] [-a\|-r\|-l]` | Project jumper reading machine-local roots from `%LOCALAPPDATA%\PersonalSettingsSync\project-roots` (`-a` add, `-r` remove, `-l` list). |
 | `rev` | `[<path>]` | Opens Windows File Explorer at `<path>` (defaults to `.`). |
 
 ---
@@ -46,7 +46,7 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 | `venv` | `[<name>]` | Activates Python virtualenv (default: `.venv`), creating it first if missing. |
 | `cmp` | `[<file1> [<file2>]] [-w] [-q]` | `cmp` watches next 2 clipboard copies; `cmp <file>` diffs file vs clipboard; `cmp <f1> <f2>` diffs files (`-w` ignores whitespace, `-q` summary only). |
 | `brave` | `[<url\|args>...]` | Non-blocking Brave Browser launcher (supports piped URLs, flags, and clipboard URL fallback). |
-| `vs` | `[<path>] [-MaxDepth <n>]` | Opens Visual Studio for a `.sln`/`.slnx` in the current/target directory or up to `MaxDepth` (default: 5) parent levels; if given a file, opens it alongside the solution. |
+| `vs` | `[<path>] [-MaxDepth <n>] [-Files <paths>]` | Opens Visual Studio for a `.sln`/`.slnx` in the current/target directory or up to `MaxDepth` (default: 5) parent levels; opens specified files alongside the solution. |
 | `sudo` | `<command>` | Windows 11 native elevation (supports `sudo !!`). |
 | `copy` / `paste` | `[<value>]` | Clipboard aliases for `Set-Clipboard` / `Get-Clipboard` (**overrides built-in `copy` -> `Copy-Item`**). |
 | `pss` | `[<arguments>...]` | Invokes `pss.ps1` from any directory. Run `. $PROFILE` to reload profile edits in the current shell. |
@@ -67,6 +67,7 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 | `ask` | Company-compliant `copilot -p` query using recent terminal commands, screen buffer, and piped input (`-Clean`). |
 | `azwho` | Prints the active Azure CLI subscription, tenant, and signed-in account. |
 | `slnclean` | Recursively deletes `.NET` `bin/` and `obj/` build artifact folders (supports `-WhatIf`). |
+| `workset` | Manages named local issue file sets: `new`, `add`, `edit`, `show`, `list`, `open`, `archive`, `restore`, and `delete`. See [Worksets](README.md#worksets). |
 
 ---
 
@@ -74,4 +75,4 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 
 - **PSReadLine**: `Tab`/`Shift+Tab` inline completion cycling, `Ctrl+Space` menu complete, smart `RightArrow` (`ForwardChar` inside typed text, `AcceptNextSuggestionWord` only at end-of-line), `F2` toggle `InlineView`/`ListView`.
 - **Powerline Prompt**: Renders `⚡ ADMIN`, 2-tier `Parent/Child` path, active `(.venv)`, cached Git branch, and `❯` status chevron.
-- **Prompt Variables**: Automatically updates `$cb` (current Git branch), `$gr` (current Git repository root), and `$cmdtime` (last command execution time; set `$global:__show_prompt_timer = $true` to also render `⏱` on the prompt bar for commands > 500ms).
+- **Prompt Variables**: Automatically updates `$cb` (current Git branch), `$gr` (current Git repository root), `$cw` (the unique active workset for the current checkout and branch, in the `work` workspace), and `$cmdtime` (last command execution time; set `$global:__show_prompt_timer = $true` to also render `⏱` on the prompt bar for commands > 500ms). `$cw` is `$null` when no workset matches, several match, or HEAD is detached.

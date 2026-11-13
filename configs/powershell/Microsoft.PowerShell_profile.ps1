@@ -32,9 +32,13 @@ else {
 
 # Resolve repository root dynamically from this shared profile's location
 $global:__pss_root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $global:__pss_root 'scripts\local-state.ps1')
+$global:__pss_state = Get-PssLocalStatePaths -Checkout $global:__pss_root
+$profileDir = if ($PROFILE) { Split-Path -Parent $PROFILE } else { $null }
+Invoke-PssLocalStateMigration -Paths $global:__pss_state -Checkout $global:__pss_root -HomePath $HOME -ProfileDirectory $profileDir
 
 function Get-PssActiveWorkspace {
-    $wsFile = Join-Path $global:__pss_root ".workspace.local"
+    $wsFile = $global:__pss_state.Workspace
     if (Test-Path -LiteralPath $wsFile) {
         $rawWs = Get-Content -LiteralPath $wsFile -Raw -ErrorAction SilentlyContinue
         if ($rawWs) {
@@ -921,7 +925,7 @@ function p {
         [Alias("l")][switch]$List
     )
 
-    $rootsFile = Join-Path $HOME ".project-roots"
+    $rootsFile = $global:__pss_state.ProjectRoots
 
     # Load configured roots from local uncommitted file (~/.project-roots)
     $roots = [System.Collections.Generic.List[string]]::new()
@@ -961,6 +965,7 @@ function p {
         }
         $existing = if (Test-Path -LiteralPath $rootsFile) { @(Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue) } else { @() }
         if ($existing -notcontains $resolved.Path) {
+            [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $rootsFile))
             Add-Content -LiteralPath $rootsFile -Value $resolved.Path
             Write-Host "Added '$($resolved.Path)' to $rootsFile" -ForegroundColor Green
         }
@@ -1130,7 +1135,7 @@ function which {
     # Special Profile Inspection Mode: which profile [-h] | which -p [-h]
     $isProfile = $Profile -or ($Name -in @('profile', '$profile'))
     if ($isProfile) {
-        $targetProfile = Join-Path $PSScriptRoot "Microsoft.PowerShell_profile.ps1"
+        $targetProfile = Join-Path $global:__pss_root "configs\powershell\Microsoft.PowerShell_profile.ps1"
         if (-not (Test-Path -LiteralPath $targetProfile)) {
             $targetProfile = if ($PROFILE) { $PROFILE.ToString() } else { "PowerShell Profile" }
         }
@@ -1170,6 +1175,9 @@ function which {
         Write-Host "`n${cyan}=== [PROFILE] $targetProfile (workspace: $activeWs) ===${reset}"
         & $showProfileFuncs $targetProfile "Shared Functions"
         & $showProfileFuncs $wsProfile "Workspace '$activeWs' Functions"
+        if ($activeWs -eq 'work') {
+            & $showProfileFuncs (Join-Path $global:__pss_root 'workspaces\work\powershell\worksets.ps1') 'Workset Functions'
+        }
         return
     }
 
@@ -1704,6 +1712,20 @@ function brave {
     }
 }
 
+function Get-VsSolutions {
+    param([string]$StartDirectory, [int]$MaxDepth = 5)
+    $currentDir = $StartDirectory
+    for ($depth = 0; $depth -le $MaxDepth -and $currentDir; $depth++) {
+        $found = @(Get-ChildItem -LiteralPath $currentDir -File -ErrorAction Stop |
+            Where-Object { $_.Extension -in @('.sln', '.slnx') } |
+            Sort-Object Name)
+        if ($found.Count -gt 0) { return $found }
+        $parent = Split-Path -Parent $currentDir
+        if (-not $parent -or $parent -eq $currentDir) { break }
+        $currentDir = $parent
+    }
+}
+
 <#
 .SYNOPSIS
 Opens Visual Studio for a .sln/.slnx found in the target/current directory or up to MaxDepth parent levels. Supports passing a file path to open alongside the solution.
@@ -1714,7 +1736,8 @@ function vs {
         [Parameter(Position = 0)]
         [string]$Path = ".",
         [ValidateRange(0, 20)]
-        [int]$MaxDepth = 5
+        [int]$MaxDepth = 5,
+        [string[]]$Files
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -1726,6 +1749,14 @@ function vs {
     $selectedSolution = $null
     $targetFile = $null
     $searchStartDir = $null
+    $targetFiles = @()
+    foreach ($file in $Files) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+            Write-Error "File not found: $file"
+            return
+        }
+        $targetFiles += (Get-Item -LiteralPath $file).FullName
+    }
 
     if (-not $item.PSIsContainer -and $item.Extension -in @('.sln', '.slnx')) {
         $selectedSolution = $item
@@ -1739,20 +1770,7 @@ function vs {
             $targetFile = $item.FullName
         }
 
-        $currentDir = $searchStartDir
-        $solutions = @()
-        for ($depth = 0; $depth -le $MaxDepth -and $currentDir; $depth++) {
-            $found = @(Get-ChildItem -LiteralPath $currentDir -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -in @('.sln', '.slnx') } |
-                Sort-Object Name)
-            if ($found.Count -gt 0) {
-                $solutions = $found
-                break
-            }
-            $parent = Split-Path -Parent $currentDir
-            if (-not $parent -or $parent -eq $currentDir) { break }
-            $currentDir = $parent
-        }
+        $solutions = @(Get-VsSolutions -StartDirectory $searchStartDir -MaxDepth $MaxDepth)
 
         if ($solutions.Count -eq 0) {
             Write-Error "No .sln or .slnx file found in '$searchStartDir' or within $MaxDepth parent level(s)."
@@ -1783,6 +1801,8 @@ function vs {
         }
     }
 
+    if ($targetFile) { $targetFiles = @($targetFile) + $targetFiles }
+    $targetFiles = @($targetFiles | Select-Object -Unique)
     $devenvPath = if ($global:__devenv_path -and (Test-Path -LiteralPath $global:__devenv_path)) {
         $global:__devenv_path
     }
@@ -1803,8 +1823,8 @@ function vs {
         $hit
     }
 
-    $actionDesc = if ($targetFile) {
-        "Open '$($selectedSolution.FullName)' and '$targetFile'"
+    $actionDesc = if ($targetFiles.Count) {
+        "Open '$($selectedSolution.FullName)' and '$($targetFiles -join "', '")'"
     }
     else {
         "Open '$($selectedSolution.FullName)'"
@@ -1817,11 +1837,15 @@ function vs {
 
     if ($devenvPath) {
         $rawArgs = @($selectedSolution.FullName)
-        if ($targetFile) { $rawArgs += $targetFile }
+        $rawArgs += $targetFiles
         $quotedArgs = @($rawArgs | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
         Start-Process -FilePath $devenvPath -ArgumentList $quotedArgs
     }
     else {
+        if ($Files.Count) {
+            Write-Error "devenv.exe not found; cannot open the selected files."
+            return
+        }
         if ($targetFile) {
             Write-Warning "devenv.exe not found in PATH or Visual Studio Installer; opening solution without '$targetFile'."
         }
@@ -2520,6 +2544,15 @@ function prompt {
     # Expose current git branch ($cb) and repo root ($gr) at zero extra cost
     $global:cb = $gitBranch
     $global:gr = if ($inGitRepo) { $searchDir } else { $null }
+    $global:cw = $null
+    if ($global:gr -and $gitBranch -and (Get-Command Get-CurrentWorksetName -CommandType Function -ErrorAction SilentlyContinue) -and (Get-PssActiveWorkspace) -eq 'work') {
+        try {
+            $global:cw = Get-CurrentWorksetName -Root $global:gr -Branch $gitBranch
+        }
+        catch {
+            Write-Warning "Unable to determine current workset: $_"
+        }
+    }
 
     # 4. Build Segments
     $segments = [System.Collections.Generic.List[hashtable]]::new()
@@ -2576,16 +2609,9 @@ if (Test-Path -LiteralPath $workspaceProfile) {
     . $workspaceProfile
 }
 
-# Load optional machine-local overrides (git-ignored, never synced)
-$localCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-[void]$localCandidates.Add((Join-Path $HOME ".profile.local.ps1"))
-if ($PROFILE) {
-    [void]$localCandidates.Add((Join-Path (Split-Path -Parent $PROFILE) ".profile.local.ps1"))
-}
-foreach ($localFile in $localCandidates) {
-    if (Test-Path -LiteralPath $localFile) {
-        . $localFile
-    }
+# Load optional machine-local overrides (never synced)
+if (Test-Path -LiteralPath $global:__pss_state.LocalProfile) {
+    . $global:__pss_state.LocalProfile
 }
 #endregion
 

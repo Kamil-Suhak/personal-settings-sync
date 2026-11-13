@@ -45,6 +45,7 @@ param(
 
     [string]$HomeOverride,
     [string]$DocumentsOverride,
+    [string]$LocalAppDataOverride,
 
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ExtraArgs
@@ -55,7 +56,9 @@ $ErrorActionPreference = 'Stop'
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ConfigFile = Join-Path $ScriptDir 'sync.config.json'
-$WorkspaceLocalFile = Join-Path $ScriptDir '.workspace.local'
+. (Join-Path $ScriptDir 'scripts\local-state.ps1')
+$localAppData = if ($LocalAppDataOverride) { $LocalAppDataOverride } else { $env:LOCALAPPDATA }
+$PssLocalState = Get-PssLocalStatePaths -Checkout $ScriptDir -LocalAppData $localAppData
 $ValidSubsystems = @('powershell', 'git', 'gemini', 'skills', 'plugins')
 $MaxBackups = 10
 
@@ -146,6 +149,13 @@ foreach ($argItem in $rawPositionals) {
 
 $SubAction = if ($sanitizedArgs.Count -gt 0) { $sanitizedArgs[0] } else { $null }
 $TargetName = if ($sanitizedArgs.Count -gt 1) { $sanitizedArgs[1] } else { $null }
+$migrationHome = if ($HomeOverride) { $HomeOverride } else { $HOME }
+$migrationProfileDir = if ($DocumentsOverride) { Join-Path $DocumentsOverride 'PowerShell' } elseif ($PROFILE) { Split-Path -Parent $PROFILE } else { $null }
+Invoke-PssLocalStateMigration -Paths $PssLocalState -Checkout $ScriptDir -HomePath $migrationHome -ProfileDirectory $migrationProfileDir -WhatIf:$WhatIf
+$WorkspaceLocalFile = $PssLocalState.Workspace
+if ($WhatIf -and -not (Test-Path -LiteralPath $WorkspaceLocalFile) -and (Test-Path -LiteralPath (Join-Path $ScriptDir '.workspace.local'))) {
+    $WorkspaceLocalFile = Join-Path $ScriptDir '.workspace.local'
+}
 #endregion
 
 #region 3. Path, File & Text Helpers
@@ -295,7 +305,7 @@ function Get-ActiveWorkspace {
     $available = Get-AvailableWorkspaces
     $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
     if (-not $isInteractive) {
-        Write-Badge "ERROR" Red "No active workspace in .workspace.local. Run 'pss workspace use <name>' first."
+        Write-Badge "ERROR" Red "No active workspace configured. Run 'pss workspace use <name>' first."
         exit 1
     }
 
@@ -849,6 +859,16 @@ function Invoke-BootstrapWizard {
             $localFuncs = & $parseFuncs $localPs
             $sharedFuncs = & $parseFuncs $sharedPs
             $wsFuncs = & $parseFuncs $wsPs
+            $wsFunctionPaths = @{}
+            if ($Workspace -eq 'work') {
+                $worksetPath = Join-Path $ScriptDir 'workspaces\work\powershell\worksets.ps1'
+                $worksetFuncs = & $parseFuncs $worksetPath
+                foreach ($name in $worksetFuncs.Keys) {
+                    if ($wsFuncs.Contains($name)) { throw "Duplicate workspace function '$name' in '$wsPs' and '$worksetPath'." }
+                    $wsFuncs[$name] = $worksetFuncs[$name]
+                    $wsFunctionPaths[$name] = $worksetPath
+                }
+            }
 
             $pending = [System.Collections.Generic.List[PSCustomObject]]::new()
             foreach ($name in $localFuncs.Keys) {
@@ -873,7 +893,7 @@ function Invoke-BootstrapWizard {
                         exit 1
                     }
 
-                    $choice = (Read-Host "    Route 'function $($item.Name)' to: [S]hared, [W]orkspace ($Workspace), [L]ocal (~/.profile.local.ps1), [I]gnore, [Q]uit").Trim().ToUpperInvariant()
+                    $choice = (Read-Host "    Route 'function $($item.Name)' to: [S]hared, [W]orkspace ($Workspace), [L]ocal ($($PssLocalState.LocalProfile)), [I]gnore, [Q]uit").Trim().ToUpperInvariant()
                     switch ($choice) {
                         'Q' { Write-Host "Bootstrap aborted."; return }
                         'S' {
@@ -896,19 +916,20 @@ function Invoke-BootstrapWizard {
                         }
                         'W' {
                             if ($item.Kind -eq 'Modified' -and $wsFuncs.Contains($item.Name)) {
-                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($wsPs, [ref]$null, [ref]$null)
+                                $targetWsPs = if ($wsFunctionPaths.ContainsKey($item.Name)) { $wsFunctionPaths[$item.Name] } else { $wsPs }
+                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($targetWsPs, [ref]$null, [ref]$null)
                                 $oldAst = $wsAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
                                 if ($oldAst) {
                                     $updated = $wsAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $wsAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
-                                    Write-Utf8File -Path $wsPs -Content $updated
+                                    Write-Utf8File -Path $targetWsPs -Content $updated
                                 }
                             } else {
                                 Append-Utf8File -Path $wsPs -Content $item.Code
                             }
-                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> workspaces/$Workspace/powershell/profile.ps1"
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' to the $Workspace workspace profile."
                         }
                         'L' {
-                            $localOverride = Join-Path (Get-EffectiveHome) ".profile.local.ps1"
+                            $localOverride = $PssLocalState.LocalProfile
                             Append-Utf8File -Path $localOverride -Content $item.Code
                             Write-Badge "ROUTED" Green "Added '$($item.Name)' -> $localOverride"
                         }

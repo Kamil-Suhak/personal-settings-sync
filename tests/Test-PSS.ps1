@@ -37,9 +37,11 @@ $psFiles = @(
     'bootstrap.ps1',
     'setup.ps1',
     'scripts\setup-windows.ps1',
+    'scripts\local-state.ps1',
     'configs\powershell\Microsoft.PowerShell_profile.ps1',
     'workspaces\personal\powershell\profile.ps1',
-    'workspaces\work\powershell\profile.ps1'
+    'workspaces\work\powershell\profile.ps1',
+    'workspaces\work\powershell\worksets.ps1'
 )
 foreach ($rel in $psFiles) {
     $full = Join-Path $RepoRoot $rel
@@ -57,6 +59,9 @@ $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "pss-test-$([guid]::NewGu
 $testRepo = Join-Path $sandbox 'repo'
 $testHome = Join-Path $sandbox 'home'
 $testDocs = Join-Path $sandbox 'docs'
+$testLocalAppData = Join-Path $sandbox 'local-app-data'
+$previousLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = $testLocalAppData
 
 try {
     [System.IO.Directory]::CreateDirectory($testRepo) | Out-Null
@@ -111,6 +116,53 @@ try {
     [System.IO.Directory]::CreateDirectory($thirdPartyPlugin) | Out-Null
 
     $testPss = Join-Path $testRepo 'pss.ps1'
+    . (Join-Path $testRepo 'scripts\local-state.ps1')
+    $testState = Get-PssLocalStatePaths -Checkout $testRepo -LocalAppData $testLocalAppData
+
+    $migrationHome = Join-Path $sandbox 'migration-home'
+    $migrationCheckout = Join-Path $sandbox 'migration-checkout'
+    [void][System.IO.Directory]::CreateDirectory($migrationHome)
+    [void][System.IO.Directory]::CreateDirectory($migrationCheckout)
+    $migrationState = Get-PssLocalStatePaths -Checkout $migrationCheckout -LocalAppData $testLocalAppData
+    $oldRoots = Join-Path $migrationHome '.project-roots'
+    $oldProfile = Join-Path $migrationHome '.profile.local.ps1'
+    $oldWorkspace = Join-Path $migrationCheckout '.workspace.local'
+    [System.IO.File]::WriteAllText($oldRoots, 'roots')
+    [System.IO.File]::WriteAllText($oldProfile, 'profile')
+    [System.IO.File]::WriteAllText($oldWorkspace, 'work')
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome -WhatIf | Out-Null
+    Assert-True ((Test-Path $oldRoots) -and -not (Test-Path $migrationState.ProjectRoots)) 'migration what-if leaves all files untouched'
+    [void][System.IO.Directory]::CreateDirectory($migrationState.Root)
+    [System.IO.File]::WriteAllText($migrationState.LocalProfile, 'conflicting')
+    $conflict = $false
+    try { Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome }
+    catch { $conflict = $true }
+    Assert-True ($conflict -and (Test-Path $oldRoots) -and (Test-Path $oldProfile) -and (Test-Path $oldWorkspace)) 'migration conflict preserves every original'
+    Remove-Item -LiteralPath $migrationState.LocalProfile
+    $alternateProfileDir = Join-Path $sandbox 'alternate-profile'
+    [void][System.IO.Directory]::CreateDirectory($alternateProfileDir)
+    $alternateProfile = Join-Path $alternateProfileDir '.profile.local.ps1'
+    [System.IO.File]::WriteAllText($alternateProfile, 'different profile')
+    $profileConflict = $false
+    try { Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome -ProfileDirectory $alternateProfileDir }
+    catch { $profileConflict = $true }
+    Assert-True ($profileConflict -and (Test-Path $oldProfile) -and (Test-Path $alternateProfile) -and (Test-Path $oldWorkspace)) 'migration preserves distinct legacy profile files'
+    Remove-Item -LiteralPath $alternateProfile
+    $blockedLocal = Join-Path $sandbox 'blocked-local'
+    [System.IO.File]::WriteAllText($blockedLocal, 'not a directory')
+    $blockedState = Get-PssLocalStatePaths -Checkout $migrationCheckout -LocalAppData $blockedLocal
+    $copyFailed = $false
+    try { Invoke-PssLocalStateMigration -Paths $blockedState -Checkout $migrationCheckout -HomePath $migrationHome }
+    catch { $copyFailed = $true }
+    Assert-True ($copyFailed -and (Test-Path $oldRoots) -and (Test-Path $oldProfile) -and (Test-Path $oldWorkspace)) 'migration copy failure preserves every original'
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome
+    Assert-True ((-not (Test-Path $oldRoots)) -and (-not (Test-Path $oldProfile)) -and (-not (Test-Path $oldWorkspace)) -and
+        [System.IO.File]::ReadAllText($migrationState.ProjectRoots) -eq 'roots' -and
+        [System.IO.File]::ReadAllText($migrationState.LocalProfile) -eq 'profile' -and
+        [System.IO.File]::ReadAllText($migrationState.Workspace) -eq 'work') 'migration verifies copies and removes originals'
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome
+    $otherState = Get-PssLocalStatePaths -Checkout $testRepo -LocalAppData $testLocalAppData
+    Assert-True ($otherState.Workspace -ne $migrationState.Workspace) 'workspace state is isolated per checkout'
 
     # Test empty 0-byte .workspace.local handling
     [System.IO.File]::WriteAllText((Join-Path $testRepo '.workspace.local'), '', [System.Text.UTF8Encoding]::new($false))
@@ -119,11 +171,11 @@ try {
 
     # Test POSIX flags (--no-apply / --what-if)
     & $testPss workspace use work --no-apply -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
-    Assert-Equal ((Get-Content (Join-Path $testRepo '.workspace.local') -Raw).Trim()) 'work' "workspace use --no-apply sets .workspace.local"
+    Assert-Equal ((Get-Content $testState.Workspace -Raw).Trim()) 'work' "workspace use --no-apply sets local workspace"
 
     # Set active workspace to personal without applying yet
     & $testPss workspace use personal -NoApply -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
-    Assert-Equal ((Get-Content (Join-Path $testRepo '.workspace.local') -Raw).Trim()) 'personal' "workspace use sets .workspace.local"
+    Assert-Equal ((Get-Content $testState.Workspace -Raw).Trim()) 'personal' "workspace use sets local workspace"
 
     # Test --what-if does not write loader or junctions
     & $testPss apply --what-if -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
@@ -218,6 +270,136 @@ try {
     Push-Location $sandbox
     try {
         & $testPss apply -Pull -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
+        Write-Host "`n=== 4. Workset Tests ===" -ForegroundColor Cyan
+        . (Join-Path $RepoRoot 'workspaces\work\powershell\worksets.ps1')
+        $global:__pss_state = $testState
+        $repoOne = Join-Path $sandbox 'workset-repo-one'
+        $repoTwo = Join-Path $sandbox 'workset-repo-two'
+        [void][System.IO.Directory]::CreateDirectory($repoOne)
+        [void][System.IO.Directory]::CreateDirectory($repoTwo)
+        & git init -b '123/dashboard' $repoOne 2>&1 | Out-Null
+        & git init -b 'feature/policy' $repoTwo 2>&1 | Out-Null
+        $fileOne = Join-Path $repoOne 'one file.cs'
+        $fileTwo = Join-Path $repoTwo 'policy.xml'
+        [System.IO.File]::WriteAllText($fileOne, 'one')
+        [System.IO.File]::WriteAllText($fileTwo, 'two')
+        function code { $global:testCodeArguments = @($args); $global:LASTEXITCODE = 0 }
+        function vs { param($Path, $Files) $global:testVsPath = $Path; $global:testVsFiles = $Files }
+        $sharedProfileAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'configs\powershell\Microsoft.PowerShell_profile.ps1'), [ref]$null, [ref]$null)
+        $vsSolutionsFn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-VsSolutions' }, $false) | Select-Object -First 1
+        . ([scriptblock]::Create($vsSolutionsFn.Extent.Text))
+        foreach ($name in @('Get-PssActiveWorkspace', 'which')) {
+            $fn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $name }, $false) | Select-Object -First 1
+            . ([scriptblock]::Create($fn.Extent.Text))
+        }
+        $promptDefinition = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'prompt' }, $false) | Select-Object -First 1
+        . ([scriptblock]::Create($promptDefinition.Extent.Text))
+        $global:__pss_root = $testRepo
+        $global:__ansi = @{ Cyan = ''; Yellow = ''; Green = ''; Gray = ''; Reset = '' }
+        $savedProfile = $PROFILE
+        try {
+            $PROFILE = Join-Path $testRepo 'configs\powershell\Microsoft.PowerShell_profile.ps1'
+            $whichProfile = (which profile -h 6>&1 | Out-String)
+            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Creates and opens named issue file sets') 'which profile discovers workset synopsis'
+        } finally {
+            $PROFILE = $savedProfile
+        }
+        $worksetAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $testRepo 'workspaces\work\powershell\worksets.ps1'), [ref]$null, [ref]$null)
+        $worksetFn = $worksetAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'workset' }, $false) | Select-Object -First 1
+        $testLocalProfile = Join-Path $psDir 'Microsoft.PowerShell_profile.ps1'
+        $savedLoader = [System.IO.File]::ReadAllText($testLocalProfile)
+        try {
+            [System.IO.File]::WriteAllText($testLocalProfile, $worksetFn.Extent.Text)
+            $bootstrapOut = (& $testPss bootstrap -WhatIf -Include powershell -HomeOverride $testHome -DocumentsOverride $testDocs *>&1 | Out-String)
+            Assert-True ($bootstrapOut -match 'All functions.*already match repo') 'bootstrap recognizes dot-sourced workset functions'
+        } finally {
+            [System.IO.File]::WriteAllText($testLocalProfile, $savedLoader)
+        }
+        Push-Location $repoOne
+        try {
+            workset new
+            $worksetDir = Get-WorksetDirectory '123-dashboard'
+            Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset derives a Windows-safe name from branch'
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt sets current workset for the active checkout and branch'
+            Push-Location $sandbox
+            try {
+                prompt 6>$null | Out-Null
+                Assert-True ($null -eq $global:cw) 'prompt clears current workset outside a repository'
+            } finally { Pop-Location }
+            workset new 'alternate-name'
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset when multiple worksets match'
+            function Read-Host { 'y' }
+            workset delete 'alternate-name'
+            Remove-Item function:\Read-Host
+            & git -C $repoOne symbolic-ref HEAD refs/heads/different
+            $global:__git_cache_repo = $null
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset on another branch'
+            & git -C $repoOne symbolic-ref HEAD refs/heads/123/dashboard
+            $global:__git_cache_repo = $null
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt restores current workset when returning to its branch'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'personal')
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset outside the work workspace'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'work')
+            workset add $fileOne
+            workset open
+            Assert-True ($global:testCodeArguments -contains $fileOne) 'single-repository workset without a solution selects VS Code'
+            $noSolution = $false
+            try { workset open -Vs } catch { $noSolution = $true }
+            Assert-True $noSolution 'explicit VS reports a missing solution'
+            [System.IO.File]::WriteAllText((Join-Path $repoOne 'app.sln'), '')
+            workset open
+            Assert-True ($global:testVsPath -eq $repoOne -and $global:testVsFiles -contains $fileOne) 'single-repository workset selects VS'
+            workset add '123-dashboard' $fileTwo
+            workset open
+            Assert-True ($global:testCodeArguments -contains $repoOne -and $global:testCodeArguments -contains $repoTwo -and
+                $global:testCodeArguments -contains $fileOne -and $global:testCodeArguments -contains $fileTwo) 'cross-repository workset opens all roots and files in VS Code'
+            $rejectedVs = $false
+            try { workset open -Vs } catch { $rejectedVs = $true }
+            Assert-True $rejectedVs 'cross-repository workset rejects Visual Studio'
+            & git -C $repoTwo symbolic-ref HEAD refs/heads/changed
+            $branchWarnings = @(workset open 3>&1 | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+            Assert-True (($branchWarnings | Out-String) -match 'Branch mismatch') 'workset warns when a recorded repository branch changes'
+            $docDir = Join-Path $sandbox 'documentation'
+            [void][System.IO.Directory]::CreateDirectory($docDir)
+            $docFile = Join-Path $docDir 'document.md'
+            [System.IO.File]::WriteAllText($docFile, 'docs')
+            workset add '123-dashboard' $docFile
+            workset open 3>$null
+            Assert-True ($global:testCodeArguments -contains $docDir -and $global:testCodeArguments -contains $docFile) 'workset supports files outside repositories'
+            $collision = $false
+            try { workset new '123-dashboard' } catch { $collision = $true }
+            Assert-True $collision 'workset name collisions do not overwrite existing data'
+            Remove-Item -LiteralPath $fileTwo
+            $missing = $false
+            try { workset open } catch { $missing = $true }
+            Assert-True $missing 'workset rejects missing files before launching an editor'
+            [System.IO.File]::WriteAllText($fileTwo, 'two')
+            workset archive
+            Assert-True (Test-Path (Get-WorksetDirectory '123-dashboard' -Archived)) 'workset archive preserves the list'
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset after archiving'
+            workset restore '123-dashboard'
+            Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset restore returns the list'
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt restores current workset after restoring the workset'
+            workset delete -WhatIf
+            Assert-True ((Test-Path $worksetDir) -and (Test-Path $fileOne)) 'workset delete what-if preserves list and source'
+            $synopsis = (Get-Help workset).Synopsis
+            Assert-True ($synopsis -match 'issue file sets') 'dot-sourced workset exposes synopsis'
+            function Read-Host { 'y' }
+            workset delete
+            Remove-Item function:\Read-Host
+            Assert-True ((-not (Test-Path $worksetDir)) -and (Test-Path $fileOne) -and (Test-Path $fileTwo)) 'workset delete removes only the list'
+        } finally {
+            Pop-Location
+            Remove-Item function:\code, function:\vs -ErrorAction SilentlyContinue
+            Remove-Item function:\Read-Host -ErrorAction SilentlyContinue
+        }
     } finally {
         Pop-Location
     }
@@ -259,8 +441,9 @@ try {
     # Test ExtraArgs binding on findstr, p, find, wip and Get-PssActiveWorkspace empty file guard
     $getWsFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-PssActiveWorkspace' }, $false) | Select-Object -First 1
     . ([scriptblock]::Create($getWsFn.Extent.Text))
-    [System.IO.File]::WriteAllText((Join-Path $testRepo '.workspace.local'), '', [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($testState.Workspace, '', [System.Text.UTF8Encoding]::new($false))
     $global:__pss_root = $testRepo
+    $global:__pss_state = $testState
     Assert-Equal (Get-PssActiveWorkspace) 'personal' "Get-PssActiveWorkspace falls back on empty 0-byte .workspace.local"
 
     $findstrFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'findstr' }, $false) | Select-Object -First 1
@@ -333,7 +516,7 @@ try {
     # Test p fails cleanly with no fallback directories when USERPROFILE has no .project-roots
     $pNoRootsScript = Join-Path $sandbox 'test-p-noroots.ps1'
     $pFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'p' }, $false) | Select-Object -First 1
-    [System.IO.File]::WriteAllText($pNoRootsScript, ($pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($pNoRootsScript, ("`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
     $pNoRootsOut = & {
         $prevProf = $env:USERPROFILE
         $env:USERPROFILE = $testHome
@@ -350,8 +533,8 @@ try {
     $pRootDir = Join-Path $sandbox 'projects-root'
     $pWorkDir = Join-Path $pRootDir 'work-helpers'
     [System.IO.Directory]::CreateDirectory($pWorkDir) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $testHome '.project-roots'), "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
-    $pJumpContent = $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
+    [System.IO.File]::WriteAllText($testState.ProjectRoots, "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
+    $pJumpContent = "`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
     [System.IO.File]::WriteAllText($pJumpScript, $pJumpContent, [System.Text.UTF8Encoding]::new($false))
     $pJumpOut = & {
         $prevProf = $env:USERPROFILE
@@ -392,6 +575,10 @@ try {
     Assert-True ($vsDirOut -match 'MyApp\.sln') "vs traverses parent directories to find .sln"
     $vsFileOut = (vs $nestedFile -Verbose -WhatIf 4>&1 | Out-String)
     Assert-True ($vsFileOut -match 'MyApp\.sln' -and $vsFileOut -match 'UsersController\.cs') "vs accepts a file and opens solution + file"
+    $anotherFile = Join-Path $nestedDir 'Other.cs'
+    [System.IO.File]::WriteAllText($anotherFile, 'class Other {}')
+    $vsFilesOut = (vs $slnDir -Files @($nestedFile, $anotherFile) -Verbose -WhatIf 4>&1 | Out-String)
+    Assert-True ($vsFilesOut -match 'MyApp\.sln' -and $vsFilesOut -match 'UsersController\.cs' -and $vsFilesOut -match 'Other\.cs') "vs includes every requested file with the solution"
     $vsTooShallow = (vs $nestedDir -MaxDepth 1 -WhatIf -ErrorAction Continue 2>&1 | Out-String)
     Assert-True ($vsTooShallow -match 'No \.sln or \.slnx file found') "vs respects MaxDepth limit"
 
@@ -559,6 +746,7 @@ try {
         Pop-Location
     }
 } finally {
+    $env:LOCALAPPDATA = $previousLocalAppData
     # Clean up junctions safely before removing sandbox
     foreach ($j in @((Join-Path $testHome '.gemini\skills'), (Join-Path $testHome '.agents\skills\ask'), (Join-Path $testHome '.agents\skills\ux'), (Join-Path $testHome '.agents\skills\readme'), (Join-Path $testHome '.agents\skills\repo-intro'), (Join-Path $testHome '.agents\skills\developer-profile'), (Join-Path $testHome '.agents\skills\ws-skill'), (Join-Path $testHome '.gemini\config\plugins\egm'))) {
         if (Test-Path -LiteralPath $j) {
