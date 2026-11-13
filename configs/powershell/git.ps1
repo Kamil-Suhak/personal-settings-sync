@@ -1,4 +1,4 @@
-#region 2. Git Automation & Workflows
+﻿#region 2. Git Automation & Workflows
 
 # In-memory branch & fetch caches to eliminate redundant subprocess overhead
 $global:__git_cache_repo = $null
@@ -12,10 +12,30 @@ function Clear-GitBranchCache {
     $global:__git_cache_branch = ''
 }
 
+function Invoke-GitConfirmation {
+    param(
+        [Parameter(Mandatory = $true)][string]$Preview,
+        [string]$Label = 'Command preview',
+        [switch]$Yes
+    )
+
+    Write-Host "${Label}: " -NoNewline -ForegroundColor Yellow
+    Write-Host $Preview -ForegroundColor White
+    if ($Yes) { return $true }
+    $reply = Read-Host "Proceed? [y/N]"
+    if ($reply -match '^[Yy](es)?$') {
+        return $true
+    }
+    Write-Host "Aborted." -ForegroundColor DarkGray
+    return $false
+}
+
 function Invoke-GitFetchWithCooldown {
     [CmdletBinding()]
     param(
         [string]$RepoRoot,
+        [string[]]$TargetBranches,
+        [string]$CurrentUpstream,
         [switch]$Force,
         [switch]$NoFetch
     )
@@ -26,33 +46,129 @@ function Invoke-GitFetchWithCooldown {
     }
 
     if ($NoFetch) {
-        return [pscustomobject]@{ State = 'skipped'; Text = 'fetch skipped (-NoFetch)' }
+        return [pscustomobject]@{ State = 'skipped'; Text = 'fetch skipped (-n)' }
     }
 
-    if (-not $Force -and $global:__git_fetch_cache.ContainsKey($RepoRoot)) {
-        $ageSec = ([datetime]::UtcNow - $global:__git_fetch_cache[$RepoRoot]).TotalSeconds
-        if ($ageSec -lt 60) {
-            $secs = [int][math]::Floor($ageSec)
-            return [pscustomobject]@{ State = 'cached'; Text = "fetched ${secs}s ago (cooldown)" }
+    # Resolve candidate origin branch names we care about
+    $remoteRefs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($r in @(& git for-each-ref --format="%(refname:short)" refs/remotes/origin/ 2>$null)) {
+        if ($r) { [void]$remoteRefs.Add($r.Trim()) }
+    }
+
+    $desiredRefs = [System.Collections.Generic.List[string]]::new()
+    $addTargetRef = {
+        param([string]$Candidate)
+        if (-not $Candidate) { return }
+        $clean = $Candidate.Trim() -replace '^origin/', ''
+        if ($clean -and $clean -ne 'HEAD' -and $remoteRefs.Contains("origin/$clean") -and -not $desiredRefs.Contains($clean)) {
+            [void]$desiredRefs.Add($clean)
+        }
+    }
+    if ($CurrentUpstream) { & $addTargetRef $CurrentUpstream }
+    if ($TargetBranches) {
+        foreach ($tb in $TargetBranches) { & $addTargetRef $tb }
+    }
+
+    # Check both session per-ref cache and .git/FETCH_HEAD mtime (24h threshold)
+    $staleThresholdHours = 24
+    $cachedEntry = if ($global:__git_fetch_cache.ContainsKey($RepoRoot)) { $global:__git_fetch_cache[$RepoRoot] } else { $null }
+    $cacheFresh = $false
+    $lastFetchUtc = $null
+
+    if ($cachedEntry -and $cachedEntry.Time) {
+        $age = [datetime]::UtcNow - $cachedEntry.Time
+        if ($age.TotalHours -lt $staleThresholdHours) {
+            $allCovered = [bool]$cachedEntry.All
+            if (-not $allCovered) {
+                $allCovered = $true
+                foreach ($dr in $desiredRefs) {
+                    if (-not $cachedEntry.Refs.Contains($dr)) { $allCovered = $false; break }
+                }
+            }
+            if ($allCovered) {
+                $cacheFresh = $true
+                $lastFetchUtc = $cachedEntry.Time
+            }
         }
     }
 
-    $null = & git fetch origin --prune --quiet 2>&1
-    if ($LASTEXITCODE -eq 0) {
-        $global:__git_fetch_cache[$RepoRoot] = [datetime]::UtcNow
+    if (-not $cacheFresh -and -not $Force -and (-not $TargetBranches -or $TargetBranches.Count -eq 0)) {
+        $gitCommonDir = (& git rev-parse --git-common-dir 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $gitCommonDir) {
+            $gitCommonDir = $gitCommonDir.Trim()
+            if (-not [System.IO.Path]::IsPathRooted($gitCommonDir)) {
+                $gitCommonDir = Join-Path $RepoRoot $gitCommonDir
+            }
+            $fetchHeadPath = Join-Path $gitCommonDir 'FETCH_HEAD'
+            if (Test-Path -LiteralPath $fetchHeadPath -PathType Leaf) {
+                $diskFetchUtc = [System.IO.File]::GetLastWriteTimeUtc($fetchHeadPath)
+                if (([datetime]::UtcNow - $diskFetchUtc).TotalHours -lt $staleThresholdHours) {
+                    $cacheFresh = $true
+                    $lastFetchUtc = $diskFetchUtc
+                }
+            }
+        }
+    }
+
+    if (-not $Force -and $cacheFresh -and $lastFetchUtc) {
+        $age = [datetime]::UtcNow - $lastFetchUtc
+        $ageText = if ($age.TotalMinutes -lt 1) {
+            "$([int][math]::Floor($age.TotalSeconds))s ago"
+        }
+        elseif ($age.TotalHours -lt 1) {
+            "$([int][math]::Floor($age.TotalMinutes))m ago"
+        }
+        else {
+            "$([int][math]::Floor($age.TotalHours))h ago"
+        }
+        return [pscustomobject]@{ State = 'cached'; Text = "refs fetched $ageText (-f to refresh)" }
+    }
+
+    # Fetch only uncached refs unless forced or full refresh needed
+    $refsToFetch = if (-not $Force -and $cachedEntry -and $cachedEntry.Time -and (([datetime]::UtcNow - $cachedEntry.Time).TotalHours -lt $staleThresholdHours)) {
+        @($desiredRefs | Where-Object { -not $cachedEntry.Refs.Contains($_) })
+    }
+    else {
+        @($desiredRefs)
+    }
+
+    $fetchedOk = $false
+    $didFullFetch = $false
+    if ($refsToFetch.Count -gt 0) {
+        $null = & git fetch origin @refsToFetch --prune --quiet 2>&1
+        $fetchedOk = ($LASTEXITCODE -eq 0)
+    }
+    if (-not $fetchedOk) {
+        $null = & git fetch origin --prune --quiet 2>&1
+        $fetchedOk = ($LASTEXITCODE -eq 0)
+        $didFullFetch = $fetchedOk
+    }
+
+    if ($fetchedOk) {
+        if ($cachedEntry -and $cachedEntry.Refs -and -not $Force -and (([datetime]::UtcNow - $cachedEntry.Time).TotalHours -lt $staleThresholdHours)) {
+            $refSet = $cachedEntry.Refs
+        }
+        else {
+            $refSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+        }
+        foreach ($r in $refsToFetch) { [void]$refSet.Add($r) }
+        $global:__git_fetch_cache[$RepoRoot] = @{
+            Time = [datetime]::UtcNow
+            Refs = $refSet
+            All  = $didFullFetch
+        }
         Clear-GitBranchCache
-        return [pscustomobject]@{ State = 'fetched'; Text = 'fetched origin --prune just now' }
+        return [pscustomobject]@{ State = 'fetched'; Text = 'fetched origin just now' }
     }
 
     return [pscustomobject]@{ State = 'failed'; Text = 'origin fetch failed (offline/unreachable - showing local refs)' }
 }
 
-function Resolve-GitBaseBranch {
+function Resolve-GitTargetRef {
     [CmdletBinding()]
     param(
-        [string]$ExplicitBase,
-        [string]$CurrentBranch,
-        [switch]$AllowSelf
+        [Parameter(Mandatory = $true)]
+        [string]$Name
     )
 
     $rawRefs = @(& git for-each-ref --format="%(refname:short)" refs/heads/ refs/remotes/origin/ 2>$null)
@@ -61,46 +177,16 @@ function Resolve-GitBaseBranch {
         if ($r) { [void]$refSet.Add($r.Trim()) }
     }
 
-    $resolveCandidate = {
-        param([string]$Candidate)
-        if (-not $Candidate) { return $null }
-        $clean = $Candidate.Trim()
-        if ($clean.StartsWith('origin/') -and $refSet.Contains($clean)) {
-            return [pscustomobject]@{ Ref = $clean; Branch = $clean.Substring(7) }
-        }
-        if ($refSet.Contains("origin/$clean")) {
-            return [pscustomobject]@{ Ref = "origin/$clean"; Branch = $clean }
-        }
-        if ($refSet.Contains($clean)) {
-            return [pscustomobject]@{ Ref = $clean; Branch = $clean }
-        }
-        return $null
+    $clean = $Name.Trim()
+    if ($clean.StartsWith('origin/') -and $refSet.Contains($clean)) {
+        return [pscustomobject]@{ Ref = $clean; Branch = $clean.Substring(7) }
     }
-
-    if ($ExplicitBase) {
-        return (& $resolveCandidate $ExplicitBase)
+    if ($refSet.Contains("origin/$clean")) {
+        return [pscustomobject]@{ Ref = "origin/$clean"; Branch = $clean }
     }
-
-    if ($CurrentBranch -and $CurrentBranch -ne 'HEAD') {
-        $savedBase = (& git config --local --get "branch.$CurrentBranch.base" 2>$null)
-        if ($savedBase) {
-            $resolvedSaved = & $resolveCandidate $savedBase
-            if ($resolvedSaved -and ($AllowSelf -or $resolvedSaved.Branch -ne $CurrentBranch)) {
-                return $resolvedSaved
-            }
-        }
-
-        if (-not $AllowSelf -and $CurrentBranch -in @('develop', 'beta', 'main')) {
-            return $null
-        }
+    if ($refSet.Contains($clean)) {
+        return [pscustomobject]@{ Ref = $clean; Branch = $clean }
     }
-
-    foreach ($name in @('develop', 'beta', 'main')) {
-        if (-not $AllowSelf -and $CurrentBranch -eq $name) { continue }
-        $resolved = & $resolveCandidate $name
-        if ($resolved) { return $resolved }
-    }
-
     return $null
 }
 
@@ -143,18 +229,25 @@ function Show-GitCommitComparison {
 <#
 .SYNOPSIS
 Stages all files and commits, amends, or undoes the latest commit:
-  commit <message>         - stages all and creates a commit
-  commit amend [<message>] - stages all and amends the latest commit
-  commit undo              - soft-resets HEAD~1 keeping changes staged
+  commit <message>             - stages all and creates a commit (no prompt)
+  commit amend [<msg>] [-y]    - previews and stages/amends latest commit (prompts [y/N]; -y/-Yes skips prompt)
+  commit undo [-y]             - previews and soft-resets HEAD~1 keeping changes staged (prompts [y/N]; -y/-Yes skips prompt)
 #>
 function commit {
-    if (-not $args -or $args.Count -eq 0) {
-        Write-Host "Usage: commit <message> | commit amend [<message>] | commit undo" -ForegroundColor Yellow
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$ArgsList,
+        [Alias("y")][switch]$Yes
+    )
+
+    if (-not $ArgsList -or $ArgsList.Count -eq 0) {
+        Write-Host "Usage: commit <message> | commit amend [<message>] [-y] | commit undo [-y]" -ForegroundColor Yellow
         return
     }
 
-    $sub = ([string]$args[0]).ToLowerInvariant()
-    if ($sub -eq 'undo' -and $args.Count -eq 1) {
+    $sub = ([string]$ArgsList[0]).ToLowerInvariant()
+    if ($sub -eq 'undo' -and $ArgsList.Count -eq 1) {
         $hasParent = (& git rev-parse --verify HEAD~1 2>$null)
         if (-not $hasParent) {
             $hasHead = (& git rev-parse --verify HEAD 2>$null)
@@ -166,10 +259,14 @@ function commit {
             }
             return
         }
+        if (-not (Invoke-GitConfirmation -Preview 'git reset --soft HEAD~1' -Yes:$Yes)) { return }
         git reset --soft HEAD~1
         Clear-GitBranchCache
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Undid last commit. Changes remain safely staged." -ForegroundColor Green
+            Write-Host "✓ Undid last commit. Changes remain safely staged." -ForegroundColor Green
+        }
+        else {
+            Write-Host "✖ git reset failed (exit $LASTEXITCODE)." -ForegroundColor Red
         }
         return
     }
@@ -180,40 +277,83 @@ function commit {
             Write-Host "No commits exist to amend or not in a git repository." -ForegroundColor Yellow
             return
         }
+        $rest = @($ArgsList | Select-Object -Skip 1)
+        $msg = $rest -join ' '
+        $preview = if ($rest.Count -gt 0) {
+            "git add -A; git commit --amend -m `"$msg`""
+        }
+        else {
+            'git add -A; git commit --amend --no-edit'
+        }
+        if (-not (Invoke-GitConfirmation -Preview $preview -Yes:$Yes)) { return }
+
         git add -A
-        $rest = @($args | Select-Object -Skip 1)
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "✖ git add failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            return
+        }
         if ($rest.Count -gt 0) {
-            git commit --amend -m ($rest -join ' ')
+            git commit --amend -m $msg
         }
         else {
             git commit --amend --no-edit
         }
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Amended latest commit:" -ForegroundColor Green
-            git log -1 --oneline
+            Write-Host "✓ Amended latest commit:" -ForegroundColor Green
+            Write-Host "  $((& git log -1 --oneline 2>$null) -join '')" -ForegroundColor White
+        }
+        else {
+            Write-Host "✖ git commit --amend failed (exit $LASTEXITCODE)." -ForegroundColor Red
         }
         return
     }
 
     git add -A
-    git commit -m ($args -join ' ')
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✖ git add failed (exit $LASTEXITCODE)." -ForegroundColor Red
+        return
+    }
+    git commit -m ($ArgsList -join ' ')
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✖ git commit failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    }
 }
 
 <#
 .SYNOPSIS
-Pushes commits to remote. If message is passed, stages and commits first. Automatically sets upstream tracking on new branches.
+Previews the git push command and prompts [y/N] before pushing to origin (-y/-Yes bypasses confirmation while still printing the preview). If a message is passed, stages and commits first.
 #>
 function push {
-    $branch = if ($global:__git_cache_branch) { $global:__git_cache_branch } else { (& git branch --show-current 2>$null) -join '' }
-    if (-not $branch) { Write-Host "Not a git repository." -ForegroundColor Red; return }
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$MessageArgs,
+        [Alias("y")][switch]$Yes
+    )
 
-    if ($args) {
+    $branch = if ($global:__git_cache_branch) { $global:__git_cache_branch } else { (& git branch --show-current 2>$null) -join '' }
+    if (-not $branch) { Write-Host "✖ push: Not a git repository." -ForegroundColor Red; return }
+
+    $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
+    $pushCmd = if (-not $upstream) { "git push --set-upstream origin $branch" } else { 'git push' }
+    $msg = if ($MessageArgs -and $MessageArgs.Count -gt 0) { $MessageArgs -join ' ' } else { $null }
+    $preview = if ($msg) { "git add -A; git commit -m `"$msg`"; $pushCmd" } else { $pushCmd }
+
+    if (-not (Invoke-GitConfirmation -Preview $preview -Yes:$Yes)) { return }
+
+    if ($msg) {
         git add -A
-        git commit -m "$args"
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "✖ git add failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            return
+        }
+        git commit -m $msg
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "✖ git commit failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            return
+        }
     }
 
-    # Check if upstream branch is tracked on remote
-    $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
     if (-not $upstream) {
         Write-Host "Setting upstream origin/$branch and pushing..." -ForegroundColor Cyan
         git push --set-upstream origin $branch
@@ -221,107 +361,38 @@ function push {
     else {
         git push
     }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✖ git push failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    }
 }
 
 <#
 .SYNOPSIS
-Unified repo status, commit divergence view, and sync/catchup hub:
-  repo [<base>] [-f|-n] [-a] [-i]   - Fetches origin --prune (1m cooldown), shows commit delta vs remote & base + grouped status
-  repo catchup [<base>] [-r|-m|-c]   - Pulls updates from base branch (branch.base or develop->beta->main) via merge or rebase (-r)
-  repo sync [-r]                     - Pulls from upstream (merge or -r rebase --autostash), then pushes
+Git branch divergence and working-tree status:
+  st [<branch>...] [-f] [-n] [-a] [-i] [-Files] [-Full]
+  Without <branch>, inspects working tree and upstream tracking only (does not guess a base branch).
+  With <branch>..., compares HEAD against each branch (commits ahead/behind; add -Files for modified files, -Full to run 'diff pr' per branch).
+  Auto-fetches stale origin refs (>24h); use -f (-Fetch) to force refresh now or -n (-NoFetch) to skip.
 #>
-function repo {
+function st {
     [CmdletBinding()]
     param(
-        [Parameter(Position = 0)]
-        [string]$Action,
-        [Parameter(Position = 1)]
-        [string]$Base,
-        [Alias("r")][switch]$Rebase,
-        [Alias("m")][switch]$Merge,
-        [Alias("c")][switch]$Check,
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$Branches,
         [Alias("f")][switch]$Fetch,
         [Alias("n")][switch]$NoFetch,
         [Alias("a")][switch]$All,
-        [Alias("i")][switch]$Ignored
+        [Alias("i")][switch]$Ignored,
+        [switch]$Files,
+        [switch]$Full
     )
 
     $repoRoot = (& git rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $repoRoot) {
-        Write-Host "Not inside a git repository." -ForegroundColor Red
+        Write-Host "✖ st: Not inside a git repository." -ForegroundColor Red
         return
     }
     $repoRoot = $repoRoot.Trim()
-
-    $sub = if ($Action) { $Action.ToLowerInvariant() } else { '' }
-
-    if ($sub -eq 'catchup') {
-        $curBranch = (& git symbolic-ref --short HEAD 2>$null)
-        if ($curBranch) { $curBranch = $curBranch.Trim() }
-        $resolvedBase = Resolve-GitBaseBranch -ExplicitBase $Base -CurrentBranch $curBranch
-        if (-not $resolvedBase) {
-            Write-Host "No base branch found (checked branch config and develop -> beta -> main). Specify one: repo catchup <branch>" -ForegroundColor Yellow
-            return
-        }
-
-        $targetBranch = $resolvedBase.Branch
-        Write-Host "Fetching latest origin/$targetBranch..." -ForegroundColor Cyan
-        $null = & git fetch origin $targetBranch --quiet 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $global:__git_fetch_cache[$repoRoot] = [datetime]::UtcNow
-        }
-
-        $compareRef = if ((& git rev-parse --verify "origin/$targetBranch" 2>$null)) { "origin/$targetBranch" } else { $resolvedBase.Ref }
-        $incoming = @(& git log "HEAD..$compareRef" --oneline -n 10 2>$null | Where-Object { $_ })
-        if ($incoming.Count -eq 0) {
-            Write-Host "Already up to date with $compareRef." -ForegroundColor Green
-            return
-        }
-
-        Write-Host "`nNew commits on $compareRef since branch-off:" -ForegroundColor Yellow
-        $incoming | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
-
-        if ($Check) { return }
-
-        if ($Rebase) {
-            Write-Host "`nRebasing current branch onto $compareRef (with autostash)..." -ForegroundColor Cyan
-            git rebase $compareRef --autostash
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "Rebase successful! Note: use 'git push --force-with-lease' if branch was already pushed." -ForegroundColor DarkCyan
-            }
-        }
-        else {
-            Write-Host "`nMerging $compareRef into current branch..." -ForegroundColor Cyan
-            git merge $compareRef
-        }
-
-        Clear-GitBranchCache
-        return
-    }
-
-    if ($sub -eq 'sync') {
-        Write-Host "Syncing with remote..." -ForegroundColor Cyan
-        if ($Rebase) {
-            git pull --rebase --autostash
-        }
-        else {
-            git pull --no-rebase
-        }
-
-        if ($LASTEXITCODE -eq 0) {
-            git push
-            if ($LASTEXITCODE -eq 0) {
-                $global:__git_fetch_cache[$repoRoot] = [datetime]::UtcNow
-            }
-        }
-
-        Clear-GitBranchCache
-        return
-    }
-
-    # Default status & commit divergence mode: `repo` or `repo <base>`
-    $targetBase = if ($Base) { $Base } elseif ($Action) { $Action } else { $null }
-    $fetchInfo = Invoke-GitFetchWithCooldown -RepoRoot $repoRoot -Force:$Fetch -NoFetch:$NoFetch
 
     $branch = (& git symbolic-ref --short HEAD 2>$null)
     $isDetached = $false
@@ -338,10 +409,19 @@ function repo {
     $null = & git rev-parse --verify HEAD 2>$null
     if ($LASTEXITCODE -eq 0) { $hasHead = $true }
 
+    $upstream = $null
+    if ($hasHead -and -not $isDetached) {
+        $rawUpstream = (& git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
+        if ($LASTEXITCODE -eq 0 -and $rawUpstream) { $upstream = $rawUpstream.Trim() }
+    }
+
+    $fetchInfo = Invoke-GitFetchWithCooldown -RepoRoot $repoRoot -TargetBranches $Branches -CurrentUpstream $upstream -Force:$Fetch -NoFetch:$NoFetch
+
     Write-Host "`nBranch: " -NoNewline -ForegroundColor Cyan
     Write-Host $branch -NoNewline -ForegroundColor White
     $fetchColor = if ($fetchInfo.State -eq 'failed') { 'Yellow' } else { 'DarkGray' }
     Write-Host "  ($($fetchInfo.Text))" -ForegroundColor $fetchColor
+    Write-Host ("─" * 52) -ForegroundColor DarkGray
 
     # Active in-progress operations banner
     $gitDir = (& git rev-parse --git-dir 2>$null)
@@ -361,9 +441,7 @@ function repo {
 
     # Commit comparisons (only when HEAD exists)
     if ($hasHead -and -not $isDetached) {
-        $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $upstream) {
-            $upstream = $upstream.Trim()
+        if ($upstream) {
             Show-GitCommitComparison `
                 -Title "vs $upstream" `
                 -OtherRef $upstream `
@@ -377,19 +455,45 @@ function repo {
             Write-Host "  Not pushed to origin yet (run 'push' to publish)" -ForegroundColor Yellow
         }
 
-        $baseInfo = Resolve-GitBaseBranch -ExplicitBase $targetBase -CurrentBranch $branch -AllowSelf:([bool]$targetBase)
-        if (-not $baseInfo -and $targetBase) {
-            Write-Host "`nvs $targetBase" -ForegroundColor Cyan
-            Write-Host "  Branch '$targetBase' (or 'origin/$targetBase') not found." -ForegroundColor Yellow
+        if (-not $Branches -or $Branches.Count -eq 0) {
+            Write-Host "`nvs other branches" -ForegroundColor Cyan
+            Write-Host "  Not compared against any base branch." -ForegroundColor DarkGray
+            Write-Host "  Tip: Pass branch names explicitly (e.g. 'st main' or 'st develop beta main')." -ForegroundColor DarkGray
         }
-        elseif ($baseInfo -and $baseInfo.Ref -ne $upstream) {
-            Show-GitCommitComparison `
-                -Title "vs $($baseInfo.Ref)" `
-                -OtherRef $baseInfo.Ref `
-                -LeftLabel "Only on your branch (not in $($baseInfo.Ref))" `
-                -RightLabel "New on $($baseInfo.Ref) since branch-off" `
-                -InSyncText "In sync with $($baseInfo.Ref)" `
-                -All:$All
+        else {
+            foreach ($targetBranch in $Branches) {
+                if (-not $targetBranch) { continue }
+                $targetInfo = Resolve-GitTargetRef -Name $targetBranch
+                if (-not $targetInfo) {
+                    Write-Host "`nvs $targetBranch" -ForegroundColor Cyan
+                    Write-Host "  Branch '$targetBranch' (or 'origin/$targetBranch') not found." -ForegroundColor Yellow
+                    continue
+                }
+
+                Show-GitCommitComparison `
+                    -Title "vs $($targetInfo.Ref)" `
+                    -OtherRef $targetInfo.Ref `
+                    -LeftLabel "Only on your branch (not in $($targetInfo.Ref))" `
+                    -RightLabel "New on $($targetInfo.Ref) since branch-off" `
+                    -InSyncText "In sync with $($targetInfo.Ref)" `
+                    -All:$All
+
+                if ($Full) {
+                    diff pr $targetBranch -Files:$Files
+                }
+                elseif ($Files) {
+                    $changedFiles = @(& git --no-pager diff --name-status "$($targetInfo.Ref)...HEAD" 2>$null | Where-Object { $_ })
+                    if ($changedFiles.Count -gt 0) {
+                        Write-Host "  Changed files since merge-base ($($targetInfo.Ref)...HEAD):" -ForegroundColor DarkCyan
+                        foreach ($cf in $changedFiles) {
+                            Write-Host "    $cf" -ForegroundColor DarkGray
+                        }
+                    }
+                    else {
+                        Write-Host "  No file differences since merge-base ($($targetInfo.Ref)...HEAD)." -ForegroundColor DarkGray
+                    }
+                }
+            }
         }
     }
 
@@ -472,14 +576,14 @@ Remove-Alias -Name diff -Force -ErrorAction SilentlyContinue
 
 <#
 .SYNOPSIS
-Unpaged, side-labeled git diff helper:
-  diff [<path>...]             - Unstaged changes (Index -> Working Tree)
-  diff staged|s [<path>...]    - Staged changes (HEAD -> Index)
-  diff all|a [<path>...]       - All uncommitted changes (HEAD -> Working Tree)
-  diff up [<path>...]          - Unpushed commits (@{u}..HEAD)
-  diff base [<branch>] [path]  - Whole branch changes vs merge-base (origin/<base>...HEAD)
-  diff last [<n>] [<path>...]  - Last 1 (or n) commit(s)
-  Flags: -Stat (-s), -Files (-f), -Path <string[]>
+Unpaged git diff helper and GitHub PR preview (overrides PowerShell's built-in diff -> Compare-Object):
+  diff [<path>...]                 - Unstaged changes (Index -> Working Tree)
+  diff staged|s [<path>...]        - Staged changes (HEAD -> Index)
+  diff all|a [<path>...]           - All uncommitted changes (HEAD -> Working Tree)
+  diff up [<path>...]              - Unpushed commits (@{u}..HEAD)
+  diff pr <branch> [-f|-s] [path]  - Preview what a GitHub PR to <branch> shows: included commits (<ref>..HEAD) + merge-base file diff (<ref>...HEAD)
+  diff last [<n>] [<path>...]      - Last 1 (or n) commit(s)
+  Flags: -Stat (-s) summary stats, -Files (-f) changed file names with A/M/D status (--name-status), -Path <string[]>
 #>
 function diff {
     [CmdletBinding()]
@@ -501,7 +605,7 @@ function diff {
         return
     }
 
-    $knownModes = @('unstaged', 'u', 'staged', 's', 'all', 'a', 'up', 'base', 'last')
+    $knownModes = @('unstaged', 'u', 'staged', 's', 'all', 'a', 'up', 'pr', 'base', 'last')
     $mode = 'unstaged'
     $filterPaths = [System.Collections.Generic.List[string]]::new()
     if ($Path) {
@@ -514,15 +618,9 @@ function diff {
     if ($Target -and ($knownModes -contains $Target.ToLowerInvariant())) {
         $mode = $Target.ToLowerInvariant()
         switch ($mode) {
-            'base' {
+            { $_ -in @('pr', 'base') } {
                 if ($Arg1) {
-                    $probeBase = Resolve-GitBaseBranch -ExplicitBase $Arg1 -AllowSelf
-                    if ($probeBase) {
-                        $explicitBase = $Arg1
-                    }
-                    else {
-                        [void]$filterPaths.Add($Arg1)
-                    }
+                    $explicitBase = $Arg1
                 }
             }
             'last' {
@@ -554,6 +652,7 @@ function diff {
     $gitCmd = 'diff'
     $scopeArgs = [System.Collections.Generic.List[string]]::new()
     $banner = ''
+    $prRef = $null
 
     switch ($mode) {
         { $_ -in @('unstaged', 'u') } {
@@ -570,24 +669,26 @@ function diff {
         'up' {
             $upstream = (& git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>$null)
             if ($LASTEXITCODE -ne 0 -or -not $upstream) {
-                Write-Host "No upstream tracking branch configured yet (cannot run 'diff up'). Use 'diff base' or 'push' first." -ForegroundColor Yellow
+                Write-Host "No upstream tracking branch configured yet (cannot run 'diff up'). Use 'diff pr <branch>' or 'push' first." -ForegroundColor Yellow
                 return
             }
             $upstream = $upstream.Trim()
             [void]$scopeArgs.Add("$upstream..HEAD")
             $banner = "[diff] Unpushed commits ($upstream -> HEAD)"
         }
-        'base' {
-            $curBranch = (& git symbolic-ref --short HEAD 2>$null)
-            if ($curBranch) { $curBranch = $curBranch.Trim() }
-            $baseInfo = Resolve-GitBaseBranch -ExplicitBase $explicitBase -CurrentBranch $curBranch
-            if (-not $baseInfo) {
-                $msg = if ($explicitBase) { "Base branch '$explicitBase' (or 'origin/$explicitBase') not found." } else { "No base branch found (develop -> beta -> main). Specify one: diff base <branch>" }
-                Write-Host $msg -ForegroundColor Yellow
+        { $_ -in @('pr', 'base') } {
+            if (-not $explicitBase) {
+                Write-Host "Target branch required: diff pr <branch> [-f|-s] (e.g. 'diff pr main')." -ForegroundColor Yellow
                 return
             }
-            [void]$scopeArgs.Add("$($baseInfo.Ref)...HEAD")
-            $banner = "[diff] Branch changes vs $($baseInfo.Ref) (merge-base $($baseInfo.Ref)...HEAD)"
+            $baseInfo = Resolve-GitTargetRef -Name $explicitBase
+            if (-not $baseInfo) {
+                Write-Host "Target branch '$explicitBase' (or 'origin/$explicitBase') not found." -ForegroundColor Yellow
+                return
+            }
+            $prRef = $baseInfo.Ref
+            [void]$scopeArgs.Add("$prRef...HEAD")
+            $banner = "[diff] GitHub PR preview -> $prRef (commits: $prRef..HEAD | diff: $prRef...HEAD)"
         }
         'last' {
             $parentRef = "HEAD~$lastCount"
@@ -620,7 +721,21 @@ function diff {
         $banner += "  [filter: $($filterPaths -join ', ')]"
     }
 
-    Write-Host $banner -ForegroundColor Cyan
+    Write-Host "`n$banner" -ForegroundColor Cyan
+    Write-Host ("─" * 52) -ForegroundColor DarkGray
+
+    if ($prRef) {
+        $prCommits = @(& git log "$prRef..HEAD" --oneline 2>$null | Where-Object { $_ })
+        if ($prCommits.Count -gt 0) {
+            Write-Host "Commits included ($($prCommits.Count)):" -ForegroundColor Green
+            foreach ($c in $prCommits) {
+                Write-Host "  $c" -ForegroundColor DarkGray
+            }
+        }
+        else {
+            Write-Host "Commits included (0): HEAD has no commits ahead of $prRef." -ForegroundColor DarkGray
+        }
+    }
 
     if ($mode -in @('unstaged', 'u', 'staged', 's')) {
         $rawPorcelain = @(& git status --porcelain=v1 2>$null)
@@ -637,7 +752,7 @@ function diff {
         $notes = [System.Collections.Generic.List[string]]::new()
         if ($mode -in @('unstaged', 'u') -and $stagedCount -gt 0) { [void]$notes.Add("$stagedCount staged ('diff staged')") }
         if ($mode -in @('staged', 's') -and $unstagedCount -gt 0) { [void]$notes.Add("$unstagedCount unstaged ('diff')") }
-        if ($untrackedCount -gt 0) { [void]$notes.Add("$untrackedCount untracked ('repo')") }
+        if ($untrackedCount -gt 0) { [void]$notes.Add("$untrackedCount untracked ('st')") }
         if ($notes.Count -gt 0) {
             Write-Host "Note: Not shown here — $($notes -join ', ')" -ForegroundColor DarkGray
         }
@@ -646,7 +761,7 @@ function diff {
     if ($gitCmd -eq 'diff') {
         $null = & git diff --quiet @scopeArgs @pathSuffix 2>$null
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "No changes in this scope." -ForegroundColor DarkGray
+            Write-Host "No file differences in this scope." -ForegroundColor DarkGray
             return
         }
     }
@@ -658,23 +773,42 @@ function diff {
     foreach ($p in $pathSuffix) { [void]$displayArgs.Add($p) }
 
     & git --no-pager $gitCmd @displayArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✖ git $gitCmd failed (exit $LASTEXITCODE)." -ForegroundColor Red
+    }
 }
 
 <#
 .SYNOPSIS
-Switches branch, lists recent branches (no arg), or prompts to create a new branch if not found.
+Switches branch, lists recent branches (no arg), or prompts to create a new branch if not found (-y/-Yes bypasses confirmation while still printing the command preview).
 #>
 function b {
     [CmdletBinding()]
     param(
         [Parameter(Position = 0)]
         [string]$Name,
-        [Alias("n")][switch]$New
+        [Alias("n")][switch]$New,
+        [Alias("y")][switch]$Yes
     )
 
     if (-not $Name) {
-        Write-Host "Recent branches:" -ForegroundColor Cyan
-        git branch --sort=-committerdate | Select-Object -First 10
+        Write-Host "`nRecent branches" -ForegroundColor Cyan
+        $recentBranches = @(& git branch --sort=-committerdate 2>$null | Select-Object -First 10)
+        if ($recentBranches.Count -eq 0) {
+            Write-Host "  (no local branches found)" -ForegroundColor DarkGray
+        }
+        else {
+            foreach ($rb in $recentBranches) {
+                $trimmed = $rb.TrimStart()
+                if ($trimmed.StartsWith('* ')) {
+                    Write-Host "  * $($trimmed.Substring(2))" -ForegroundColor Green
+                }
+                else {
+                    Write-Host "    $trimmed" -ForegroundColor White
+                }
+            }
+        }
+        Write-Host ""
         return
     }
 
@@ -683,7 +817,10 @@ function b {
 
     if ($New) {
         git switch -c $Name
-        if ($LASTEXITCODE -eq 0 -and $prevBranch -and $prevBranch -ne $Name) {
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "✖ git switch failed (exit $LASTEXITCODE)." -ForegroundColor Red
+        }
+        elseif ($prevBranch -and $prevBranch -ne $Name) {
             git config --local "branch.$Name.base" $prevBranch 2>$null
         }
         Clear-GitBranchCache
@@ -696,12 +833,26 @@ function b {
 
     if ($exists) {
         git switch $Name
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "✖ git switch failed (exit $LASTEXITCODE)." -ForegroundColor Red
+        }
     }
     else {
-        $reply = Read-Host "Branch '$Name' not found. Create it? [Y/n]"
-        if ($reply -eq '' -or $reply -match '^[Yy]') {
+        Write-Host "Command preview: " -NoNewline -ForegroundColor Yellow
+        Write-Host "git switch -c $Name" -ForegroundColor White
+        $proceed = if ($Yes) {
+            $true
+        }
+        else {
+            $reply = Read-Host "Branch '$Name' not found. Create it? [Y/n]"
+            ($reply -eq '' -or $reply -match '^[Yy]')
+        }
+        if ($proceed) {
             git switch -c $Name
-            if ($LASTEXITCODE -eq 0 -and $prevBranch -and $prevBranch -ne $Name) {
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "✖ git switch failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            }
+            elseif ($prevBranch -and $prevBranch -ne $Name) {
                 git config --local "branch.$Name.base" $prevBranch 2>$null
             }
         }
@@ -715,7 +866,7 @@ function b {
 
 <#
 .SYNOPSIS
-Creates and switches to a new branch (recording base branch for 'repo' and 'diff base').
+Creates and switches to a new branch (git switch -c [<from-branch>]).
 #>
 function nb {
     [CmdletBinding()]
@@ -725,18 +876,17 @@ function nb {
     )
 
     if (-not $Name) {
-        Write-Host "Branch name required: nb <branch-name> [<from-branch>]" -ForegroundColor Yellow
+        Write-Host "Usage: nb <branch-name> [<from-branch>]" -ForegroundColor Yellow
         return
     }
 
     if ($From) {
         git switch -c $Name $From
         if ($LASTEXITCODE -eq 0) {
-            $cleanFrom = $From -replace '^origin/', ''
-            if ($cleanFrom -and $cleanFrom -ne $Name) {
-                git config --local "branch.$Name.base" $cleanFrom 2>$null
-            }
             Clear-GitBranchCache
+        }
+        else {
+            Write-Host "✖ git switch failed (exit $LASTEXITCODE)." -ForegroundColor Red
         }
         return
     }
@@ -786,8 +936,11 @@ function wip {
     }
 
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Stashed: $wipMsg" -ForegroundColor Green
+        Write-Host "✓ Stashed: $wipMsg" -ForegroundColor Green
         Clear-GitBranchCache
+    }
+    else {
+        Write-Host "✖ git stash push failed (exit $LASTEXITCODE)." -ForegroundColor Red
     }
 }
 
@@ -805,8 +958,11 @@ function unwip {
     Write-Host "Popping latest stash..." -ForegroundColor Cyan
     git stash pop
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Restored stash to working tree." -ForegroundColor Green
+        Write-Host "✓ Restored stash to working tree." -ForegroundColor Green
         Clear-GitBranchCache
+    }
+    else {
+        Write-Host "✖ git stash pop failed (exit $LASTEXITCODE)." -ForegroundColor Red
     }
 }
 
@@ -821,16 +977,16 @@ function stashes {
         return
     }
 
-    Write-Host "`nGit Stashes:" -ForegroundColor Cyan
+    Write-Host "`nGit Stashes" -ForegroundColor Cyan
     foreach ($entry in $rawStashes) {
         $parts = $entry -split "`t"
         if ($parts.Count -ge 3) {
             Write-Host "  $($parts[0].PadRight(12))" -NoNewline -ForegroundColor Green
             Write-Host " ($($parts[1]))" -NoNewline -ForegroundColor DarkGray
-            Write-Host " $($parts[2])" -ForegroundColor Yellow
+            Write-Host "  $($parts[2])" -ForegroundColor White
         }
         else {
-            Write-Host "  $entry"
+            Write-Host "  $entry" -ForegroundColor White
         }
     }
     Write-Host ""

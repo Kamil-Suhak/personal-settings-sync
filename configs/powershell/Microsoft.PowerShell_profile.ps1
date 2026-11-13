@@ -100,7 +100,7 @@ function which {
             Where-Object { $_.Name -notmatch '^(prompt|Clear-GitBranchCache|(Get|Invoke|Resolve|Show|ConvertTo)-)' }
 
             if ($funcAsts.Count -eq 0) { return }
-            Write-Host "${yellow}[$Heading]${reset}`n"
+            Write-Host "  ${yellow}[$Heading]${reset}"
             $maxLen = ($funcAsts | ForEach-Object { $_.Name.Length } | Measure-Object -Maximum).Maximum
             $pad = [math]::Max($maxLen + 2, 12)
             foreach ($f in $funcAsts) {
@@ -112,12 +112,13 @@ function which {
                     $live = Get-Help $f.Name -ErrorAction SilentlyContinue
                     if ($live.Synopsis -and $live.Synopsis.Trim() -ne $f.Name) { $live.Synopsis.Trim() } else { "" }
                 }
-                Write-Host "  ${green}$($f.Name.PadRight($pad))${reset} $syn"
+                Write-Host "    ${green}$($f.Name.PadRight($pad))${reset} $syn"
             }
             Write-Host ""
         }
 
-        Write-Host "`n${cyan}=== [PROFILE] $targetProfile (workspace: $activeWs) ===${reset}"
+        Write-Host "`n${cyan}Profile Functions ($activeWs)${reset}  ${gray}$targetProfile${reset}"
+        Write-Host "${gray}$('─' * 60)${reset}`n"
         foreach ($group in Get-PssProfileGroups -Root $global:__pss_root -Workspace $activeWs) {
             & $showProfileFuncs $group.Path $group.Name
         }
@@ -126,7 +127,7 @@ function which {
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if (-not $cmd) {
-        Write-Error "Command '$Name' not found."
+        Write-Host "✖ which: Command '$Name' not found." -ForegroundColor Red
         return
     }
 
@@ -146,7 +147,8 @@ function which {
         }
     }
 
-    Write-Host "`n${cyan}=== [$($cmd.CommandType.ToString().ToUpper())] $($cmd.Name) ===${reset}"
+    Write-Host "`n${cyan}[$($cmd.CommandType.ToString().ToUpper())] $($cmd.Name)${reset}"
+    Write-Host "${gray}$('─' * 44)${reset}"
 
     switch ($cmd.CommandType) {
         { $_ -in 'Function', 'Filter' } {
@@ -159,23 +161,24 @@ function which {
             else {
                 'PowerShell Profile'
             }
-            Write-Host "${yellow}Path:${reset}        ${green}$funcPath${reset}"
+            Write-Host "  ${yellow}Path:${reset}         $funcPath"
             $helpObj = Get-Help $cmd.Name -ErrorAction SilentlyContinue
             if ($helpObj.Synopsis -and $helpObj.Synopsis.Trim() -ne $cmd.Name) {
-                Write-Host "`n${yellow}Description:${reset}`n  $($helpObj.Synopsis.Trim())"
+                Write-Host "`n  ${yellow}Description:${reset}"
+                ($helpObj.Synopsis.Trim() -split "`r?`n") | ForEach-Object { Write-Host "    $_" }
             }
         }
         'Alias' {
-            Write-Host "${yellow}Alias Target:${reset} ${green}$($cmd.Definition)${reset}`n"
+            Write-Host "  ${yellow}Resolves to:${reset}  ${green}$($cmd.Definition)${reset}"
             which $cmd.Definition -Help:$Help
         }
         'Application' {
-            Write-Host "${yellow}Path:${reset}        ${green}$($cmd.Source)${reset}"
+            Write-Host "  ${yellow}Path:${reset}         $($cmd.Source)"
             if (Test-Path -LiteralPath $cmd.Source) {
                 $ver = (Get-Item -LiteralPath $cmd.Source).VersionInfo
-                if ($ver.FileVersion) { Write-Host "${yellow}Version:${reset}     ${gray}$($ver.FileVersion)${reset}" }
+                if ($ver.FileVersion) { Write-Host "  ${yellow}Version:${reset}      ${gray}$($ver.FileVersion)${reset}" }
             }
-            Write-Host "`n${yellow}Manual / Usage Help:${reset}"
+            Write-Host "`n  ${yellow}Usage / Help:${reset}"
             try {
                 $helpOutput = ($null | & $cmd.Source --help 2>&1)
                 if ($LASTEXITCODE -ne 0 -or -not $helpOutput) {
@@ -183,23 +186,26 @@ function which {
                 }
                 if ($helpOutput) {
                     $lines = @($helpOutput)
-                    $lines | ForEach-Object { Write-Host "  $_" }
+                    $lines | ForEach-Object { Write-Host "    $_" }
                 }
                 else {
-                    Write-Host "  ${gray}(No built-in --help or /? documentation returned)${reset}"
+                    Write-Host "    ${gray}(No built-in --help or /? documentation returned)${reset}"
                 }
             }
             catch {
-                Write-Host "  ${gray}Could not execute help: $_${reset}"
+                Write-Host "    ${gray}Could not execute help: $_${reset}"
             }
         }
         'Cmdlet' {
-            Write-Host "${yellow}Module:${reset}      ${green}$($cmd.ModuleName)${reset}"
+            Write-Host "  ${yellow}Module:${reset}       ${green}$($cmd.ModuleName)${reset}"
             $helpObj = Get-Help $cmd.Name -ErrorAction SilentlyContinue
-            if ($helpObj.Synopsis) { Write-Host "`n${yellow}Synopsis:${reset}`n  $($helpObj.Synopsis.Trim())" }
+            if ($helpObj.Synopsis) {
+                Write-Host "`n  ${yellow}Synopsis:${reset}"
+                ($helpObj.Synopsis.Trim() -split "`r?`n") | ForEach-Object { Write-Host "    $_" }
+            }
             if ($helpObj.Syntax) {
-                Write-Host "`n${yellow}Syntax:${reset}"
-                ($helpObj.Syntax | Out-String).Trim() | ForEach-Object { Write-Host "  ${gray}$_${reset}" }
+                Write-Host "`n  ${yellow}Syntax:${reset}"
+                ($helpObj.Syntax | Out-String).Trim() -split "`r?`n" | ForEach-Object { Write-Host "    ${gray}$_${reset}" }
             }
         }
     }
@@ -214,9 +220,25 @@ function venv {
     param([string]$Name = ".venv")
     if (-not (Test-Path $Name)) {
         Write-Host "Creating virtual environment in '$Name'..." -ForegroundColor Cyan
-        py -m venv $Name 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            python -m venv $Name
+        $pyCmd = Get-Command py -ErrorAction SilentlyContinue
+        if ($pyCmd) {
+            & $pyCmd.Source -m venv $Name
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "✖ py -m venv failed (exit $LASTEXITCODE)." -ForegroundColor Red
+                return
+            }
+        }
+        else {
+            $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+            if (-not $pythonCmd) {
+                Write-Host "✖ venv: Neither 'py' nor 'python' was found in PATH." -ForegroundColor Red
+                return
+            }
+            & $pythonCmd.Source -m venv $Name
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "✖ python -m venv failed (exit $LASTEXITCODE)." -ForegroundColor Red
+                return
+            }
         }
     }
     $activate = Join-Path $Name "Scripts\Activate.ps1"
@@ -225,7 +247,7 @@ function venv {
         Write-Host "Activated $Name (Python $((python --version 2>&1) -replace 'Python\s*'))" -ForegroundColor Green
     }
     else {
-        Write-Host "Activation script not found: $activate" -ForegroundColor Red
+        Write-Host "✖ venv: Activation script not found: $activate" -ForegroundColor Red
     }
 }
 
@@ -292,7 +314,8 @@ function cmp {
         }
 
         if (($t1 -replace "`r`n", "`n") -ceq ($t2 -replace "`r`n", "`n")) {
-            Write-Warning "Text content matches visually ($Label1 vs $Label2), but line endings differ (CRLF vs LF mismatch)."
+            Write-Host "CRLF vs LF mismatch: " -NoNewline -ForegroundColor Yellow
+            Write-Host "Identical text ($Label1 == $Label2), only line endings differ." -ForegroundColor White
             return
         }
 
@@ -301,7 +324,7 @@ function cmp {
             return
         }
 
-        Write-Host "Difference ($Label1 vs $Label2):" -ForegroundColor Yellow
+        Write-Host "`nDifference ($Label1 vs $Label2):" -ForegroundColor Yellow
         $id = [guid]::NewGuid().ToString('N')
         $tmp1 = Join-Path ([System.IO.Path]::GetTempPath()) "pss-cmp-$id-1.txt"
         $tmp2 = Join-Path ([System.IO.Path]::GetTempPath()) "pss-cmp-$id-2.txt"
@@ -343,20 +366,21 @@ function cmp {
         }
 
         $initialSeq = [Win32.NativeClipboard]::GetClipboardSequenceNumber()
-        Write-Host "Clipboard Watcher active. (Press Ctrl+C in terminal to abort)`n" -ForegroundColor DarkGray
+        Write-Host "`nClipboard Watcher" -ForegroundColor Cyan
+        Write-Host "  Copy two snippets with Ctrl+C to compare them (Ctrl+C here to abort).`n" -ForegroundColor DarkGray
 
-        $first = & $waitForNextCopy $initialSeq ">>> Copy ITEM 1 (Ctrl+C in source)..."
-        Write-Host "Item 1 captured ($($first.Content.Length) characters).`n" -ForegroundColor DarkGreen
+        $first = & $waitForNextCopy $initialSeq "  [1/2] Waiting for first copy..."
+        Write-Host "  ✓ Captured copy 1 ($($first.Content.Length) chars)`n" -ForegroundColor Green
 
-        $second = & $waitForNextCopy $first.Sequence ">>> Copy ITEM 2 (Ctrl+C in source)..."
-        Write-Host "Item 2 captured ($($second.Content.Length) characters).`n" -ForegroundColor DarkGreen
+        $second = & $waitForNextCopy $first.Sequence "  [2/2] Waiting for second copy..."
+        Write-Host "  ✓ Captured copy 2 ($($second.Content.Length) chars)`n" -ForegroundColor Green
 
         & $compareTextPair $first.Content $second.Content 'copy 1' 'copy 2'
         return
     }
 
     if (-not (Test-Path -LiteralPath $file1 -PathType Leaf)) {
-        Write-Host "File not found: $file1" -ForegroundColor Red
+        Write-Host "✖ cmp: File not found: $file1" -ForegroundColor Red
         return
     }
     $resolved1 = (Resolve-Path -LiteralPath $file1).Path
@@ -372,7 +396,7 @@ function cmp {
 
     # Mode 3: Two files (`cmp <file1> <file2>`)
     if (-not (Test-Path -LiteralPath $file2 -PathType Leaf)) {
-        Write-Host "File not found: $file2" -ForegroundColor Red
+        Write-Host "✖ cmp: File not found: $file2" -ForegroundColor Red
         return
     }
     $resolved2 = (Resolve-Path -LiteralPath $file2).Path
@@ -388,17 +412,24 @@ function cmp {
             Write-Host "Files are identical (ignoring whitespace)." -ForegroundColor Green
             return
         }
+        if ($LASTEXITCODE -gt 1) {
+            Write-Host "✖ git diff --no-index failed (exit $LASTEXITCODE)." -ForegroundColor Red
+            return
+        }
     }
 
     if ($Quiet) {
-        Write-Host "Files differ." -ForegroundColor Red
+        Write-Host "Contents differ ($file1 vs $file2). Files differ." -ForegroundColor Red
     }
     else {
-        Write-Host "Files differ:" -ForegroundColor Yellow
+        Write-Host "`nFiles differ:" -ForegroundColor Yellow
         $diffArgs = @('--no-pager', 'diff', '--no-index', '--color=auto')
         if ($IgnoreWhitespace) { $diffArgs += '-w' }
         $diffArgs += @('--', $resolved1, $resolved2)
         & git @diffArgs
+        if ($LASTEXITCODE -gt 1) {
+            Write-Host "✖ git diff --no-index failed (exit $LASTEXITCODE)." -ForegroundColor Red
+        }
     }
 }
 
@@ -436,7 +467,7 @@ function jwt {
             $raw = $RawInput.Trim() -replace '^Bearer\s+', ''
             $parts = $raw -split '\.'
             if ($parts.Count -lt 2) {
-                Write-Error "Invalid JWT format (expected header.payload[.signature])."
+                Write-Host "✖ jwt: Invalid JWT format (expected header.payload[.signature])." -ForegroundColor Red
                 return
             }
 
@@ -444,22 +475,24 @@ function jwt {
                 $header = & $decodePart $parts[0]
                 $payload = & $decodePart $parts[1]
 
-                Write-Host "`n--- JWT Header ---" -ForegroundColor Cyan
-                $header | ConvertTo-Json -Depth 10 | Write-Host
+                Write-Host "`nHeader" -ForegroundColor Cyan
+                ($header | ConvertTo-Json -Depth 10) -split "`r?`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
 
-                Write-Host "`n--- JWT Payload ---" -ForegroundColor Cyan
-                $payload | ConvertTo-Json -Depth 10 | Write-Host
+                Write-Host "`nPayload" -ForegroundColor Cyan
+                ($payload | ConvertTo-Json -Depth 10) -split "`r?`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
 
                 if ($payload.exp) {
                     $expUtc = [DateTimeOffset]::FromUnixTimeSeconds([long]$payload.exp).ToLocalTime()
                     $state = if ($expUtc -lt [DateTimeOffset]::Now) { "EXPIRED" } else { "VALID" }
                     $color = if ($state -eq "EXPIRED") { "Red" } else { "Green" }
-                    Write-Host "`nExpires: $($expUtc.ToString('yyyy-MM-dd HH:mm:ss zzz')) [$state]" -ForegroundColor $color
+                    Write-Host "`n  Expires: " -NoNewline -ForegroundColor DarkGray
+                    Write-Host "$($expUtc.ToString('yyyy-MM-dd HH:mm:ss zzz')) " -NoNewline -ForegroundColor White
+                    Write-Host "[$state]" -ForegroundColor $color
                 }
                 Write-Host ""
             }
             catch {
-                Write-Error "Failed to decode JWT: $($_.Exception.Message)"
+                Write-Host "✖ jwt: Failed to decode JWT: $($_.Exception.Message)" -ForegroundColor Red
             }
         }
     }
@@ -493,7 +526,7 @@ function pss {
         & $pssScript @args
     }
     else {
-        Write-Host "pss.ps1 not found at: $pssScript" -ForegroundColor Red
+        Write-Host "✖ pss: pss.ps1 not found at: $pssScript" -ForegroundColor Red
     }
 }
 #endregion
@@ -667,17 +700,35 @@ function prompt {
         $global:__git_cache_branch = ''
     }
 
-    # Expose current git branch ($cb) and repo root ($gr) at zero extra cost
+    # Expose current git branch ($cb), repo root ($gr), and cached current workset ($cw)
     $global:cb = $gitBranch
     $global:gr = if ($inGitRepo) { $searchDir } else { $null }
-    $global:cw = $null
     if ($global:gr -and $gitBranch -and (Get-Command Get-CurrentWorksetName -CommandType Function -ErrorAction SilentlyContinue) -and (Get-PssActiveWorkspace) -eq 'work') {
-        try {
-            $global:cw = Get-CurrentWorksetName -Root $global:gr -Branch $gitBranch
+        $activeWorksetDir = Join-Path $global:__pss_state.Root 'worksets\work\active'
+        $dirStamp = if (Test-Path -LiteralPath $activeWorksetDir) {
+            [System.IO.Directory]::GetLastWriteTimeUtc($activeWorksetDir).Ticks
         }
-        catch {
-            Write-Warning "Unable to determine current workset: $_"
+        else { 0 }
+        $cacheKey = "$($global:gr)|$gitBranch|$dirStamp"
+        if ($global:__cw_cache_key -eq $cacheKey) {
+            $global:cw = $global:__cw_cache_value
         }
+        else {
+            try {
+                $global:cw = Get-CurrentWorksetName -Root $global:gr -Branch $gitBranch
+                $global:__cw_cache_key = $cacheKey
+                $global:__cw_cache_value = $global:cw
+            }
+            catch {
+                $global:cw = $null
+                $global:__cw_cache_key = $null
+                Write-Warning "Unable to determine current workset: $_"
+            }
+        }
+    }
+    else {
+        $global:cw = $null
+        $global:__cw_cache_key = $null
     }
 
     # 4. Build Segments

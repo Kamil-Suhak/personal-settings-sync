@@ -1,4 +1,4 @@
-#region 3. Navigation & Project Switcher
+﻿#region 3. Navigation & Project Switcher
 
 <#
 .SYNOPSIS
@@ -49,9 +49,10 @@ function p {
 
     # 1. List configured roots (p -l or p list)
     if ($List -or $Name -eq 'list') {
-        Write-Host "`nConfigured project roots ($rootsFile):" -ForegroundColor Cyan
+        Write-Host "`nConfigured project roots" -ForegroundColor Cyan
+        Write-Host "  $rootsFile" -ForegroundColor DarkGray
         if ($roots.Count -eq 0) {
-            Write-Host "  No roots found. Use 'p -a <path>' to register one." -ForegroundColor Yellow
+            Write-Host "  No roots found. Use 'p -add <path>' to register one." -ForegroundColor Yellow
         }
         else {
             $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor Green }
@@ -69,7 +70,7 @@ function p {
         }
         $resolved = Resolve-Path -LiteralPath $candidatePath -ErrorAction SilentlyContinue
         if (-not $resolved) {
-            Write-Host "Directory not found: $candidatePath" -ForegroundColor Red
+            Write-Host "✖ p: Directory not found: $candidatePath" -ForegroundColor Red
             return
         }
         $existing = if (Test-Path -LiteralPath $rootsFile) { @(Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue) } else { @() }
@@ -100,14 +101,16 @@ function p {
         $targetToRemove = if ($Name -in @('remove', 'rm')) { $Target } elseif ($Target) { $Target } else { $Name }
 
         if (-not $targetToRemove) {
-            Write-Host "`nConfigured project roots ($rootsFile):" -ForegroundColor Cyan
+            Write-Host "`nConfigured project roots" -ForegroundColor Cyan
+            Write-Host "  $rootsFile" -ForegroundColor DarkGray
             for ($i = 0; $i -lt $lines.Count; $i++) {
-                Write-Host "  [$($i + 1)] $($lines[$i])" -ForegroundColor Green
+                Write-Host "  [$($i + 1)] " -NoNewline -ForegroundColor Cyan
+                Write-Host $lines[$i] -ForegroundColor White
             }
             Write-Host ""
-            $reply = Read-Host "Enter number or path to remove (press Enter to cancel)"
+            $reply = Read-Host "Select root to remove [1-$($lines.Count)] or enter path (Enter to cancel)"
             if (-not $reply) {
-                Write-Host "Canceled." -ForegroundColor DarkGray
+                Write-Host "Cancelled." -ForegroundColor DarkGray
                 return
             }
             $targetToRemove = $reply.Trim()
@@ -159,15 +162,15 @@ function p {
 
     # 4. Fail cleanly if no project roots are configured
     if ($roots.Count -eq 0) {
-        Write-Error "No project roots configured in $rootsFile. Use 'p -add <path>' first."
+        Write-Host "✖ p: No project roots configured in $rootsFile. Use 'p -add <path>' first." -ForegroundColor Red
         return
     }
 
     # 5. If invoked without arguments, show roots and usage
     if (-not $Name) {
-        Write-Host "`nConfigured project roots:" -ForegroundColor Cyan
-        $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor DarkGray }
-        Write-Host "Usage: p <name> | p -add [<path>] | p -remove [<path>] | p -list`n" -ForegroundColor DarkCyan
+        Write-Host "`nConfigured project roots" -ForegroundColor Cyan
+        $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor White }
+        Write-Host "`nUsage: p <name> | p -add [<path>] | p -remove [<path>] | p -list`n" -ForegroundColor Yellow
         return
     }
 
@@ -181,9 +184,9 @@ function p {
         Set-Location -LiteralPath $matchedDir.FullName
     }
     else {
-        Write-Host "Project matching '$Name' not found in:" -ForegroundColor Yellow
-        $roots | ForEach-Object { Write-Host "  - $_" -ForegroundColor DarkGray }
-        Write-Host "Tip: Use 'p -add <path>' to register additional project directories." -ForegroundColor DarkCyan
+        Write-Host "`nProject matching '$Name' not found in:" -ForegroundColor Yellow
+        $roots | ForEach-Object { Write-Host "  • $_" -ForegroundColor DarkGray }
+        Write-Host "Tip: Use 'p -add <path>' to register additional project directories.`n" -ForegroundColor DarkGray
     }
 }
 
@@ -197,7 +200,7 @@ function rev {
         explorer.exe (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
     }
     catch {
-        Write-Error "Path not found: $Path"
+        Write-Host "✖ rev: Path not found: $Path" -ForegroundColor Red
     }
 }
 

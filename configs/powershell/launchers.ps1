@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Launches Brave Browser with optional arguments (URLs, flags, incognito, profiles). Supports piped URLs and clipboard URL fallback.
 #>
@@ -21,7 +21,7 @@ function brave {
     }
 
     if (-not $bravePath) {
-        Write-Host "Brave Browser executable not found. Install it via 'winget install Brave.Brave' or 'pss apps install'." -ForegroundColor Red
+        Write-Host "✖ brave: Brave Browser executable not found. Install it via 'winget install Brave.Brave' or 'pss apps install'." -ForegroundColor Red
         return
     }
 
@@ -85,7 +85,7 @@ function vs {
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
-        Write-Error "Path not found: $Path"
+        Write-Host "✖ vs: Path not found: $Path" -ForegroundColor Red
         return
     }
 
@@ -96,7 +96,7 @@ function vs {
     $targetFiles = @()
     foreach ($file in $Files) {
         if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
-            Write-Error "File not found: $file"
+            Write-Host "✖ vs: File not found: $file" -ForegroundColor Red
             return
         }
         $targetFiles += (Get-Item -LiteralPath $file).FullName
@@ -117,7 +117,7 @@ function vs {
         $solutions = @(Get-VsSolutions -StartDirectory $searchStartDir -MaxDepth $MaxDepth)
 
         if ($solutions.Count -eq 0) {
-            Write-Error "No .sln or .slnx file found in '$searchStartDir' or within $MaxDepth parent level(s)."
+            Write-Host "✖ vs: No .sln or .slnx file found in '$searchStartDir' or within $MaxDepth parent level(s)." -ForegroundColor Red
             return
         }
         elseif ($solutions.Count -eq 1) {
@@ -126,8 +126,10 @@ function vs {
         else {
             Write-Host "`nMultiple solutions found in '$($solutions[0].DirectoryName)':" -ForegroundColor Cyan
             for ($i = 0; $i -lt $solutions.Count; $i++) {
-                Write-Host "  [$($i + 1)] $($solutions[$i].Name)" -ForegroundColor Green
+                Write-Host "  [$($i + 1)] " -NoNewline -ForegroundColor Cyan
+                Write-Host $solutions[$i].Name -ForegroundColor White
             }
+            Write-Host ""
             $reply = Read-Host "Select solution [1-$($solutions.Count)] (Enter for 1)"
             if ([string]::IsNullOrWhiteSpace($reply)) {
                 $selectedSolution = $solutions[0]
@@ -138,7 +140,7 @@ function vs {
                     $selectedSolution = $solutions[$idx - 1]
                 }
                 else {
-                    Write-Host "Canceled." -ForegroundColor DarkGray
+                    Write-Host "Cancelled." -ForegroundColor DarkGray
                     return
                 }
             }
@@ -183,16 +185,26 @@ function vs {
         $rawArgs = @($selectedSolution.FullName)
         $rawArgs += $targetFiles
         $quotedArgs = @($rawArgs | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } })
-        Start-Process -FilePath $devenvPath -ArgumentList $quotedArgs
+        try {
+            Start-Process -FilePath $devenvPath -ArgumentList $quotedArgs
+        }
+        catch {
+            Write-Host "✖ devenv.exe failed to launch: $($_.Exception.Message)" -ForegroundColor Red
+        }
     }
     else {
         if ($Files.Count) {
-            Write-Error "devenv.exe not found; cannot open the selected files."
+            Write-Host "✖ vs: devenv.exe not found; cannot open the selected files." -ForegroundColor Red
             return
         }
         if ($targetFile) {
-            Write-Warning "devenv.exe not found in PATH or Visual Studio Installer; opening solution without '$targetFile'."
+            Write-Host "Warning: devenv.exe not found in PATH or Visual Studio Installer; opening solution without '$targetFile'." -ForegroundColor Yellow
         }
-        Start-Process -FilePath $selectedSolution.FullName
+        try {
+            Start-Process -FilePath $selectedSolution.FullName
+        }
+        catch {
+            Write-Host "✖ Failed to open '$($selectedSolution.FullName)': $($_.Exception.Message)" -ForegroundColor Red
+        }
     }
 }

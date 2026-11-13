@@ -1,4 +1,4 @@
-function Get-WorksetContext {
+﻿function Get-WorksetContext {
     param([string]$Directory = (Get-Location).Path)
     $root = @(& git -C $Directory rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $root) { return $null }
@@ -34,9 +34,9 @@ function Get-WorksetMatches {
     foreach ($directory in @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction Stop)) {
         if ($directory.Name -like '.new-*') { continue }
         $metadataPath = Join-Path $directory.FullName 'metadata.json'
-        if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw "Missing metadata: $metadataPath" }
-        $metadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        if ($metadata.originRoot -eq $Root -and $metadata.branch -ceq $Branch) { $directory.FullName }
+        if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { continue }
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json -ErrorAction SilentlyContinue
+        if ($metadata -and $metadata.originRoot -eq $Root -and $metadata.branch -ceq $Branch) { $directory.FullName }
     }
 }
 
@@ -79,7 +79,12 @@ function Get-WorksetFiles {
 
 <#
 .SYNOPSIS
-Manages named issue file sets across repositories, including adding files and opening, archiving, and restoring worksets.
+Manages named issue file sets across repositories:
+  workset [list] [-Archived]                     - Lists active or archived worksets
+  workset new [<name>]                           - Creates a workset (defaults to current branch name)
+  workset add [<name>] -Files <file>...          - Adds one or more files (also supports: workset add <file>)
+  workset show|edit|open [<name>] [-Code|-Vs]    - Views, edits, or launches files in VS Code / Visual Studio
+  workset archive|restore|delete [<name>]        - Moves to/from archive or removes workset list
 #>
 function workset {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
@@ -87,6 +92,7 @@ function workset {
         [Parameter(Position = 0)][ValidateSet('new', 'add', 'edit', 'show', 'list', 'open', 'archive', 'restore', 'delete')]
         [string]$Action = 'list',
         [Parameter(Position = 1)][string]$Item,
+        [string[]]$Files,
         [Parameter(Position = 2, ValueFromRemainingArguments = $true)][string[]]$Paths,
         [switch]$Code,
         [switch]$Vs,
@@ -94,6 +100,7 @@ function workset {
     )
     if ($Code -and $Vs) { throw 'Choose either -Code or -Vs.' }
     if (($Code -or $Vs) -and $Action -ne 'open') { throw '-Code and -Vs are only valid for open.' }
+    if ($Files -and $Action -ne 'add') { throw '-Files is only valid for add.' }
     if ($Archived -and $Action -notin @('list', 'show', 'delete')) { throw '-Archived is only valid for list, show, or delete.' }
     if ($Action -ne 'add' -and $Paths.Count) { throw "Unexpected arguments: $($Paths -join ', ')" }
 
@@ -126,7 +133,8 @@ function workset {
                 } finally {
                     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
                 }
-                Write-Host "Created workset '$name'."
+                $global:__cw_cache_key = $null
+                Write-Host "✓ Created workset '$name'." -ForegroundColor Green
             }
         }
         'list' {
@@ -135,8 +143,37 @@ function workset {
             if (Test-Path -LiteralPath $parent) { Get-ChildItem -LiteralPath $parent -Directory | Select-Object -ExpandProperty Name }
         }
         'add' {
-            if (-not $Item) { throw 'Usage: workset add [name] <file> [file...]' }
-            if ($Paths.Count) { $name = $Item; $inputs = $Paths } else { $name = $null; $inputs = @($Item) }
+            if (-not $Item -and (-not $Files -or $Files.Count -eq 0)) {
+                throw 'Usage: workset add [<name>] -Files <file> [<file>...] | workset add [<name>] <file>'
+            }
+            $name = $null
+            $rawInputs = [System.Collections.Generic.List[string]]::new()
+            if ($Files -and $Files.Count -gt 0) {
+                foreach ($f in $Files) { if ($f) { [void]$rawInputs.Add($f) } }
+                if ($Item) {
+                    $itemIsExistingFile = Test-Path -LiteralPath $Item -PathType Leaf
+                    $candidateWsDir = try { Get-WorksetDirectory $Item } catch { $null }
+                    $itemIsWorkset = $candidateWsDir -and (Test-Path -LiteralPath $candidateWsDir -PathType Container)
+                    if (($itemIsExistingFile -or $Item -match '[\\/]') -and -not $itemIsWorkset) {
+                        # Space-separated args after `-Files` spilled $f2 into $Item
+                        [void]$rawInputs.Add($Item)
+                    }
+                    else {
+                        $name = $Item
+                    }
+                }
+                if ($Paths) {
+                    foreach ($p in $Paths) { if ($p) { [void]$rawInputs.Add($p) } }
+                }
+            }
+            elseif ($Paths -and $Paths.Count -gt 0) {
+                $name = $Item
+                foreach ($p in $Paths) { if ($p) { [void]$rawInputs.Add($p) } }
+            }
+            else {
+                [void]$rawInputs.Add($Item)
+            }
+            $inputs = @($rawInputs.ToArray())
             $directory = Resolve-WorksetDirectory $name
             $listPath = Join-Path $directory 'files.txt'
             $metadataPath = Join-Path $directory 'metadata.json'
@@ -157,18 +194,19 @@ function workset {
                 $metadata.repositories = $repositories
                 $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $metadataPath -Encoding utf8 -ErrorAction Stop
                 Add-Content -LiteralPath $listPath -Value $added -Encoding utf8 -ErrorAction Stop
-                Write-Host "Added $($added.Count) file(s) to '$($metadata.name)'."
+                Write-Host "✓ Added $($added.Count) file(s) to '$($metadata.name)'." -ForegroundColor Green
             }
         }
         'edit' {
             $directory = Resolve-WorksetDirectory $Item
-            if (-not (Get-Command code -ErrorAction SilentlyContinue)) { throw 'VS Code command not found in PATH.' }
+            if (-not (Get-Command code -ErrorAction SilentlyContinue)) { throw '✖ workset: VS Code command not found in PATH.' }
             & code --wait (Join-Path $directory 'files.txt')
-            if ($LASTEXITCODE -ne 0) { throw "VS Code exited with code $LASTEXITCODE." }
+            if ($LASTEXITCODE -ne 0) { throw "✖ code failed (exit $LASTEXITCODE)." }
         }
         'show' {
             $directory = Resolve-WorksetDirectory $Item -Archived:$Archived
-            Write-Host "Workset: $(Split-Path -Leaf $directory)"
+            Write-Host "`nWorkset: " -NoNewline -ForegroundColor Cyan
+            Write-Host (Split-Path -Leaf $directory) -ForegroundColor White
             Get-Content -LiteralPath (Join-Path $directory 'files.txt') -ErrorAction Stop
         }
         'open' {
@@ -199,10 +237,10 @@ function workset {
             $hasSolution = $singleRepo -and -not $Code -and @(Get-VsSolutions -StartDirectory $roots[0]).Count -gt 0
             if ($Vs -and -not $hasSolution) { throw "No Visual Studio solution found for '$($roots[0])'." }
             if ($Code -or -not $hasSolution) {
-                if (-not (Get-Command code -ErrorAction SilentlyContinue)) { throw 'VS Code command not found in PATH.' }
+                if (-not (Get-Command code -ErrorAction SilentlyContinue)) { throw '✖ workset: VS Code command not found in PATH.' }
                 if ($PSCmdlet.ShouldProcess($directory, 'Open workset in VS Code')) {
                     & code --new-window @roots @files
-                    if ($LASTEXITCODE -ne 0) { throw "VS Code exited with code $LASTEXITCODE." }
+                    if ($LASTEXITCODE -ne 0) { throw "✖ code failed (exit $LASTEXITCODE)." }
                 }
             } else {
                 if ($PSCmdlet.ShouldProcess($directory, 'Open workset in Visual Studio')) { vs $roots[0] -Files $files }
@@ -215,6 +253,8 @@ function workset {
             if ($PSCmdlet.ShouldProcess($directory, 'Archive workset')) {
                 [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
                 Move-Item -LiteralPath $directory -Destination $destination -ErrorAction Stop
+                $global:__cw_cache_key = $null
+                Write-Host "✓ Archived workset '$(Split-Path -Leaf $directory)'." -ForegroundColor Green
             }
         }
         'restore' {
@@ -224,13 +264,16 @@ function workset {
             if ($PSCmdlet.ShouldProcess($directory, 'Restore workset')) {
                 [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
                 Move-Item -LiteralPath $directory -Destination $destination -ErrorAction Stop
+                $global:__cw_cache_key = $null
+                Write-Host "✓ Restored workset '$(Split-Path -Leaf $directory)'." -ForegroundColor Green
             }
         }
         'delete' {
             $directory = Resolve-WorksetDirectory $Item -Archived:$Archived
             if ($PSCmdlet.ShouldProcess($directory, 'Delete workset list')) {
-                $answer = Read-Host "Delete workset '$(Split-Path -Leaf $directory)'? [y/N]"
-                if ($answer -match '^[Yy]$') { Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction Stop }
+                Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction Stop
+                $global:__cw_cache_key = $null
+                Write-Host "✓ Deleted workset '$(Split-Path -Leaf $directory)'." -ForegroundColor Green
             }
         }
     }

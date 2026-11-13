@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 Helper function that recursively enumerates files excluding common junk directories and specified extensions.
 #>
@@ -152,43 +152,47 @@ function find {
         }
 
         Write-Host "`nFound $($foundFiles.Count) match$(if ($foundFiles.Count -ne 1) {'es'} else {''}):" -ForegroundColor Cyan
-        Write-Host ("-" * 60) -ForegroundColor DarkGray
+        Write-Host ("─" * 56) -ForegroundColor DarkGray
         $padLen = $foundFiles.Count.ToString().Length
 
         for ($i = 0; $i -lt $foundFiles.Count; $i++) {
             $numStr = ($i + 1).ToString().PadLeft($padLen)
             $file = $foundFiles[$i]
-            Write-Host " [$numStr] " -NoNewline -ForegroundColor DarkCyan
+            Write-Host "  [$numStr] " -NoNewline -ForegroundColor Cyan
             Write-Host $file.Name.PadRight(35) -NoNewline -ForegroundColor White
             Write-Host " $($file.DirectoryName)" -ForegroundColor DarkGray
         }
-        Write-Host ("-" * 60) -ForegroundColor DarkGray
+        Write-Host ("─" * 56) -ForegroundColor DarkGray
 
         if ($foundFiles.Count -eq 1) {
             Set-Clipboard -Value $foundFiles[0].FullName
-            Write-Host "Copied to clipboard: $($foundFiles[0].FullName)" -ForegroundColor Green
+            Write-Host "Copied to clipboard: " -NoNewline -ForegroundColor Green
+            Write-Host $foundFiles[0].FullName -ForegroundColor White
             if ($Open) {
                 code $foundFiles[0].FullName
                 Write-Host "Opened in VS Code." -ForegroundColor Cyan
             }
+            Write-Host ""
             return
         }
 
-        Write-Host (" " * ($padLen + 2) + "[0] Cancel / None") -ForegroundColor DarkYellow
+        Write-Host ("  [" + ("0".PadLeft($padLen)) + "] Cancel") -ForegroundColor DarkGray
         $actionVerb = if ($Open) { "open in VS Code" } else { "copy" }
-        $choice = Read-Host "`nEnter selection to $actionVerb (1-$($foundFiles.Count), or Enter to cancel)"
+        $choice = Read-Host "`nSelect [1-$($foundFiles.Count)] to $actionVerb (Enter or 0 to cancel)"
 
         if ($choice -match '^\d+$' -and [int]$choice -ge 1 -and [int]$choice -le $foundFiles.Count) {
             $selectedPath = $foundFiles[[int]$choice - 1].FullName
             Set-Clipboard -Value $selectedPath
-            Write-Host "Copied to clipboard: $selectedPath" -ForegroundColor Green
+            Write-Host "Copied to clipboard: " -NoNewline -ForegroundColor Green
+            Write-Host $selectedPath -ForegroundColor White
             if ($Open) {
                 code $selectedPath
                 Write-Host "Opened in VS Code." -ForegroundColor Cyan
             }
+            Write-Host ""
         }
         else {
-            Write-Host "Action cancelled. Nothing copied." -ForegroundColor DarkGray
+            Write-Host "Cancelled." -ForegroundColor DarkGray
         }
     }
 }
