@@ -39,7 +39,7 @@ personal-settings-sync/
 │   └── plugins/                               # Antigravity plugins (linked via junctions)
 ├── workspaces/                                # Context-specific overrides
 │   ├── personal/
-│   │   ├── powershell/profile.ps1             # Personal shell additions (agy ask, brave, passbolt)
+│   │   ├── powershell/profile.ps1             # Personal shell additions (agy ask)
 │   │   ├── git/.gitconfig                     # Personal git identity
 │   │   └── gemini/AGENTS.md                   # Personal AI workspace context
 │   └── work/
