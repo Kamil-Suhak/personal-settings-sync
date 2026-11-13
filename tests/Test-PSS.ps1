@@ -541,6 +541,32 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
 
     # Verify passbolt removed, brave in shared, amend & undo merged into commit, st/catchup/gsync consolidated into repo + diff
     $personalAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'workspaces\personal\powershell\profile.ps1'), [ref]$null, [ref]$null)
+    foreach ($workspaceName in @('personal', 'work')) {
+        $workspaceAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot "workspaces\$workspaceName\powershell\profile.ps1"), [ref]$null, [ref]$null)
+        $askFn = $workspaceAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'ask' }, $false) | Select-Object -First 1
+        $capturedPrompt = & {
+            param($Definition, $Workspace, $TestHomeDir)
+            function copilot {}
+            function agy {}
+            function Get-TerminalAskContext {
+                param($Question, $Piped, $Clean)
+                [pscustomobject]@{ History = 'history'; Output = 'output'; PipedSection = ''; Question = $Question }
+            }
+            function Invoke-AskCliProcess {
+                param($ExecutablePath, $Arguments, $Label)
+                $Arguments[-1]
+            }
+            . ([scriptblock]::Create($Definition))
+            $savedUserProfile = $env:USERPROFILE
+            try {
+                $env:USERPROFILE = $TestHomeDir
+                if ($Workspace -eq 'personal') { ask -KeepHistory 'test question' } else { ask 'test question' }
+            } finally {
+                $env:USERPROFILE = $savedUserProfile
+            }
+        } $askFn.Extent.Text $workspaceName $testHome
+        Assert-True ($capturedPrompt -match 'Minimize tool and MCP calls and prioritize fast responses while remaining accurate' -and $capturedPrompt -match '\[User Question\]\s*test question') "$workspaceName ask sends speed guidance and the question"
+    }
     $sharedNames = @($profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     $personalNames = @($personalAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     Assert-True ($sharedNames -contains 'brave' -and $personalNames -notcontains 'brave') "brave moved to shared profile"
