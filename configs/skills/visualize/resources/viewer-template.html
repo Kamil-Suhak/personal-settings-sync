@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{TITLE}}</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      color: #ABB2BF;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      overflow: hidden;
+    }
+
+    .viewer-shell {
+      width: 100%;
+      max-height: 430px;
+      border: 1px solid #3E4451;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #282C34;
+    }
+
+    .viewer-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      height: 42px;
+      padding: 0 12px;
+      background: #21252B;
+      border-bottom: 1px solid #3E4451;
+    }
+
+    .viewer-title-group {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .viewer-title {
+      color: #ABB2BF;
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .viewer-hint {
+      color: #828997;
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .viewer-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .zoom-readout {
+      min-width: 44px;
+      text-align: right;
+      color: #828997;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      margin-right: 4px;
+    }
+
+    .ctrl-btn {
+      height: 26px;
+      min-width: 28px;
+      padding: 0 8px;
+      border: 1px solid #3E4451;
+      border-radius: 5px;
+      background: #2C313C;
+      color: #ABB2BF;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
+    }
+
+    .ctrl-btn:hover {
+      border-color: #61AFEF;
+      color: #61AFEF;
+      background: #323842;
+    }
+
+    .ctrl-btn:active {
+      background: #3E4451;
+    }
+
+    .viewer-stage {
+      position: relative;
+      width: 100%;
+      height: 360px;
+      background: #282C34;
+      overflow: hidden;
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+    }
+
+    .viewer-stage.is-panning {
+      cursor: grabbing;
+    }
+
+    .viewer-viewport {
+      position: absolute;
+      top: 0;
+      left: 0;
+      transform-origin: 0 0;
+      will-change: transform;
+    }
+
+    /* One Dark Pro D2 SVG theme overrides (#stage ID specificity overrides D2's inline SVG styles) */
+    #stage svg {
+      display: block;
+      max-width: none;
+    }
+
+    #stage .d2-svg .fill-N7,
+    #stage svg.d2-svg.fill-N7 {
+      fill: #282C34;
+    }
+
+    #stage .d2-svg .fill-B4 {
+      fill: #21252B;
+    }
+
+    #stage .d2-svg .fill-B5 {
+      fill: #2C313C;
+    }
+
+    #stage .d2-svg .fill-B6,
+    #stage .d2-svg .fill-AA5 {
+      fill: #323842;
+    }
+
+    #stage .d2-svg .fill-B3 {
+      fill: #3E4451;
+    }
+
+    #stage .d2-svg .fill-N1 {
+      fill: #ABB2BF;
+    }
+
+    #stage .d2-svg .fill-N2 {
+      fill: #828997;
+    }
+
+    #stage .d2-svg .stroke-N1 {
+      stroke: #4B5263;
+    }
+
+    #stage .d2-svg .fill-B1,
+    #stage .d2-svg .fill-B2 {
+      fill: #61AFEF;
+    }
+
+    #stage .d2-svg .stroke-B1,
+    #stage .d2-svg .stroke-B2 {
+      stroke: #61AFEF;
+    }
+
+    #stage .d2-svg .fill-AA2 {
+      fill: #E5C07B;
+    }
+
+    #stage .d2-svg .class_header.fill-N1 {
+      fill: #323842;
+    }
+
+    #stage .d2-svg .class_header + text {
+      fill: #ABB2BF;
+    }
+
+    #stage .d2-svg .text,
+    #stage .d2-svg .text-bold,
+    #stage .d2-svg .text-italic {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div class="viewer-shell">
+    <header class="viewer-header">
+      <div class="viewer-title-group">
+        <span class="viewer-title">{{TITLE}}</span>
+        <span class="viewer-hint">Drag to pan · Scroll to zoom</span>
+      </div>
+      <div class="viewer-controls">
+        <span id="zoom-readout" class="zoom-readout">100%</span>
+        <button id="btn-zoom-out" class="ctrl-btn" type="button" title="Zoom out">-</button>
+        <button id="btn-zoom-in" class="ctrl-btn" type="button" title="Zoom in">+</button>
+        <button id="btn-fit" class="ctrl-btn" type="button" title="Reset view to fit">Fit</button>
+      </div>
+    </header>
+    <div id="stage" class="viewer-stage">
+      <div id="viewport" class="viewer-viewport">
+        {{SVG}}
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const MIN_SCALE = 0.1;
+      const MAX_SCALE = 3.0;
+      const FIT_PADDING = 16;
+
+      const stage = document.getElementById('stage');
+      const viewport = document.getElementById('viewport');
+      const readout = document.getElementById('zoom-readout');
+      const btnOut = document.getElementById('btn-zoom-out');
+      const btnIn = document.getElementById('btn-zoom-in');
+      const btnFit = document.getElementById('btn-fit');
+
+      let scale = 1;
+      let tx = 0;
+      let ty = 0;
+      let natW = 0;
+      let natH = 0;
+
+      function clamp(val, min, max) {
+        return Math.min(max, Math.max(min, val));
+      }
+
+      function applyTransform() {
+        viewport.style.transform = 'translate3d(' + tx.toFixed(2) + 'px, ' + ty.toFixed(2) + 'px, 0) scale(' + scale.toFixed(4) + ')';
+        readout.textContent = Math.round(scale * 100) + '%';
+      }
+
+      function measureSvg() {
+        const svg = viewport.querySelector('svg');
+        if (!svg) return false;
+
+        svg.style.display = 'block';
+        svg.style.maxWidth = 'none';
+
+        const vb = svg.viewBox && svg.viewBox.baseVal;
+        const attrW = parseFloat(svg.getAttribute('width'));
+        const attrH = parseFloat(svg.getAttribute('height'));
+
+        if (vb && vb.width > 0 && vb.height > 0) {
+          natW = vb.width;
+          natH = vb.height;
+        } else if (attrW > 0 && attrH > 0) {
+          natW = attrW;
+          natH = attrH;
+        } else {
+          const bbox = typeof svg.getBBox === 'function' ? svg.getBBox() : null;
+          if (bbox && bbox.width > 0 && bbox.height > 0) {
+            natW = bbox.width;
+            natH = bbox.height;
+          } else {
+            const rect = svg.getBoundingClientRect();
+            natW = rect.width || 800;
+            natH = rect.height || 600;
+          }
+        }
+
+        svg.setAttribute('width', String(natW));
+        svg.setAttribute('height', String(natH));
+        return true;
+      }
+
+      function fitToStage() {
+        if (!natW || !natH) {
+          if (!measureSvg()) return;
+        }
+        const rect = stage.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+
+        const availW = Math.max(40, rect.width - FIT_PADDING * 2);
+        const availH = Math.max(40, rect.height - FIT_PADDING * 2);
+
+        scale = clamp(Math.min(availW / natW, availH / natH), MIN_SCALE, MAX_SCALE);
+        tx = (rect.width - natW * scale) / 2;
+        ty = (rect.height - natH * scale) / 2;
+        applyTransform();
+      }
+
+      function zoomAt(clientX, clientY, factor) {
+        const rect = stage.getBoundingClientRect();
+        const mx = clientX - rect.left;
+        const my = clientY - rect.top;
+
+        const nextScale = clamp(scale * factor, MIN_SCALE, MAX_SCALE);
+        if (nextScale === scale) return;
+
+        const ratio = nextScale / scale;
+        tx = mx - (mx - tx) * ratio;
+        ty = my - (my - ty) * ratio;
+        scale = nextScale;
+        applyTransform();
+      }
+
+      function zoomCenter(factor) {
+        const rect = stage.getBoundingClientRect();
+        zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
+      }
+
+      let activePointerId = null;
+      let startX = 0;
+      let startY = 0;
+      let startTx = 0;
+      let startTy = 0;
+
+      stage.addEventListener('pointerdown', function (e) {
+        if (e.button !== 0) return;
+        activePointerId = e.pointerId;
+        startX = e.clientX;
+        startY = e.clientY;
+        startTx = tx;
+        startTy = ty;
+        stage.classList.add('is-panning');
+        stage.setPointerCapture(e.pointerId);
+      });
+
+      stage.addEventListener('pointermove', function (e) {
+        if (e.pointerId !== activePointerId) return;
+        tx = startTx + (e.clientX - startX);
+        ty = startTy + (e.clientY - startY);
+        applyTransform();
+      });
+
+      function endPan(e) {
+        if (e.pointerId !== activePointerId) return;
+        if (stage.hasPointerCapture(e.pointerId)) {
+          stage.releasePointerCapture(e.pointerId);
+        }
+        activePointerId = null;
+        stage.classList.remove('is-panning');
+      }
+
+      stage.addEventListener('pointerup', endPan);
+      stage.addEventListener('pointercancel', endPan);
+
+      stage.addEventListener('wheel', function (e) {
+        e.preventDefault();
+        const factor = Math.exp(-e.deltaY * 0.0015);
+        zoomAt(e.clientX, e.clientY, factor);
+      }, { passive: false });
+
+      btnOut.addEventListener('click', function () { zoomCenter(1 / 1.25); });
+      btnIn.addEventListener('click', function () { zoomCenter(1.25); });
+      btnFit.addEventListener('click', fitToStage);
+
+      window.addEventListener('load', function () {
+        measureSvg();
+        fitToStage();
+      });
+      window.addEventListener('resize', fitToStage);
+
+      requestAnimationFrame(function () {
+        measureSvg();
+        fitToStage();
+      });
+    })();
+  </script>
+</body>
+</html>
