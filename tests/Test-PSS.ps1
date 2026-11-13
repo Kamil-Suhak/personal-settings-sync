@@ -292,6 +292,8 @@ try {
             $fn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $name }, $false) | Select-Object -First 1
             . ([scriptblock]::Create($fn.Extent.Text))
         }
+        $promptDefinition = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'prompt' }, $false) | Select-Object -First 1
+        . ([scriptblock]::Create($promptDefinition.Extent.Text))
         $global:__pss_root = $testRepo
         $global:__ansi = @{ Cyan = ''; Yellow = ''; Green = ''; Gray = ''; Reset = '' }
         $savedProfile = $PROFILE
@@ -318,6 +320,31 @@ try {
             workset new
             $worksetDir = Get-WorksetDirectory '123-dashboard'
             Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset derives a Windows-safe name from branch'
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt sets current workset for the active checkout and branch'
+            Push-Location $sandbox
+            try {
+                prompt 6>$null | Out-Null
+                Assert-True ($null -eq $global:cw) 'prompt clears current workset outside a repository'
+            } finally { Pop-Location }
+            workset new 'alternate-name'
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset when multiple worksets match'
+            function Read-Host { 'y' }
+            workset delete 'alternate-name'
+            Remove-Item function:\Read-Host
+            & git -C $repoOne symbolic-ref HEAD refs/heads/different
+            $global:__git_cache_repo = $null
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset on another branch'
+            & git -C $repoOne symbolic-ref HEAD refs/heads/123/dashboard
+            $global:__git_cache_repo = $null
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt restores current workset when returning to its branch'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'personal')
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset outside the work workspace'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'work')
             workset add $fileOne
             workset open
             Assert-True ($global:testCodeArguments -contains $fileOne) 'single-repository workset without a solution selects VS Code'
@@ -354,8 +381,12 @@ try {
             [System.IO.File]::WriteAllText($fileTwo, 'two')
             workset archive
             Assert-True (Test-Path (Get-WorksetDirectory '123-dashboard' -Archived)) 'workset archive preserves the list'
+            prompt 6>$null | Out-Null
+            Assert-True ($null -eq $global:cw) 'prompt clears current workset after archiving'
             workset restore '123-dashboard'
             Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset restore returns the list'
+            prompt 6>$null | Out-Null
+            Assert-Equal $global:cw '123-dashboard' 'prompt restores current workset after restoring the workset'
             workset delete -WhatIf
             Assert-True ((Test-Path $worksetDir) -and (Test-Path $fileOne)) 'workset delete what-if preserves list and source'
             $synopsis = (Get-Help workset).Synopsis

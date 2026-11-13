@@ -25,6 +25,28 @@ function Get-WorksetDirectory {
     return Join-Path $global:__pss_state.Root "worksets\work\$location\$(ConvertTo-WorksetName $Name)"
 }
 
+function Get-WorksetMatches {
+    param([string]$Root, [string]$Branch, [switch]$Archived)
+    if (-not $Root -or -not $Branch) { return }
+    $location = if ($Archived) { 'archived' } else { 'active' }
+    $parent = Join-Path $global:__pss_state.Root "worksets\work\$location"
+    if (-not (Test-Path -LiteralPath $parent)) { return }
+    foreach ($directory in @(Get-ChildItem -LiteralPath $parent -Directory -ErrorAction Stop)) {
+        if ($directory.Name -like '.new-*') { continue }
+        $metadataPath = Join-Path $directory.FullName 'metadata.json'
+        if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw "Missing metadata: $metadataPath" }
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($metadata.originRoot -eq $Root -and $metadata.branch -ceq $Branch) { $directory.FullName }
+    }
+}
+
+function Get-CurrentWorksetName {
+    param([string]$Root, [string]$Branch)
+    if (-not $Root -or -not $Branch -or $Branch.StartsWith(':')) { return }
+    $matches = @(Get-WorksetMatches -Root $Root -Branch $Branch)
+    if ($matches.Count -eq 1) { return (Split-Path -Leaf $matches[0]) }
+}
+
 function Resolve-WorksetDirectory {
     param([string]$Name, [switch]$Archived)
     if ($Name) {
@@ -34,17 +56,7 @@ function Resolve-WorksetDirectory {
     }
     $context = Get-WorksetContext
     if (-not $context -or -not $context.Branch) { throw 'Specify a workset name outside a repository or on detached HEAD.' }
-    $location = if ($Archived) { 'archived' } else { 'active' }
-    $parent = Join-Path $global:__pss_state.Root "worksets\work\$location"
-    $matches = @()
-    if (Test-Path -LiteralPath $parent) {
-        foreach ($directory in @(Get-ChildItem -LiteralPath $parent -Directory)) {
-            $metadataPath = Join-Path $directory.FullName 'metadata.json'
-            if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw "Missing metadata: $metadataPath" }
-            $metadata = Get-Content -LiteralPath $metadataPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-            if ($metadata.originRoot -eq $context.Root -and $metadata.branch -ceq $context.Branch) { $matches += $directory.FullName }
-        }
-    }
+    $matches = @(Get-WorksetMatches -Root $context.Root -Branch $context.Branch -Archived:$Archived)
     if ($matches.Count -ne 1) { throw "Expected one workset for '$($context.Root)' on '$($context.Branch)'; found $($matches.Count). Specify a name." }
     return $matches[0]
 }

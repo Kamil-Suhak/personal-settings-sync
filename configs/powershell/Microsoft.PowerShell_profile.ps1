@@ -2544,6 +2544,15 @@ function prompt {
     # Expose current git branch ($cb) and repo root ($gr) at zero extra cost
     $global:cb = $gitBranch
     $global:gr = if ($inGitRepo) { $searchDir } else { $null }
+    $global:cw = $null
+    if ($global:gr -and $gitBranch -and (Get-Command Get-CurrentWorksetName -CommandType Function -ErrorAction SilentlyContinue) -and (Get-PssActiveWorkspace) -eq 'work') {
+        try {
+            $global:cw = Get-CurrentWorksetName -Root $global:gr -Branch $gitBranch
+        }
+        catch {
+            Write-Warning "Unable to determine current workset: $_"
+        }
+    }
 
     # 4. Build Segments
     $segments = [System.Collections.Generic.List[hashtable]]::new()

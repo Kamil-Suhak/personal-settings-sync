@@ -75,4 +75,4 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 
 - **PSReadLine**: `Tab`/`Shift+Tab` inline completion cycling, `Ctrl+Space` menu complete, smart `RightArrow` (`ForwardChar` inside typed text, `AcceptNextSuggestionWord` only at end-of-line), `F2` toggle `InlineView`/`ListView`.
 - **Powerline Prompt**: Renders `⚡ ADMIN`, 2-tier `Parent/Child` path, active `(.venv)`, cached Git branch, and `❯` status chevron.
-- **Prompt Variables**: Automatically updates `$cb` (current Git branch), `$gr` (current Git repository root), and `$cmdtime` (last command execution time; set `$global:__show_prompt_timer = $true` to also render `⏱` on the prompt bar for commands > 500ms).
+- **Prompt Variables**: Automatically updates `$cb` (current Git branch), `$gr` (current Git repository root), `$cw` (the unique active workset for the current checkout and branch, in the `work` workspace), and `$cmdtime` (last command execution time; set `$global:__show_prompt_timer = $true` to also render `⏱` on the prompt bar for commands > 500ms). `$cw` is `$null` when no workset matches, several match, or HEAD is detached.
