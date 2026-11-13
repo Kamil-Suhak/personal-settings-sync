@@ -6,7 +6,7 @@ A lean, repo-as-source-of-truth developer environment manager across **Workspace
 
 Instead of copying configs back and forth and trying to reverse-engineer edits into layers, **the repository is always the source of truth**:
 
-- **PowerShell**: `$PROFILE` is a tiny managed loader stub dot-sourcing [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1), which loads the active workspace and machine-local profile.
+- **PowerShell**: `$PROFILE` is a tiny managed loader stub dot-sourcing [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1), which loads shared groups, the active workspace, and machine-local overrides in that order. [`scripts/profile-groups.ps1`](scripts/profile-groups.ps1) registers the source files used by loading, `which profile -h`, and bootstrap.
 - **Git**: `~/.gitconfig` uses native `[include]` directives pointing directly to [`configs/git/.gitconfig.shared`](configs/git/.gitconfig.shared) and `workspaces/<active>/git/.gitconfig`, preserving local credentials and machine overrides.
 - **AI Skills & Plugins**: Per-item Windows directory junctions (`~/.agents/skills/<name>` and `~/.gemini/config/plugins/<name>`) link directly into `configs/` without touching third-party skills/plugins, plus `~/.gemini/skills` $\rightarrow$ `~/.agents/skills`.
 - **AI Agent Rules (`AGENTS.md`, `GEMINI.md`)**: One-way concatenation of `configs/gemini/` + `workspaces/<active>/gemini/`, plus `~` expansion for `skills.json`.
@@ -27,7 +27,8 @@ personal-settings-sync/
 ├── sync.config.json                           # Declarative subsystem & workspace-scoped Winget packages
 ├── configs/                                   # Shared baseline (all machines)
 │   ├── powershell/
-│   │   └── Microsoft.PowerShell_profile.ps1   # Core PowerShell profile & shared helpers (see POWERSHELL.md)
+│   │   ├── Microsoft.PowerShell_profile.ps1   # Core profile and loader (see POWERSHELL.md)
+│   │   └── {git,navigation,search,visual-studio,ai}.ps1 # Shared function groups
 │   ├── git/
 │   │   └── .gitconfig.shared                  # Shared Git defaults
 │   ├── gemini/
@@ -48,6 +49,7 @@ personal-settings-sync/
 │       └── gemini/AGENTS.md                   # Work AI compliance & stack context
 ├── scripts/
 │   ├── setup-windows.ps1                      # Windows Explorer tweaks, JetBrains Mono font & local identity setup
+│   ├── profile-groups.ps1                     # Profile group registry
 │   └── local-state.ps1                        # Local paths and temporary legacy migration
 └── tests/
     └── Test-PSS.ps1                           # Isolated end-to-end test suite
@@ -103,6 +105,8 @@ workset delete                        # confirm before deleting the list
 ```
 
 Omitted names resolve using the current repository checkout and branch. Use an explicit name outside that context. `workset list` lists active sets; `workset list -Archived`, `workset show <name> -Archived`, and `workset delete <name> -Archived` operate on archived sets. Branch-derived names are normalized; collisions must be resolved by choosing another name. Lists edited by hand contain one absolute file path per line. Opening reports missing files and warns if a recorded repository has changed branches; it never switches branches. `-Vs` requires a single repository and a solution discoverable by `vs`.
+
+To prevent old tabs reopening with worksets in Visual Studio, disable **Tools → Options → Projects and Solutions → General → Reopen documents on solution load**. This setting affects all solutions.
 
 ---
 
