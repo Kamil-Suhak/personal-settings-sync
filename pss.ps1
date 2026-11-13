@@ -35,6 +35,7 @@ param(
     [string[]]$Exclude,
 
     [switch]$Force,
+    [Alias("y")][switch]$Yes,
     [switch]$WhatIf,
     [switch]$NoBackup,
     [switch]$NoApply,
@@ -100,6 +101,7 @@ function Show-Help {
     Write-Host "  -Pull                  Run 'git pull' before applying"
     Write-Host "  -Push                  Commit and push after workspace/bootstrap mutations"
     Write-Host "  -Force                 Force overwrite or relink even if already in sync"
+    Write-Host "  -Yes (-y)              Bypass confirmation prompts (still prints command preview)"
     Write-Host "  -WhatIf                Dry run; preview changes without writing to disk"
     Write-Host "  -NoBackup              Skip .backups/ creation before overwriting"
     Write-Host "  -NoApply               Skip automatic re-link on 'workspace use'"
@@ -123,6 +125,7 @@ if ($Help -or ($Action -in @('help', '--help', '-h', '/?'))) {
 
 $posixAliases = @{
     '--force'     = { $script:Force = $true }
+    '--yes'       = { $script:Yes = $true }
     '--what-if'   = { $script:WhatIf = $true }
     '--whatif'    = { $script:WhatIf = $true }
     '--no-backup' = { $script:NoBackup = $true }
@@ -551,7 +554,18 @@ function Get-ExpectedGeminiFileContent {
     $sharedRaw = Normalize-TextLF ([System.IO.File]::ReadAllText($repoAbs, [System.Text.Encoding]::UTF8))
     if ($FileEntry.mode -eq 'template') {
         $homeForward = ConvertTo-ForwardPath (Get-EffectiveHome)
-        return $sharedRaw.Replace('~/', "$homeForward/")
+        $repoForward = ConvertTo-ForwardPath $ScriptDir
+        $expanded = $sharedRaw.Replace('~/', "$homeForward/").Replace('{REPO}', $repoForward)
+        if ($FileEntry.name -eq 'skills.json') {
+            $wsSkillsDir = Join-Path $ScriptDir "workspaces\$Workspace\skills"
+            if (Test-PathSafe $wsSkillsDir -PathType Container) {
+                $parsed = $expanded | ConvertFrom-Json
+                $wsEntry = [PSCustomObject]@{ path = (ConvertTo-ForwardPath $wsSkillsDir) }
+                $parsed.entries = @($wsEntry) + @($parsed.entries | Where-Object { $_.path -ne $wsEntry.path })
+                $expanded = $parsed | ConvertTo-Json -Depth 5
+            }
+        }
+        return $expanded
     }
 
     $parts = [System.Collections.Generic.List[string]]::new()
@@ -629,6 +643,18 @@ function Get-DesiredPluginLinks {
         }
     }
     return $links
+}
+
+function Get-GitHooksLink {
+    $gitCfg = $Config.subsystems.git
+    if (-not $gitCfg.hooksDir -or -not $gitCfg.hooksTarget) { return $null }
+    $src = Join-Path $ScriptDir $gitCfg.hooksDir
+    if (-not (Test-PathSafe $src -PathType Container)) { return $null }
+    return [PSCustomObject]@{
+        Name   = 'git-hooks'
+        Source = $src
+        Target = (Resolve-DynamicPath $gitCfg.hooksTarget)
+    }
 }
 
 function Get-JunctionStatus {
@@ -722,6 +748,13 @@ function Invoke-ApplySubsystems {
                 }
                 Write-Utf8File -Path $gitState.LocalPath -Content $updated
                 Write-Badge "APPLIED" Green "Updated [include] layers (shared + $Workspace) -> $($gitState.LocalPath)"
+                $appliedCount++
+            }
+        }
+
+        $hooksLink = Get-GitHooksLink
+        if ($hooksLink) {
+            if (Sync-JunctionLink -Source $hooksLink.Source -Target $hooksLink.Target -BackupName 'git\.git-hooks' -BackupRoot $BackupDir) {
                 $appliedCount++
             }
         }
@@ -908,7 +941,7 @@ function Invoke-BootstrapWizard {
 
                     $choice = (Read-Host "    Route 'function $($item.Name)' to: [S]hared, [W]orkspace ($Workspace), [L]ocal ($($PssLocalState.LocalProfile)), [I]gnore, [Q]uit").Trim().ToUpperInvariant()
                     switch ($choice) {
-                        'Q' { Write-Host "Bootstrap aborted."; return }
+                        'Q' { Write-Badge "ABORTED" DarkGray "Bootstrap aborted."; return }
                         'S' {
                             $targetSharedPs = if ($sharedFuncs.Contains($item.Name)) { $sharedFuncs[$item.Name].Path } else { $sharedPs }
                             $targetText = if (Test-PathSafe $targetSharedPs -PathType Leaf) { Normalize-TextLF ([System.IO.File]::ReadAllText($targetSharedPs, [System.Text.Encoding]::UTF8)) } else { "" }
@@ -981,7 +1014,7 @@ function Invoke-BootstrapWizard {
 
                     $choice = (Read-Host "    Route [$($sec.Header)] to: [S]hared, [W]orkspace ($Workspace), [L]ocal (keep in ~/.gitconfig), [Q]uit").Trim().ToUpperInvariant()
                     switch ($choice) {
-                        'Q' { Write-Host "Bootstrap aborted."; return }
+                        'Q' { Write-Badge "ABORTED" DarkGray "Bootstrap aborted."; return }
                         'S' {
                             Append-Utf8File -Path $sharedGit -Content $sec.Text
                             Write-Badge "ROUTED" Green "Added [$($sec.Header)] -> $($Config.subsystems.git.sharedPath)"
@@ -1068,19 +1101,20 @@ switch ($Action.ToLowerInvariant()) {
                 Write-Host "`n=== Available Workspaces ===" -ForegroundColor Cyan
                 foreach ($w in (Get-AvailableWorkspaces)) {
                     if ($w -eq $ActiveWorkspace) {
-                        Write-Host " * $w (active)" -ForegroundColor Green
+                        Write-Host "  * $w (active)" -ForegroundColor Green
                     } else {
-                        Write-Host "   $w" -ForegroundColor White
+                        Write-Host "    $w" -ForegroundColor White
                     }
                 }
-                Write-Host "`nSwitch workspace: pss workspace use <name>" -ForegroundColor DarkGray
+                Write-Host "`nSwitch workspace: pss workspace use <name>`n" -ForegroundColor DarkGray
             }
             'current' {
                 if ($ActiveWorkspace) {
-                    Write-Host "`nActive workspace: $ActiveWorkspace" -ForegroundColor Green
-                    Write-Host "Path: $(Join-Path $ScriptDir "workspaces\$ActiveWorkspace")" -ForegroundColor DarkGray
+                    Write-Host "`nActive workspace: " -NoNewline -ForegroundColor Cyan
+                    Write-Host $ActiveWorkspace -ForegroundColor Green
+                    Write-Host "Path: $(Join-Path $ScriptDir "workspaces\$ActiveWorkspace")`n" -ForegroundColor DarkGray
                 } else {
-                    Write-Host "`nNo active workspace configured. Run 'pss workspace use <name>'." -ForegroundColor Yellow
+                    Write-Host "`nNo active workspace configured. Run 'pss workspace use <name>'.`n" -ForegroundColor Yellow
                 }
             }
             'use' {
@@ -1126,6 +1160,14 @@ switch ($Action.ToLowerInvariant()) {
                         Write-Badge "WHAT-IF" Cyan "Would delete workspace '$TargetName'"
                         break
                     }
+                    Write-Host "Command preview: Remove-Item -LiteralPath '$targetDir' -Recurse -Force" -ForegroundColor Yellow
+                    if (-not $Yes) {
+                        $reply = Read-Host "Delete workspace '$TargetName'? [y/N]"
+                        if ($reply -notmatch '^[Yy](es)?$') {
+                            Write-Badge "ABORTED" DarkGray "Workspace '$TargetName' was not deleted."
+                            break
+                        }
+                    }
                     Remove-Item -LiteralPath $targetDir -Recurse -Force
                     Write-Badge "DELETED" Green "Deleted workspace '$TargetName'"
                     if ($Push) { Invoke-GitRemotePush -CommitMessage "chore: remove workspace $TargetName" }
@@ -1152,6 +1194,16 @@ switch ($Action.ToLowerInvariant()) {
         if (Should-ProcessSubsystem 'git') {
             $gitState = Get-GitConfigStatus -Workspace $ActiveWorkspace
             $rows.Add([PSCustomObject]@{ Subsystem = "Git"; Target = ".gitconfig"; Mode = "Include"; Status = $gitState.Status; Path = $gitState.LocalPath })
+            $hooksLink = Get-GitHooksLink
+            if ($hooksLink) {
+                $rows.Add([PSCustomObject]@{
+                    Subsystem = "Git"
+                    Target    = ".git-hooks"
+                    Mode      = "Junction"
+                    Status    = (Get-JunctionStatus -Source $hooksLink.Source -Target $hooksLink.Target)
+                    Path      = $hooksLink.Target
+                })
+            }
         }
 
         if (Should-ProcessSubsystem 'gemini') {
@@ -1227,6 +1279,15 @@ switch ($Action.ToLowerInvariant()) {
                 Write-Host "`n--- Git Config ($($gitState.Status)) ---" -ForegroundColor Magenta
                 Write-Host "Expected includes in $($gitState.LocalPath):" -ForegroundColor Cyan
                 $gitState.Desired | ForEach-Object { Write-Host "  + $_" -ForegroundColor Green }
+            }
+            $hooksLink = Get-GitHooksLink
+            if ($hooksLink) {
+                $hooksStatus = Get-JunctionStatus -Source $hooksLink.Source -Target $hooksLink.Target
+                if ($hooksStatus -ne 'Linked') {
+                    $diffCount++
+                    Write-Host "`n--- Git Hooks ($hooksStatus) ---" -ForegroundColor Magenta
+                    Write-Host "Expected junction: $($hooksLink.Target) -> $($hooksLink.Source)" -ForegroundColor Green
+                }
             }
         }
 

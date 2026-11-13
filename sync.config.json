@@ -61,7 +61,9 @@
       "displayName": "Git Config",
       "sharedPath": "configs/git/.gitconfig.shared",
       "workspacePath": "workspaces/{workspace}/git/.gitconfig",
-      "localTarget": "%USERPROFILE%/.gitconfig"
+      "localTarget": "%USERPROFILE%/.gitconfig",
+      "hooksDir": "configs/git/hooks",
+      "hooksTarget": "%USERPROFILE%/.git-hooks"
     },
     "gemini": {
       "displayName": "AI Agent Rules",
@@ -101,7 +103,8 @@
         "repo-intro",
         "ask",
         "ux",
-        "readme"
+        "readme",
+        "visualize"
       ]
     },
     "plugins": {

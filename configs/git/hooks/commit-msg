@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+python "$HOOK_DIR/validate_commit_msg.py" "$1"

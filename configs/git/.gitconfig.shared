@@ -4,6 +4,7 @@
 	eol = lf
 	safecrlf = false
 	whitespace = cr-at-eol,trailing-space
+	hooksPath = ~/.git-hooks
 [apply]
 	whitespace = nowarn
 [init]
