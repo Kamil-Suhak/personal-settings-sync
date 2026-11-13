@@ -345,6 +345,25 @@ try {
     }
     Assert-True ($pNoRootsOut -match 'No project roots configured') "p fails cleanly when no project roots configured"
 
+    # Test p jumps cleanly when matching directory exists (guards against [string]$Target parameter shadowing)
+    $pJumpScript = Join-Path $sandbox 'test-p-jump.ps1'
+    $pRootDir = Join-Path $sandbox 'projects-root'
+    $pWorkDir = Join-Path $pRootDir 'work-helpers'
+    [System.IO.Directory]::CreateDirectory($pWorkDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $testHome '.project-roots'), "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
+    $pJumpContent = $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
+    [System.IO.File]::WriteAllText($pJumpScript, $pJumpContent, [System.Text.UTF8Encoding]::new($false))
+    $pJumpOut = & {
+        $prevProf = $env:USERPROFILE
+        $env:USERPROFILE = $testHome
+        try {
+            pwsh -NoProfile -File $pJumpScript 2>&1 | Out-String
+        } finally {
+            $env:USERPROFILE = $prevProf
+        }
+    }
+    Assert-True ($pJumpOut -match [regex]::Escape($pWorkDir)) "p jumps to matching directory without parameter shadowing"
+
     # Test cmp diff output
     $cmpFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'cmp' }, $false) | Select-Object -First 1
     . ([scriptblock]::Create($cmpFn.Extent.Text))

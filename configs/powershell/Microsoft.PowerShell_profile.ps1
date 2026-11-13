@@ -1058,13 +1058,13 @@ function p {
     }
 
     # 6. Search directories across all configured roots
-    $target = $roots | ForEach-Object {
+    $matchedDir = $roots | ForEach-Object {
         Get-ChildItem -LiteralPath $_ -Directory -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "*$Name*" }
     } | Select-Object -First 1
 
-    if ($target) {
-        Set-Location -LiteralPath $target.FullName
+    if ($matchedDir) {
+        Set-Location -LiteralPath $matchedDir.FullName
     }
     else {
         Write-Host "Project matching '$Name' not found in:" -ForegroundColor Yellow
