@@ -2,35 +2,27 @@
 
 <#
 .SYNOPSIS
-Asks Gemini via ephemeral agy -p session using recent terminal history, screen output, and optional piped input.
+Asks Gemini via ephemeral streamed agy session (clean by default; pipable to 'copy'):
+  ask <question>                  - Clean ephemeral query (also accepts piped input)
+  ask -Ctx [<sel>] <question>     - Includes terminal context (~1 default, N last, ~N, or ~3..2 / ~3..~2)
+  Flags: -Ctx (include terminal context), -High (gemini-4-hydrogen-high), -KeepHistory (persist agy session)
 #>
 function ask {
     param(
         [switch]$KeepHistory,
         [switch]$High,
-        [switch]$Clean
+        [switch]$Ctx,
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$QueryArgs
     )
 
-    $Question = $args -join ' '
     $piped = @($input) -join "`n"
-    if ([string]::IsNullOrWhiteSpace($Question) -and [string]::IsNullOrWhiteSpace($piped)) {
-        Write-Warning "Usage: ask [-KeepHistory] [-High] [-Clean] <question>"
+    $preamble = "You are running in an ephemeral session via agy --print. Keep your response short and do not use markdown formatting. Minimize tool and MCP calls and prioritize fast responses while remaining accurate."
+    $fullPrompt = Resolve-AskRequest -QuestionArgs $QueryArgs -Piped $piped -IncludeCtx:$Ctx -PromptPreamble $preamble
+    if (-not $fullPrompt) {
+        Write-Host "Usage: ask [-Ctx [<n>|~<n>|~<a>..<b>]] [-High] [-KeepHistory] <question>" -ForegroundColor Yellow
         return
     }
-
-    $ctx = Get-TerminalAskContext -Question $Question -Piped $piped -Clean:$Clean
-    $fullPrompt = @"
-You are running in an ephemeral session via agy --print. Keep your response short and do not use markdown formatting. You are given context from the terminal history, recent output, and piped input. Use this information only if it is directly relevant to the question, ignore otherwise.
-Minimize tool and MCP calls and prioritize fast responses while remaining accurate.
-[Context: Recent Terminal Commands]
-$($ctx.History)
-
-[Context: Recent Terminal Output]
-$($ctx.Output)
-$($ctx.PipedSection)
-[User Question]
-$($ctx.Question)
-"@
 
     $cliDir = Join-Path $env:USERPROFILE ".gemini\antigravity-cli"
     $convDir = Join-Path $cliDir "conversations"
@@ -49,28 +41,32 @@ $($ctx.Question)
         $trackSucceeded = $false
     }
 
-    $model = if ($High) { "gemini-3.8-flash-high" } else { "gemini-3.8-flash-medium" }
+    $model = if ($High) { "gemini-4-hydrogen-high" } else { "gemini-4-hydrogen-low" }
     $agyCmd = Get-Command agy -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $agyCmd) {
-        Write-Error "Antigravity CLI ('agy') not found in PATH."
+        Write-Host "✖ ask: Antigravity CLI ('agy') not found in PATH." -ForegroundColor Red
         return
     }
 
-    Invoke-AskCliProcess -ExecutablePath $agyCmd.Source -Arguments @("--model", $model, "-p", $fullPrompt) -Label $model
+    $streamInteractive = ($MyInvocation.PipelinePosition -ge $MyInvocation.PipelineLength) -and (-not [Console]::IsOutputRedirected)
+    Invoke-AskCliProcess -ExecutablePath $agyCmd.Source -Arguments @("--model", $model, "--output-format", "stream-json", "-p", $fullPrompt) -Label $model -StreamJson -InteractiveStream:$streamInteractive
 
-    if (-not $KeepHistory -and $trackSucceeded) {
+    if (-not $KeepHistory -and ($trackSucceeded -or $script:__ask_last_conv_id)) {
         Start-Sleep -Milliseconds 200
         $newIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        if ($script:__ask_last_conv_id) { [void]$newIds.Add($script:__ask_last_conv_id) }
 
-        if (Test-Path -LiteralPath $convDir) {
-            Get-ChildItem -LiteralPath $convDir -File -Filter "*.db" -ErrorAction SilentlyContinue |
-                Where-Object { $_.BaseName -notin $beforeConvs } |
-                ForEach-Object { [void]$newIds.Add($_.BaseName) }
-        }
-        if (Test-Path -LiteralPath $brainDir) {
-            Get-ChildItem -LiteralPath $brainDir -Directory -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -notin $beforeBrain } |
-                ForEach-Object { [void]$newIds.Add($_.Name) }
+        if ($trackSucceeded) {
+            if (Test-Path -LiteralPath $convDir) {
+                Get-ChildItem -LiteralPath $convDir -File -Filter "*.db" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.BaseName -notin $beforeConvs } |
+                    ForEach-Object { [void]$newIds.Add($_.BaseName) }
+            }
+            if (Test-Path -LiteralPath $brainDir) {
+                Get-ChildItem -LiteralPath $brainDir -Directory -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notin $beforeBrain } |
+                    ForEach-Object { [void]$newIds.Add($_.Name) }
+            }
         }
 
         foreach ($id in $newIds) {

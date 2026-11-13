@@ -35,41 +35,33 @@ if (-not $canRunGitDirectly) {
 
 <#
 .SYNOPSIS
-Asks company-approved GitHub Copilot CLI (copilot -p) using recent terminal history, screen output, and optional piped input.
+Asks company-approved GitHub Copilot CLI (copilot -p, clean by default; pipable to 'copy'):
+  ask <question>                  - Clean query (also accepts piped input)
+  ask -Ctx [<sel>] <question>     - Includes terminal context (~1 default, N last, ~N, or ~3..2 / ~3..~2)
 #>
 function ask {
     param(
-        [switch]$Clean
+        [switch]$Ctx,
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$QueryArgs
     )
 
-    $Question = $args -join ' '
     $piped = @($input) -join "`n"
-    if ([string]::IsNullOrWhiteSpace($Question) -and [string]::IsNullOrWhiteSpace($piped)) {
-        Write-Warning "Usage: ask [-Clean] <question>"
+    $preamble = "Keep your response short and do not use markdown formatting. Minimize tool and MCP calls and prioritize fast responses while remaining accurate."
+    $fullPrompt = Resolve-AskRequest -QuestionArgs $QueryArgs -Piped $piped -IncludeCtx:$Ctx -PromptPreamble $preamble
+    if (-not $fullPrompt) {
+        Write-Host "Usage: ask [-Ctx [<n>|~<n>|~<a>..<b>]] <question>" -ForegroundColor Yellow
         return
     }
 
     $copilotCmd = Get-Command copilot -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $copilotCmd) {
-        Write-Error "GitHub Copilot CLI ('copilot') not found in PATH."
+        Write-Host "✖ ask: GitHub Copilot CLI ('copilot') not found in PATH." -ForegroundColor Red
         return
     }
 
-    $ctx = Get-TerminalAskContext -Question $Question -Piped $piped -Clean:$Clean
-    $fullPrompt = @"
-Keep your response short and do not use markdown formatting. You are given context from the terminal history, recent output, and piped input. Use this information only if it is directly relevant to the question, ignore otherwise.
-Minimize tool and MCP calls and prioritize fast responses while remaining accurate.
-[Context: Recent Terminal Commands]
-$($ctx.History)
-
-[Context: Recent Terminal Output]
-$($ctx.Output)
-$($ctx.PipedSection)
-[User Question]
-$($ctx.Question)
-"@
-
-    Invoke-AskCliProcess -ExecutablePath $copilotCmd.Source -Arguments @("-p", $fullPrompt) -Label "copilot"
+    $streamInteractive = ($MyInvocation.PipelinePosition -ge $MyInvocation.PipelineLength) -and (-not [Console]::IsOutputRedirected)
+    Invoke-AskCliProcess -ExecutablePath $copilotCmd.Source -Arguments @("-p", $fullPrompt) -Label "copilot" -InteractiveStream:$streamInteractive
 }
 
 <#
@@ -78,36 +70,11 @@ Shows the active Azure CLI subscription, tenant, and signed-in user to prevent d
 #>
 function azwho {
     if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
-        Write-Host "Azure CLI ('az') not found in PATH." -ForegroundColor Red
+        Write-Host "✖ azwho: Azure CLI ('az') not found in PATH." -ForegroundColor Red
         return
     }
     az account show --query "{Subscription:name, Id:id, Tenant:tenantId, User:user.name}" -o table
-}
-
-<#
-.SYNOPSIS
-Recursively removes .NET build artifact directories (bin and obj) under the current directory.
-#>
-function slnclean {
-    [CmdletBinding(SupportsShouldProcess = $true)]
-    param([string]$Path = ".")
-
-    $targets = @(Get-ChildItem -LiteralPath $Path -Directory -Recurse -Force -ErrorAction SilentlyContinue |
-        Where-Object { $_.Name -in @('bin', 'obj') -and $_.FullName -notmatch '[\\/]\.git[\\/]' })
-
-    if ($targets.Count -eq 0) {
-        Write-Host "No bin/ or obj/ directories found under $Path." -ForegroundColor DarkGray
-        return
-    }
-
-    $removed = 0
-    foreach ($dir in $targets) {
-        if ($PSCmdlet.ShouldProcess($dir.FullName, "Remove .NET artifact directory")) {
-            Remove-Item -LiteralPath $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
-            $removed++
-        }
-    }
-    if (-not $WhatIfPreference) {
-        Write-Host "Cleaned $removed bin/obj directory(s)." -ForegroundColor Green
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "✖ az account show failed (exit $LASTEXITCODE)." -ForegroundColor Red
     }
 }
