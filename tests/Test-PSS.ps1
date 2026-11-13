@@ -124,6 +124,10 @@ try {
     $thirdPartyPlugin = Join-Path $testHome '.gemini\config\plugins\flutter'
     [System.IO.Directory]::CreateDirectory($thirdPartyPlugin) | Out-Null
 
+    $blockingHooksDir = Join-Path $testHome '.git-hooks'
+    [System.IO.Directory]::CreateDirectory($blockingHooksDir) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $blockingHooksDir 'stale-hook'), "old`n", [System.Text.UTF8Encoding]::new($false))
+
     $testPss = Join-Path $testRepo 'pss.ps1'
     . (Join-Path $testRepo 'scripts\local-state.ps1')
     $testState = Get-PssLocalStatePaths -Checkout $testRepo -LocalAppData $testLocalAppData
@@ -218,18 +222,37 @@ try {
     Assert-True ($gitText -match 'gh auth git-credential') "apply preserves local git credential helper"
     $gitEmail = (& git config --file (Join-Path $testHome '.gitconfig') --includes user.email 2>$null)
     Assert-Equal $gitEmail 'kamilsuhak@gmail.com' "git --includes resolves personal user.email"
+    $prevHome = $env:HOME
+    $prevUserProfile = $env:USERPROFILE
+    try {
+        $env:HOME = $testHome
+        $env:USERPROFILE = $testHome
+        $gitHooksPath = (& git config --file (Join-Path $testHome '.gitconfig') --includes --path core.hooksPath 2>$null)
+    } finally {
+        $env:HOME = $prevHome
+        $env:USERPROFILE = $prevUserProfile
+    }
+    Assert-Equal ($gitHooksPath -replace '\\', '/') (($testHome -replace '\\', '/') + '/.git-hooks') "git --includes resolves shared core.hooksPath"
+    $gitHooksLink = Get-Item (Join-Path $testHome '.git-hooks') -Force
+    Assert-True ([bool]($gitHooksLink.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) ".git-hooks is a junction (replaced blocking directory)"
+    Assert-True ((Test-Path (Join-Path $gitHooksLink.FullName 'commit-msg')) -and (Test-Path (Join-Path $gitHooksLink.FullName 'validate_commit_msg.py'))) ".git-hooks junction resolves commit-msg hook files"
+    Assert-True ((Get-ChildItem (Join-Path $testRepo '.backups') -Recurse -File -Filter 'stale-hook').Count -eq 1) "apply backs up existing .git-hooks before linking"
 
     # Verify AI rules & skills.json template
     $agentsText = Get-Content (Join-Path $testHome '.gemini\AGENTS.md') -Raw
     Assert-True ($agentsText -match 'Global Agent Guidelines' -and $agentsText -match 'Personal Workspace Context') "AGENTS.md combines shared + personal"
     $skillsJson = Get-Content (Join-Path $testHome '.gemini\config\skills.json') -Raw
     $expectedHomeFwd = ($testHome -replace '\\', '/')
+    $expectedRepoFwd = ($testRepo -replace '\\', '/')
     Assert-True ($skillsJson -match [regex]::Escape("$expectedHomeFwd/.agents/skills")) "skills.json expands ~ to forward-slash HOME"
+    Assert-True ($skillsJson -match [regex]::Escape("$expectedRepoFwd/configs/skills")) "skills.json expands {REPO} to repo configs/skills"
+    Assert-True ($skillsJson -match [regex]::Escape("$expectedRepoFwd/workspaces/personal/skills")) "skills.json includes workspace skills directory when present"
 
     # Verify junctions (including replacing blocking dir & broken junction) & workspace skill + third-party preservation
     $askSkillLink = Get-Item (Join-Path $testHome '.agents\skills\ask') -Force
     Assert-True ([bool]($askSkillLink.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) "skill 'ask' is a junction (replaced blocking directory)"
     Assert-True (Test-Path (Join-Path $askSkillLink.FullName 'SKILL.md')) "skill 'ask' junction resolves after replacing directory"
+    Assert-True (Test-Path (Join-Path $testHome '.agents\skills\visualize\resources\viewer-template.html')) "skill 'visualize' and viewer template linked"
     Assert-True (Test-Path (Join-Path $testHome '.agents\skills\ws-skill\SKILL.md')) "personal workspace-only skill linked"
     Assert-True (Test-Path (Join-Path $thirdPartySkill 'SKILL.md')) "third-party skills preserved"
     $mirrorLink = Get-Item (Join-Path $testHome '.gemini\skills') -Force
@@ -409,9 +432,8 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
             workset new 'alternate-name'
             prompt 6>$null | Out-Null
             Assert-True ($null -eq $global:cw) 'prompt clears current workset when multiple worksets match'
-            function Read-Host { 'y' }
-            workset delete 'alternate-name'
-            Remove-Item function:\Read-Host
+            workset delete 'alternate-name' | Out-Null
+            Assert-True (-not (Test-Path (Get-WorksetDirectory 'alternate-name'))) 'workset delete removes list immediately without prompt'
             & git -C $repoOne symbolic-ref HEAD refs/heads/different
             $global:__git_cache_repo = $null
             prompt 6>$null | Out-Null
@@ -420,11 +442,24 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
             $global:__git_cache_repo = $null
             prompt 6>$null | Out-Null
             Assert-Equal $global:cw '123-dashboard' 'prompt restores current workset when returning to its branch'
+            $emptyWsDir = Join-Path $testState.Root 'worksets\work\active\orphan-dir'
+            [void][System.IO.Directory]::CreateDirectory($emptyWsDir)
+            $global:__cw_cache_key = $null
+            $promptWarn = (prompt 3>&1 6>$null | Where-Object { $_ -is [System.Management.Automation.WarningRecord] })
+            Assert-True ($promptWarn.Count -eq 0 -and $global:cw -eq '123-dashboard') 'prompt ignores workset folder without metadata.json and caches $cw'
+            Remove-Item -LiteralPath $emptyWsDir -Force
             [System.IO.File]::WriteAllText($testState.Workspace, 'personal')
             prompt 6>$null | Out-Null
             Assert-True ($null -eq $global:cw) 'prompt clears current workset outside the work workspace'
             [System.IO.File]::WriteAllText($testState.Workspace, 'work')
             workset add $fileOne
+            $extraFileOne = Join-Path $repoOne 'extra-one.cs'
+            $extraFileTwo = Join-Path $repoOne 'extra-two.cs'
+            [System.IO.File]::WriteAllText($extraFileOne, 'extra1')
+            [System.IO.File]::WriteAllText($extraFileTwo, 'extra2')
+            workset add -Files $extraFileOne $extraFileTwo
+            $shownFiles = (workset show 6>&1) -join "`n"
+            Assert-True ($shownFiles -match 'extra-one\.cs' -and $shownFiles -match 'extra-two\.cs') 'workset add -Files adds multiple files without mistaking first file for name'
             workset open
             Assert-True ($global:testCodeArguments -contains $fileOne) 'single-repository workset without a solution selects VS Code'
             $noSolution = $false
@@ -433,7 +468,7 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
             [System.IO.File]::WriteAllText((Join-Path $repoOne 'app.sln'), '')
             workset open
             Assert-True ($global:testVsPath -eq $repoOne -and $global:testVsFiles -contains $fileOne) 'single-repository workset selects VS'
-            workset add '123-dashboard' $fileTwo
+            workset add '123-dashboard' -Files $fileTwo
             workset open
             Assert-True ($global:testCodeArguments -contains $repoOne -and $global:testCodeArguments -contains $repoTwo -and
                 $global:testCodeArguments -contains $fileOne -and $global:testCodeArguments -contains $fileTwo) 'cross-repository workset opens all roots and files in VS Code'
@@ -470,9 +505,7 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
             Assert-True ((Test-Path $worksetDir) -and (Test-Path $fileOne)) 'workset delete what-if preserves list and source'
             $synopsis = (Get-Help workset).Synopsis
             Assert-True ($synopsis -match 'issue file sets') 'dot-sourced workset exposes synopsis'
-            function Read-Host { 'y' }
-            workset delete
-            Remove-Item function:\Read-Host
+            workset delete | Out-Null
             Assert-True ((-not (Test-Path $worksetDir)) -and (Test-Path $fileOne) -and (Test-Path $fileTwo)) 'workset delete removes only the list'
         } finally {
             Pop-Location
@@ -495,13 +528,13 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     $editShortAgents = (& $testPss edit agents -PathOnly -HomeOverride $testHome -DocumentsOverride $testDocs | Select-Object -Last 1).Trim()
     Assert-Equal $editShortAgents (Join-Path $testRepo 'configs\gemini\AGENTS.md') "edit agents shorthand resolves shared AGENTS.md"
 
-    # Verify workspace new & delete (and -WhatIf does not mutate)
+    # Verify workspace new & delete (and -WhatIf does not mutate; -y skips confirmation while still printing preview)
     & $testPss workspace new school -WhatIf -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
     Assert-True (-not (Test-Path (Join-Path $testRepo 'workspaces\school'))) "workspace new -WhatIf does not create folder"
     & $testPss workspace new school -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
     Assert-True (Test-Path (Join-Path $testRepo 'workspaces\school\powershell\profile.ps1')) "workspace new scaffolds directory"
-    & $testPss workspace delete school -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
-    Assert-True (-not (Test-Path (Join-Path $testRepo 'workspaces\school'))) "workspace delete removes inactive workspace"
+    $wsDelOut = (& $testPss workspace delete school -y -HomeOverride $testHome -DocumentsOverride $testDocs *>&1 | Out-String)
+    Assert-True ((-not (Test-Path (Join-Path $testRepo 'workspaces\school'))) -and $wsDelOut -match 'Command preview: Remove-Item') "workspace delete -y prints command preview and removes inactive workspace"
 
     # Verify setup-windows.ps1 -WhatIf runs cleanly and reads config
     $setupWinOut = (& (Join-Path $testRepo 'scripts\setup-windows.ps1') -WhatIf *>&1 | Out-String)
@@ -539,49 +572,27 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     $promptFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'prompt' }, $false) | Select-Object -First 1
     . ([scriptblock]::Create($promptFn.Extent.Text))
 
-    # Verify passbolt removed, brave in shared, amend & undo merged into commit, st/catchup/gsync consolidated into repo + diff
+    # Verify function layout across shared & workspace profiles
     $personalAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'workspaces\personal\powershell\profile.ps1'), [ref]$null, [ref]$null)
-    foreach ($workspaceName in @('personal', 'work')) {
-        $workspaceAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot "workspaces\$workspaceName\powershell\profile.ps1"), [ref]$null, [ref]$null)
-        $askFn = $workspaceAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'ask' }, $false) | Select-Object -First 1
-        $capturedPrompt = & {
-            param($Definition, $Workspace, $TestHomeDir)
-            function copilot {}
-            function agy {}
-            function Get-TerminalAskContext {
-                param($Question, $Piped, $Clean)
-                [pscustomobject]@{ History = 'history'; Output = 'output'; PipedSection = ''; Question = $Question }
-            }
-            function Invoke-AskCliProcess {
-                param($ExecutablePath, $Arguments, $Label)
-                $Arguments[-1]
-            }
-            . ([scriptblock]::Create($Definition))
-            $savedUserProfile = $env:USERPROFILE
-            try {
-                $env:USERPROFILE = $TestHomeDir
-                if ($Workspace -eq 'personal') { ask -KeepHistory 'test question' } else { ask 'test question' }
-            } finally {
-                $env:USERPROFILE = $savedUserProfile
-            }
-        } $askFn.Extent.Text $workspaceName $testHome
-        Assert-True ($capturedPrompt -match 'Minimize tool and MCP calls and prioritize fast responses while remaining accurate' -and $capturedPrompt -match '\[User Question\]\s*test question') "$workspaceName ask sends speed guidance and the question"
-    }
+    $workAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'workspaces\work\powershell\profile.ps1'), [ref]$null, [ref]$null)
     $sharedNames = @($profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     $personalNames = @($personalAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
+    $workNames = @($workAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     Assert-True ($sharedNames -contains 'brave' -and $personalNames -notcontains 'brave') "brave moved to shared profile"
     Assert-True ($personalNames -notcontains 'passbolt' -and $personalNames -notcontains 'passbolt-stop' -and $personalNames -notcontains 'Invoke-PassboltCompose') "passbolt removed from personal profile"
+    Assert-True ($workNames -notcontains 'slnclean') "slnclean removed from work profile"
     Assert-True ($sharedNames -contains 'commit' -and $sharedNames -notcontains 'amend' -and $sharedNames -notcontains 'undo') "amend and undo merged into commit"
-    Assert-True ($sharedNames -contains 'repo' -and $sharedNames -contains 'diff' -and $sharedNames -notcontains 'st' -and $sharedNames -notcontains 'catchup' -and $sharedNames -notcontains 'gsync') "st/catchup/gsync consolidated into repo and diff"
+    Assert-True ($sharedNames -contains 'st' -and $sharedNames -contains 'diff' -and $sharedNames -notcontains 'repo' -and $sharedNames -notcontains 'catchup' -and $sharedNames -notcontains 'gsync') "repo/catchup/sync replaced with st and diff"
+    Assert-True ($sharedNames -contains 'out' -and $sharedNames -contains 'rerun') "out and rerun defined in shared ai group"
 
     $profileRaw = $sharedProfileText
     Assert-True ($profileRaw -match 'Remove-Alias\s+-Name\s+diff\s+-Force' -and $profileRaw -match 'Compare-Object' -and $profileRaw -match 'Copy-Item') "profile explicitly documents built-in diff and copy alias overrides"
 
-    # Test commit / commit amend / commit undo in isolated git repo
-    $clearCacheFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Clear-GitBranchCache' }, $false) | Select-Object -First 1
-    $commitFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'commit' }, $false) | Select-Object -First 1
-    . ([scriptblock]::Create($clearCacheFn.Extent.Text))
-    . ([scriptblock]::Create($commitFn.Extent.Text))
+    # Test commit / commit amend / commit undo / push confirmation rules in isolated git repo
+    foreach ($fnName in @('Clear-GitBranchCache', 'Invoke-GitConfirmation', 'commit', 'push')) {
+        $fnDef = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fnName }, $false) | Select-Object -First 1
+        . ([scriptblock]::Create($fnDef.Extent.Text))
+    }
     $commitRepo = Join-Path $sandbox 'commit-repo'
     [System.IO.Directory]::CreateDirectory($commitRepo) | Out-Null
     & git -C $commitRepo init -b main 2>&1 | Out-Null
@@ -592,22 +603,56 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     & git -C $commitRepo commit -m "chore: init" 2>&1 | Out-Null
     Push-Location $commitRepo
     try {
-        [System.IO.File]::WriteAllText((Join-Path $commitRepo 'b.txt'), "two`n")
-        commit "feat: second commit" *>&1 | Out-Null
-        Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'feat: second commit' "commit <message> creates commit"
+        $script:PromptCount = 0
+        $script:PromptReply = 'n'
+        function Read-Host { param($Prompt) $script:PromptCount++; return $script:PromptReply }
+        try {
+            [System.IO.File]::WriteAllText((Join-Path $commitRepo 'b.txt'), "two`n")
+            commit "feat: second commit" *>&1 | Out-Null
+            Assert-Equal $script:PromptCount 0 "plain commit creates commit without confirmation"
+            Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'feat: second commit' "commit <message> creates commit"
 
-        [System.IO.File]::WriteAllText((Join-Path $commitRepo 'b.txt'), "two amended`n")
-        commit amend *>&1 | Out-Null
-        Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'feat: second commit' "commit amend preserves message without extra args"
-        Assert-True ((Get-Content (Join-Path $commitRepo 'b.txt') -Raw) -match 'two amended') "commit amend updates commit contents"
+            [System.IO.File]::WriteAllText((Join-Path $commitRepo 'b.txt'), "two amended`n")
+            $script:PromptReply = 'n'
+            commit amend *>&1 | Out-Null
+            Assert-Equal $script:PromptCount 1 "commit amend prompts [y/N] before running"
+            Assert-True ((& git diff --cached --name-only).Count -eq 0 -and ((Get-Content (Join-Path $commitRepo 'b.txt') -Raw) -eq "two amended`n")) "commit amend aborted on 'n' does not amend HEAD"
 
-        commit amend "fix: updated msg" *>&1 | Out-Null
-        Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'fix: updated msg' "commit amend <message> updates commit message"
+            $script:PromptReply = 'y'
+            $amendWithYesCount = $script:PromptCount
+            $amendYesOut = (commit amend -y 6>&1 | Out-String)
+            Assert-True ($script:PromptCount -eq $amendWithYesCount -and $amendYesOut -match 'Command preview:\s*git add -A; git commit --amend --no-edit') "commit amend -y prints command preview and bypasses confirmation"
+            Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'feat: second commit' "commit amend preserves message without extra args"
+            Assert-True ((Get-Content (Join-Path $commitRepo 'b.txt') -Raw) -match 'two amended') "commit amend updates commit contents"
 
-        commit undo *>&1 | Out-Null
-        Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'chore: init' "commit undo resets HEAD~1"
-        $staged = (& git diff --cached --name-only) -join ','
-        Assert-True ($staged -match 'b\.txt') "commit undo keeps changes staged"
+            commit amend "fix: updated msg" -y *>&1 | Out-Null
+            Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'fix: updated msg' "commit amend <message> -y updates commit message"
+
+            $script:PromptReply = 'n'
+            commit undo *>&1 | Out-Null
+            Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'fix: updated msg' "commit undo aborted on 'n' leaves HEAD intact"
+
+            $undoWithYesCount = $script:PromptCount
+            $undoYesOut = (commit undo -y 6>&1 | Out-String)
+            Assert-True ($script:PromptCount -eq $undoWithYesCount -and $undoYesOut -match 'Command preview:\s*git reset --soft HEAD~1') "commit undo -y prints command preview and bypasses confirmation"
+            Assert-Equal ((& git log -1 --pretty=%s).Trim()) 'chore: init' "commit undo resets HEAD~1 when confirmed"
+            $staged = (& git diff --cached --name-only) -join ','
+            Assert-True ($staged -match 'b\.txt') "commit undo keeps changes staged"
+
+            $prevPrompts = $script:PromptCount
+            $script:PromptReply = 'n'
+            push *>&1 | Out-Null
+            Assert-True ($script:PromptCount -gt $prevPrompts) "push prompts [y/N] before pushing"
+
+            $pushBareRemote = Join-Path $sandbox 'push-remote.git'
+            & git init --bare $pushBareRemote 2>&1 | Out-Null
+            & git remote add origin $pushBareRemote 2>&1 | Out-Null
+            $pushYesPromptStart = $script:PromptCount
+            $pushYesOut = (push -y *>&1 | Out-String)
+            Assert-True ($script:PromptCount -eq $pushYesPromptStart -and $pushYesOut -match 'Command preview:\s*git push') "push -y prints command preview and pushes without confirmation"
+        } finally {
+            Remove-Item function:\Read-Host -ErrorAction SilentlyContinue
+        }
 
         $global:__show_prompt_timer = $false
         $promptOut = (prompt 6>&1 | Out-String)
@@ -684,19 +729,11 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     [System.IO.File]::WriteAllText($anotherFile, 'class Other {}')
     $vsFilesOut = (vs $slnDir -Files @($nestedFile, $anotherFile) -Verbose -WhatIf 4>&1 | Out-String)
     Assert-True ($vsFilesOut -match 'MyApp\.sln' -and $vsFilesOut -match 'UsersController\.cs' -and $vsFilesOut -match 'Other\.cs') "vs includes every requested file with the solution"
-    $vsTooShallow = (vs $nestedDir -MaxDepth 1 -WhatIf -ErrorAction Continue 2>&1 | Out-String)
+    $vsTooShallow = (vs $nestedDir -MaxDepth 1 -WhatIf *>&1 | Out-String)
     Assert-True ($vsTooShallow -match 'No \.sln or \.slnx file found') "vs respects MaxDepth limit"
 
-    $workAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'workspaces\work\powershell\profile.ps1'), [ref]$null, [ref]$null)
-    $slnCleanFn = $workAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'slnclean' }, $false) | Select-Object -First 1
-    . ([scriptblock]::Create($slnCleanFn.Extent.Text))
-    slnclean -Path $slnDir -WhatIf | Out-Null
-    Assert-True (Test-Path (Join-Path $slnDir 'src\Api\bin')) "slnclean -WhatIf preserves bin/"
-    slnclean -Path $slnDir | Out-Null
-    Assert-True (-not (Test-Path (Join-Path $slnDir 'src\Api\bin')) -and -not (Test-Path (Join-Path $slnDir 'src\Api\obj'))) "slnclean removes bin/ and obj/"
-
-    # Test repo, diff, nb, and cooldown / base-branch detection in isolated bare-remote + two-clone git setup
-    foreach ($fnName in @('Invoke-GitFetchWithCooldown', 'Resolve-GitBaseBranch', 'Show-GitCommitComparison', 'repo', 'diff', 'b', 'nb')) {
+    # Test st, diff pr, and 24h fetch cache / explicit multi-branch comparison in isolated bare-remote + two-clone git setup
+    foreach ($fnName in @('Invoke-GitFetchWithCooldown', 'Resolve-GitTargetRef', 'Show-GitCommitComparison', 'st', 'diff', 'b', 'nb')) {
         $fnDef = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fnName }, $false) | Select-Object -First 1
         . ([scriptblock]::Create($fnDef.Extent.Text))
     }
@@ -716,7 +753,6 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     & git -C $cloneA commit -m "chore: initial main" 2>&1 | Out-Null
     & git -C $cloneA push -u origin main 2>&1 | Out-Null
 
-    # Push a develop branch too so develop -> beta -> main priority can be verified
     & git -C $cloneA checkout -b develop 2>&1 | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $cloneA 'dev.txt'), "dev1`n")
     & git -C $cloneA add -A 2>&1 | Out-Null
@@ -729,19 +765,8 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
 
     Push-Location $cloneA
     try {
-        # Branch from main using nb <new> <from> and verify explicit base config is saved
-        nb fixes/issue-main main *>&1 | Out-Null
-        Assert-Equal ((& git config --local --get branch.fixes/issue-main.base).Trim()) 'main' "nb <branch> <from> records base branch in git config"
-
-        # Branch from develop using nb <new> (default)
         & git checkout develop 2>&1 | Out-Null
         nb fixes/issue-dev *>&1 | Out-Null
-        Assert-Equal ((& git config --local --get branch.fixes/issue-dev.base).Trim()) 'develop' "nb <branch> records active branch as base"
-
-        # Auto-priority without branch.<name>.base should choose develop over main
-        & git config --local --unset branch.fixes/issue-dev.base 2>$null
-        $autoBase = Resolve-GitBaseBranch -CurrentBranch 'fixes/issue-dev'
-        Assert-Equal $autoBase.Branch 'develop' "Resolve-GitBaseBranch prioritizes develop over main"
 
         # Create remote + local divergence
         [System.IO.File]::WriteAllText((Join-Path $cloneA 'feature.txt'), "line1`n")
@@ -773,25 +798,27 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
         [System.IO.File]::WriteAllText((Join-Path $cloneA 'feature.txt'), "line1`nline2`nunstaged edit`n")
         [System.IO.File]::WriteAllText((Join-Path $cloneA 'scratch.txt'), "untracked`n")
 
-        $repoFirst = (repo *>&1 | Out-String)
-        Assert-True ($repoFirst -match 'fetched origin --prune just now') "repo fetches origin --prune on first run"
-        Assert-True ($repoFirst -match 'Not pushed yet.*:\s*1' -and $repoFirst -match 'fix: local unpushed commit') "repo shows unpushed local commits"
-        Assert-True ($repoFirst -match 'Not pulled yet.*:\s*1' -and $repoFirst -match 'chore: peer commit on branch') "repo shows unpulled remote commits"
-        Assert-True ($repoFirst -match 'Only on your branch \(not in origin/develop\):\s*2') "repo shows branch commits not in base"
-        Assert-True ($repoFirst -match 'New on origin/develop since branch-off:\s*1' -and $repoFirst -match 'feat: landed on develop') "repo shows base commits since branch-off"
-        Assert-True ($repoFirst -match 'Staged: 1 file' -and $repoFirst -match 'Unstaged: 1 file' -and $repoFirst -match 'Untracked: 1 file') "repo groups staged, unstaged, and untracked cleanly"
+        # Force fetch to get peer updates, then verify default st does not guess base branch
+        $stForced = (st -f *>&1 | Out-String)
+        Assert-True ($stForced -match 'fetched origin just now') "st -f fetches origin updates"
+        Assert-True ($stForced -match 'Not compared against any base branch') "st without branch args explicitly states no base branch was compared"
+        Assert-True ($stForced -match 'Not pushed yet.*:\s*1' -and $stForced -match 'fix: local unpushed commit') "st shows unpushed local commits"
+        Assert-True ($stForced -match 'Not pulled yet.*:\s*1' -and $stForced -match 'chore: peer commit on branch') "st shows unpulled remote commits"
+        Assert-True ($stForced -match 'Staged: 1 file' -and $stForced -match 'Unstaged: 1 file' -and $stForced -match 'Untracked: 1 file') "st groups staged, unstaged, and untracked cleanly"
 
-        $repoSecond = (repo *>&1 | Out-String)
-        Assert-True ($repoSecond -match 'cooldown') "repo skips fetch within 60s cooldown"
+        $stCached = (st *>&1 | Out-String)
+        Assert-True ($stCached -match 'refs fetched .* ago') "st skips network fetch while refs are fresh (<24h)"
 
-        $repoNoFetch = (repo -n *>&1 | Out-String)
-        Assert-True ($repoNoFetch -match 'fetch skipped') "repo -n skips fetch explicitly"
+        $stNoFetch = (st -n *>&1 | Out-String)
+        Assert-True ($stNoFetch -match 'fetch skipped') "st -n skips fetch explicitly"
 
-        $repoForced = (repo -f *>&1 | Out-String)
-        Assert-True ($repoForced -match 'fetched origin --prune just now') "repo -f bypasses 60s cooldown"
+        $stMulti = (st develop main -Files *>&1 | Out-String)
+        Assert-True ($stMulti -match 'vs origin/develop' -and $stMulti -match 'vs origin/main') "st compares against every explicitly specified branch"
+        Assert-True ($stMulti -match 'Only on your branch \(not in origin/develop\):\s*2' -and $stMulti -match 'New on origin/develop since branch-off:\s*1') "st develop reports commits ahead and behind"
+        Assert-True ($stMulti -match 'Changed files since merge-base \(origin/develop\.\.\.HEAD\)' -and $stMulti -match 'feature\.txt') "st develop -Files lists modified files since merge-base"
 
-        $catchupCheck = (repo catchup -c *>&1 | Out-String)
-        Assert-True ($catchupCheck -match 'New commits on origin/develop since branch-off' -and $catchupCheck -match 'feat: landed on develop') "repo catchup -c previews incoming base commits"
+        $stFull = (st develop -Full *>&1 | Out-String)
+        Assert-True ($stFull -match 'GitHub PR preview -> origin/develop' -and $stFull -match 'fix: local unpushed commit') "st -Full delegates to diff pr under the hood"
 
         $diffUnstaged = (diff *>&1 | Out-String)
         Assert-True ($diffUnstaged -match 'Unstaged changes' -and $diffUnstaged -match '\+unstaged edit' -and $diffUnstaged -match '1 staged') "diff shows unstaged changes and reminds about staged/untracked"
@@ -799,11 +826,161 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
         $diffStaged = (diff staged *>&1 | Out-String)
         Assert-True ($diffStaged -match 'Staged changes' -and $diffStaged -match '\+staged content' -and $diffStaged -match '1 unstaged') "diff staged shows staged changes cleanly"
 
-        $diffBase = (diff base -Files *>&1 | Out-String)
-        Assert-True ($diffBase -match 'Branch changes vs origin/develop' -and $diffBase -match 'feature\.txt') "diff base -Files lists branch diff files vs origin/develop"
+        $diffPrNoBranch = (diff pr *>&1 | Out-String)
+        Assert-True ($diffPrNoBranch -match 'Target branch required') "diff pr requires an explicit target branch"
+
+        $diffPr = (diff pr develop -Files *>&1 | Out-String)
+        Assert-True ($diffPr -match 'GitHub PR preview -> origin/develop' -and $diffPr -match 'Commits included \(2\):' -and $diffPr -match 'feature\.txt') "diff pr <branch> -Files shows included commits and changed files since merge-base"
 
         $diffLast = (diff last -Stat *>&1 | Out-String)
         Assert-True ($diffLast -match 'Last 1 commit\(s\)' -and $diffLast -match 'feature\.txt') "diff last -Stat summarizes latest commit"
+
+        # Test AI/terminal buffer helpers, out/rerun slicing (~3..2 and ~3..~2), and Invoke-AskCliProcess streaming + stderr separation
+        foreach ($fnName in @('ConvertTo-TerminalCommandBlocks', 'Resolve-TerminalBlockIndices', 'Get-TerminalCommandBlocks', 'Resolve-AskRequest', 'Invoke-AskCliProcess', 'out', 'rerun')) {
+            $fnDef = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fnName }, $false) | Select-Object -First 1
+            . ([scriptblock]::Create($fnDef.Extent.Text))
+        }
+        $fakeBuffer = @(
+            "~/repo $([char]0xE0B0) main $([char]0xE0B0) $([char]0x276F) cmd-one",
+            "out-one",
+            "~/repo $([char]0xE0B0) main $([char]0xE0B0) $([char]0x276F) cmd-two",
+            "out-two-a",
+            "out-two-b",
+            "~/repo $([char]0xE0B0) main $([char]0xE0B0) $([char]0x276F) cmd-three",
+            "out-three",
+            "~/repo $([char]0xE0B0) main $([char]0xE0B0) $([char]0x276F) out ~3..2"
+        )
+        $parsedBlocks = @(ConvertTo-TerminalCommandBlocks -Lines $fakeBuffer)
+        Assert-Equal $parsedBlocks.Count 3 "ConvertTo-TerminalCommandBlocks splits completed prompts and excludes active prompt"
+        Assert-Equal $parsedBlocks[1].Command 'cmd-two' "ConvertTo-TerminalCommandBlocks captures command text after chevron"
+        Assert-Equal ($parsedBlocks[1].Output -join ',') 'out-two-a,out-two-b' "ConvertTo-TerminalCommandBlocks preserves multi-line command output"
+
+        $spacePromptBuffer = @(
+            " Projects/repo  main  $([char]0x276F) first-cmd",
+            "first-out",
+            " Projects/repo  main  $([char]0x276F) lastout | copy"
+        )
+        $spaceBlocks = @(ConvertTo-TerminalCommandBlocks -Lines $spacePromptBuffer)
+        Assert-Equal $spaceBlocks.Count 1 "ConvertTo-TerminalCommandBlocks matches space-separated prompt without E0B0 glyph"
+        Assert-Equal ($spaceBlocks[0].Output -join ',') 'first-out' "ConvertTo-TerminalCommandBlocks preserves output for space-separated prompts"
+
+        $scrolledOffBuffer = @(
+            "scrolled-line-1",
+            "",
+            "scrolled-line-2",
+            " Projects/repo  main  $([char]0x276F) lastout | copy"
+        )
+        $fallbackBlocks = @(ConvertTo-TerminalCommandBlocks -Lines $scrolledOffBuffer -FallbackCommand 'ask previous')
+        Assert-Equal $fallbackBlocks.Count 1 "ConvertTo-TerminalCommandBlocks recovers leading output via FallbackCommand when prior prompt scrolled off ConPTY buffer"
+        Assert-Equal $fallbackBlocks[0].Command 'ask previous' "ConvertTo-TerminalCommandBlocks assigns FallbackCommand to recovered block"
+        Assert-Equal ($fallbackBlocks[0].Output -join '|') 'scrolled-line-1||scrolled-line-2' "ConvertTo-TerminalCommandBlocks trims leading/trailing blanks on FallbackCommand recovery"
+
+        Assert-Equal ((Resolve-TerminalBlockIndices -Spec '~3..2' -Count 3) -join ',') '0,1' "Resolve-TerminalBlockIndices supports optional tilde in ~3..2"
+        Assert-Equal ((Resolve-TerminalBlockIndices -Spec '~3..~2' -Count 3) -join ',') '0,1' "Resolve-TerminalBlockIndices supports ~3..~2"
+        Assert-Equal ((Resolve-TerminalBlockIndices -Spec '~2' -Count 3) -join ',') '1' "Resolve-TerminalBlockIndices resolves ~2 to second-last command"
+        Assert-Equal ((Resolve-TerminalBlockIndices -Spec '2' -Count 3) -join ',') '1,2' "Resolve-TerminalBlockIndices resolves 2 to last 2 commands"
+
+        $cleanPrompt = Resolve-AskRequest -QuestionArgs @('simple question') -Piped '' -PromptPreamble 'preamble'
+        Assert-True ($cleanPrompt -notmatch '\[Context:' -and $cleanPrompt -match 'simple question') "ask is clean by default without -Ctx"
+
+        function Get-TerminalCommandBlocks { return $parsedBlocks }
+        try {
+            $ctxPrompt = Resolve-AskRequest -QuestionArgs @('~3..2', 'explain failure') -Piped '' -IncludeCtx -PromptPreamble 'preamble'
+            Assert-True ($ctxPrompt -match 'out-one' -and $ctxPrompt -match 'out-two-a' -and $ctxPrompt -notmatch 'out-three' -and $ctxPrompt -match 'explain failure') "ask -Ctx ~3..2 injects sliced command blocks into prompt"
+
+            $outText = (out '~2') -join "`n"
+            Assert-Equal $outText "out-two-a`nout-two-b" "out ~2 returns clean second-last command output"
+
+            $global:testRerunRan = $false
+            function Get-History { @([pscustomobject]@{ CommandLine = '$global:testRerunRan = $true' }) }
+            try {
+                $rerunOut = (rerun -y 6>&1 | Out-String)
+                Assert-True ($global:testRerunRan -and $rerunOut -match 'Commands to execute:' -and $rerunOut -match 'testRerunRan') "rerun -y prints command preview and executes without prompt"
+            } finally {
+                Remove-Item function:\Get-History -ErrorAction SilentlyContinue
+                Remove-Variable -Name testRerunRan -Scope Global -ErrorAction SilentlyContinue
+            }
+
+            $global:testRerunLog = [System.Collections.Generic.List[string]]::new()
+            function Get-History {
+                @(
+                    [pscustomobject]@{ CommandLine = '$null = $global:testRerunLog.Add("first")' },
+                    [pscustomobject]@{ CommandLine = 'rerun' },
+                    [pscustomobject]@{ CommandLine = '$null = $global:testRerunLog.Add("mention rerun arg")' },
+                    [pscustomobject]@{ CommandLine = 'rerun -y ~2' },
+                    [pscustomobject]@{ CommandLine = 'echo ok; rerun ~1' }
+                )
+            }
+            try {
+                $skipRerunOut = (rerun -y 6>&1 | Out-String)
+                Assert-True ($global:testRerunLog.Count -eq 1 -and $global:testRerunLog[0] -eq 'mention rerun arg' -and $skipRerunOut -notmatch '> rerun') "rerun skips previous rerun invocations while keeping commands mentioning rerun as an argument"
+
+                $global:testRerunLog.Clear()
+                $pairOut = (rerun 2 -y 6>&1 | Out-String)
+                Assert-Equal ($global:testRerunLog -join '|') 'first|mention rerun arg' "rerun 2 skips previous rerun entries and runs last 2 non-rerun commands in order"
+            } finally {
+                Remove-Item function:\Get-History -ErrorAction SilentlyContinue
+                Remove-Variable -Name testRerunLog -Scope Global -ErrorAction SilentlyContinue
+            }
+
+            function Get-History { @([pscustomobject]@{ CommandLine = 'rerun' }, [pscustomobject]@{ CommandLine = 'rerun -y' }) }
+            function Get-TerminalCommandBlocks { @([pscustomobject]@{ Command = 'rerun -y'; Output = @() }) }
+            try {
+                $onlyRerunOut = (rerun -y 6>&1 | Out-String)
+                Assert-True ($onlyRerunOut -match 'No prior commands found to re-run') "rerun reports no prior commands when history and buffer contain only rerun invocations"
+            } finally {
+                Remove-Item function:\Get-History -ErrorAction SilentlyContinue
+                function Get-TerminalCommandBlocks { return $parsedBlocks }
+            }
+
+            function Get-History { @([pscustomobject]@{ CommandLine = '$r = "rerun"; & $r -y' }) }
+            try {
+                $nestedOut = (rerun -y 6>&1 | Out-String)
+                Assert-True ($nestedOut -match 'recursive invocation blocked') "rerun blocks nested recursive invocation at runtime"
+            } finally {
+                Remove-Item function:\Get-History -ErrorAction SilentlyContinue
+            }
+        } finally {
+            Remove-Item function:\Get-TerminalCommandBlocks -ErrorAction SilentlyContinue
+        }
+
+        # Verify Invoke-AskCliProcess streams stream-json deltas cleanly and excludes exit-0 usage stderr from stdout pipeline
+        $pwshExe = (Get-Process -Id $PID).Path
+        $streamJsonScript = Join-Path $sandbox 'mock-stream.ps1'
+        [System.IO.File]::WriteAllText($streamJsonScript, @'
+Write-Output '{"event":"init","conversation_id":"conv-test-123"}'
+Write-Output '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"Hel"}}'
+Write-Output '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"lo\n\nWor"}}'
+Write-Output '{"event":"step_update","step_update":{"step_type":"agent_response","text_delta":"ld"}}'
+Write-Output '{"event":"result","result":{"conversation_id":"conv-test-123","status":"SUCCESS","response":"Hello\n\nWorld"}}'
+[Console]::Error.WriteLine("Total usage: 10 tokens")
+'@, [System.Text.UTF8Encoding]::new($false))
+        $pipedCombined = @(Invoke-AskCliProcess -ExecutablePath $pwshExe -Arguments @('-NoProfile', '-File', $streamJsonScript) -Label 'test-agy' -StreamJson 6>&1)
+        $pipedHostMsgs = @($pipedCombined | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { $_.MessageData.Message })
+        $pipedAnswer = @($pipedCombined | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+        $headerHitsPiped = @($pipedHostMsgs | Where-Object { $_ -match 'test-agy' }).Count
+        Assert-Equal $headerHitsPiped 1 "Invoke-AskCliProcess prints ask header exactly once across multi-paragraph piped stream"
+        Assert-Equal ($pipedAnswer -join '|') 'Hello||World' "Invoke-AskCliProcess streams NDJSON text_delta chunks cleanly and excludes exit-0 stderr from stdout pipeline"
+        Assert-Equal $script:__ask_last_conv_id 'conv-test-123' "Invoke-AskCliProcess captures conversation_id from stream-json"
+
+        $interactiveCombined = @(Invoke-AskCliProcess -ExecutablePath $pwshExe -Arguments @('-NoProfile', '-File', $streamJsonScript) -Label 'test-agy' -StreamJson -InteractiveStream 6>&1)
+        $interactiveStdout = @($interactiveCombined | Where-Object { $_ -isnot [System.Management.Automation.InformationRecord] })
+        $interactiveHostMsgs = @($interactiveCombined | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { $_.MessageData.Message })
+        $headerHitsInteractive = @($interactiveHostMsgs | Where-Object { $_ -match 'test-agy' }).Count
+        Assert-Equal $headerHitsInteractive 1 "Invoke-AskCliProcess InteractiveStream prints ask header exactly once"
+        Assert-Equal $interactiveStdout.Count 0 "Invoke-AskCliProcess InteractiveStream writes directly to host without duplicating stdout objects"
+        Assert-Equal (($interactiveHostMsgs | Where-Object { $_ -in @('Hel', "lo`n`nWor", 'ld') }) -join '|') "Hel|lo`n`nWor|ld" "Invoke-AskCliProcess InteractiveStream flushes each text_delta immediately without line buffering"
+
+        $streamErrScript = Join-Path $sandbox 'mock-stream-error.ps1'
+        [System.IO.File]::WriteAllText($streamErrScript, @'
+Write-Output '{"event":"init","conversation_id":"conv-err-1"}'
+Write-Output '{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"partial text"}}'
+Write-Output '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"error_message"}}'
+Write-Output '{"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"retry text"}}'
+Write-Output '{"event":"result","result":{"conversation_id":"conv-err-1","status":"ERROR","error":"blocked by content safety filters\nRetries remaining: 3"}}'
+'@, [System.Text.UTF8Encoding]::new($false))
+        $errHostOut = (Invoke-AskCliProcess -ExecutablePath $pwshExe -Arguments @('-NoProfile', '-File', $streamErrScript) -Label 'test-agy' -StreamJson -InteractiveStream 6>&1 | Out-String)
+        Assert-True ($errHostOut -match 'agy step interrupted' -and $errHostOut -match 'ERROR — blocked by content safety filters' -and $errHostOut -notmatch 'Retries remaining') "Invoke-AskCliProcess surfaces retry notices and detailed result.error messages cleanly"
 
         # Test clipboard fallbacks and piping with isolated mock Get-Clipboard (never mutates user's real clipboard)
         foreach ($fnName in @('Get-ClipboardShortQuery', 'cmp', 'findstr', 'jwt', 'find')) {
@@ -853,7 +1030,7 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
 } finally {
     $env:LOCALAPPDATA = $previousLocalAppData
     # Clean up junctions safely before removing sandbox
-    foreach ($j in @((Join-Path $testHome '.gemini\skills'), (Join-Path $testHome '.agents\skills\ask'), (Join-Path $testHome '.agents\skills\ux'), (Join-Path $testHome '.agents\skills\readme'), (Join-Path $testHome '.agents\skills\repo-intro'), (Join-Path $testHome '.agents\skills\developer-profile'), (Join-Path $testHome '.agents\skills\ws-skill'), (Join-Path $testHome '.gemini\config\plugins\egm'))) {
+    foreach ($j in @((Join-Path $testHome '.gemini\skills'), (Join-Path $testHome '.agents\skills\ask'), (Join-Path $testHome '.agents\skills\ux'), (Join-Path $testHome '.agents\skills\readme'), (Join-Path $testHome '.agents\skills\repo-intro'), (Join-Path $testHome '.agents\skills\developer-profile'), (Join-Path $testHome '.agents\skills\visualize'), (Join-Path $testHome '.agents\skills\ws-skill'), (Join-Path $testHome '.gemini\config\plugins\egm'))) {
         if (Test-Path -LiteralPath $j) {
             try { [System.IO.Directory]::Delete($j) } catch {}
         }
