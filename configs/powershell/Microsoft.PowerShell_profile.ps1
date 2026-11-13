@@ -1135,7 +1135,7 @@ function which {
     # Special Profile Inspection Mode: which profile [-h] | which -p [-h]
     $isProfile = $Profile -or ($Name -in @('profile', '$profile'))
     if ($isProfile) {
-        $targetProfile = Join-Path $PSScriptRoot "Microsoft.PowerShell_profile.ps1"
+        $targetProfile = Join-Path $global:__pss_root "configs\powershell\Microsoft.PowerShell_profile.ps1"
         if (-not (Test-Path -LiteralPath $targetProfile)) {
             $targetProfile = if ($PROFILE) { $PROFILE.ToString() } else { "PowerShell Profile" }
         }
@@ -1712,6 +1712,20 @@ function brave {
     }
 }
 
+function Get-VsSolutions {
+    param([string]$StartDirectory, [int]$MaxDepth = 5)
+    $currentDir = $StartDirectory
+    for ($depth = 0; $depth -le $MaxDepth -and $currentDir; $depth++) {
+        $found = @(Get-ChildItem -LiteralPath $currentDir -File -ErrorAction Stop |
+            Where-Object { $_.Extension -in @('.sln', '.slnx') } |
+            Sort-Object Name)
+        if ($found.Count -gt 0) { return $found }
+        $parent = Split-Path -Parent $currentDir
+        if (-not $parent -or $parent -eq $currentDir) { break }
+        $currentDir = $parent
+    }
+}
+
 <#
 .SYNOPSIS
 Opens Visual Studio for a .sln/.slnx found in the target/current directory or up to MaxDepth parent levels. Supports passing a file path to open alongside the solution.
@@ -1756,20 +1770,7 @@ function vs {
             $targetFile = $item.FullName
         }
 
-        $currentDir = $searchStartDir
-        $solutions = @()
-        for ($depth = 0; $depth -le $MaxDepth -and $currentDir; $depth++) {
-            $found = @(Get-ChildItem -LiteralPath $currentDir -File -ErrorAction SilentlyContinue |
-                Where-Object { $_.Extension -in @('.sln', '.slnx') } |
-                Sort-Object Name)
-            if ($found.Count -gt 0) {
-                $solutions = $found
-                break
-            }
-            $parent = Split-Path -Parent $currentDir
-            if (-not $parent -or $parent -eq $currentDir) { break }
-            $currentDir = $parent
-        }
+        $solutions = @(Get-VsSolutions -StartDirectory $searchStartDir -MaxDepth $MaxDepth)
 
         if ($solutions.Count -eq 0) {
             Write-Error "No .sln or .slnx file found in '$searchStartDir' or within $MaxDepth parent level(s)."

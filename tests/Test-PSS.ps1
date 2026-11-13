@@ -139,6 +139,22 @@ try {
     catch { $conflict = $true }
     Assert-True ($conflict -and (Test-Path $oldRoots) -and (Test-Path $oldProfile) -and (Test-Path $oldWorkspace)) 'migration conflict preserves every original'
     Remove-Item -LiteralPath $migrationState.LocalProfile
+    $alternateProfileDir = Join-Path $sandbox 'alternate-profile'
+    [void][System.IO.Directory]::CreateDirectory($alternateProfileDir)
+    $alternateProfile = Join-Path $alternateProfileDir '.profile.local.ps1'
+    [System.IO.File]::WriteAllText($alternateProfile, 'different profile')
+    $profileConflict = $false
+    try { Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome -ProfileDirectory $alternateProfileDir }
+    catch { $profileConflict = $true }
+    Assert-True ($profileConflict -and (Test-Path $oldProfile) -and (Test-Path $alternateProfile) -and (Test-Path $oldWorkspace)) 'migration preserves distinct legacy profile files'
+    Remove-Item -LiteralPath $alternateProfile
+    $blockedLocal = Join-Path $sandbox 'blocked-local'
+    [System.IO.File]::WriteAllText($blockedLocal, 'not a directory')
+    $blockedState = Get-PssLocalStatePaths -Checkout $migrationCheckout -LocalAppData $blockedLocal
+    $copyFailed = $false
+    try { Invoke-PssLocalStateMigration -Paths $blockedState -Checkout $migrationCheckout -HomePath $migrationHome }
+    catch { $copyFailed = $true }
+    Assert-True ($copyFailed -and (Test-Path $oldRoots) -and (Test-Path $oldProfile) -and (Test-Path $oldWorkspace)) 'migration copy failure preserves every original'
     Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome
     Assert-True ((-not (Test-Path $oldRoots)) -and (-not (Test-Path $oldProfile)) -and (-not (Test-Path $oldWorkspace)) -and
         [System.IO.File]::ReadAllText($migrationState.ProjectRoots) -eq 'roots' -and
@@ -269,12 +285,46 @@ try {
         [System.IO.File]::WriteAllText($fileTwo, 'two')
         function code { $global:testCodeArguments = @($args); $global:LASTEXITCODE = 0 }
         function vs { param($Path, $Files) $global:testVsPath = $Path; $global:testVsFiles = $Files }
+        $sharedProfileAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'configs\powershell\Microsoft.PowerShell_profile.ps1'), [ref]$null, [ref]$null)
+        $vsSolutionsFn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-VsSolutions' }, $false) | Select-Object -First 1
+        . ([scriptblock]::Create($vsSolutionsFn.Extent.Text))
+        foreach ($name in @('Get-PssActiveWorkspace', 'which')) {
+            $fn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $name }, $false) | Select-Object -First 1
+            . ([scriptblock]::Create($fn.Extent.Text))
+        }
+        $global:__pss_root = $testRepo
+        $global:__ansi = @{ Cyan = ''; Yellow = ''; Green = ''; Gray = ''; Reset = '' }
+        $savedProfile = $PROFILE
+        try {
+            $PROFILE = Join-Path $testRepo 'configs\powershell\Microsoft.PowerShell_profile.ps1'
+            $whichProfile = (which profile -h 6>&1 | Out-String)
+            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Creates and opens named issue file sets') 'which profile discovers workset synopsis'
+        } finally {
+            $PROFILE = $savedProfile
+        }
+        $worksetAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $testRepo 'workspaces\work\powershell\worksets.ps1'), [ref]$null, [ref]$null)
+        $worksetFn = $worksetAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'workset' }, $false) | Select-Object -First 1
+        $testLocalProfile = Join-Path $psDir 'Microsoft.PowerShell_profile.ps1'
+        $savedLoader = [System.IO.File]::ReadAllText($testLocalProfile)
+        try {
+            [System.IO.File]::WriteAllText($testLocalProfile, $worksetFn.Extent.Text)
+            $bootstrapOut = (& $testPss bootstrap -WhatIf -Include powershell -HomeOverride $testHome -DocumentsOverride $testDocs *>&1 | Out-String)
+            Assert-True ($bootstrapOut -match 'All functions.*already match repo') 'bootstrap recognizes dot-sourced workset functions'
+        } finally {
+            [System.IO.File]::WriteAllText($testLocalProfile, $savedLoader)
+        }
         Push-Location $repoOne
         try {
             workset new
             $worksetDir = Get-WorksetDirectory '123-dashboard'
             Assert-True (Test-Path (Join-Path $worksetDir 'files.txt')) 'workset derives a Windows-safe name from branch'
             workset add $fileOne
+            workset open
+            Assert-True ($global:testCodeArguments -contains $fileOne) 'single-repository workset without a solution selects VS Code'
+            $noSolution = $false
+            try { workset open -Vs } catch { $noSolution = $true }
+            Assert-True $noSolution 'explicit VS reports a missing solution'
+            [System.IO.File]::WriteAllText((Join-Path $repoOne 'app.sln'), '')
             workset open
             Assert-True ($global:testVsPath -eq $repoOne -and $global:testVsFiles -contains $fileOne) 'single-repository workset selects VS'
             workset add '123-dashboard' $fileTwo
@@ -494,6 +544,10 @@ try {
     Assert-True ($vsDirOut -match 'MyApp\.sln') "vs traverses parent directories to find .sln"
     $vsFileOut = (vs $nestedFile -Verbose -WhatIf 4>&1 | Out-String)
     Assert-True ($vsFileOut -match 'MyApp\.sln' -and $vsFileOut -match 'UsersController\.cs') "vs accepts a file and opens solution + file"
+    $anotherFile = Join-Path $nestedDir 'Other.cs'
+    [System.IO.File]::WriteAllText($anotherFile, 'class Other {}')
+    $vsFilesOut = (vs $slnDir -Files @($nestedFile, $anotherFile) -Verbose -WhatIf 4>&1 | Out-String)
+    Assert-True ($vsFilesOut -match 'MyApp\.sln' -and $vsFilesOut -match 'UsersController\.cs' -and $vsFilesOut -match 'Other\.cs') "vs includes every requested file with the solution"
     $vsTooShallow = (vs $nestedDir -MaxDepth 1 -WhatIf -ErrorAction Continue 2>&1 | Out-String)
     Assert-True ($vsTooShallow -match 'No \.sln or \.slnx file found') "vs respects MaxDepth limit"
 

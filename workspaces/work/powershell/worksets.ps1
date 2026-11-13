@@ -97,15 +97,23 @@ function workset {
             $archivedDir = Get-WorksetDirectory $name -Archived
             if ((Test-Path -LiteralPath $directory) -or (Test-Path -LiteralPath $archivedDir)) { throw "Workset '$name' already exists, including archived worksets." }
             if ($PSCmdlet.ShouldProcess($name, 'Create workset')) {
-                [void][System.IO.Directory]::CreateDirectory($directory)
-                $metadata = [ordered]@{
-                    name = $name
-                    originRoot = if ($context) { $context.Root } else { $null }
-                    branch = if ($context) { $context.Branch } else { $null }
-                    repositories = @()
+                $parent = Split-Path -Parent $directory
+                [void][System.IO.Directory]::CreateDirectory($parent)
+                $staging = Join-Path $parent ('.new-' + [guid]::NewGuid().ToString('N'))
+                try {
+                    [void][System.IO.Directory]::CreateDirectory($staging)
+                    $metadata = [ordered]@{
+                        name = $name
+                        originRoot = if ($context) { $context.Root } else { $null }
+                        branch = if ($context) { $context.Branch } else { $null }
+                        repositories = @()
+                    }
+                    [System.IO.File]::WriteAllText((Join-Path $staging 'metadata.json'), ($metadata | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
+                    [System.IO.File]::WriteAllText((Join-Path $staging 'files.txt'), '', [System.Text.UTF8Encoding]::new($false))
+                    [System.IO.Directory]::Move($staging, $directory)
+                } finally {
+                    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction Stop }
                 }
-                [System.IO.File]::WriteAllText((Join-Path $directory 'metadata.json'), ($metadata | ConvertTo-Json -Depth 5), [System.Text.UTF8Encoding]::new($false))
-                [System.IO.File]::WriteAllText((Join-Path $directory 'files.txt'), '', [System.Text.UTF8Encoding]::new($false))
                 Write-Host "Created workset '$name'."
             }
         }
@@ -164,6 +172,7 @@ function workset {
                 if ($roots -notcontains $root) { $roots += $root }
             }
             foreach ($repository in @($metadata.repositories)) {
+                if ($roots -notcontains $repository.root) { continue }
                 if (-not (Test-Path -LiteralPath $repository.root -PathType Container)) {
                     Write-Warning "Recorded repository is missing: $($repository.root)"
                     continue
@@ -175,7 +184,9 @@ function workset {
             }
             $singleRepo = $allInRepositories -and $roots.Count -eq 1
             if ($Vs -and -not $singleRepo) { throw 'Visual Studio requires all workset files to belong to one repository; use -Code.' }
-            if ($Code -or -not $singleRepo) {
+            $hasSolution = $singleRepo -and -not $Code -and @(Get-VsSolutions -StartDirectory $roots[0]).Count -gt 0
+            if ($Vs -and -not $hasSolution) { throw "No Visual Studio solution found for '$($roots[0])'." }
+            if ($Code -or -not $hasSolution) {
                 if (-not (Get-Command code -ErrorAction SilentlyContinue)) { throw 'VS Code command not found in PATH.' }
                 if ($PSCmdlet.ShouldProcess($directory, 'Open workset in VS Code')) {
                     & code --new-window @roots @files

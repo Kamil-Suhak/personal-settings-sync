@@ -83,6 +83,9 @@ function Invoke-PssLocalStateMigration {
             }
         }
         foreach ($pair in $existing) {
+            if ((Get-FileHash -LiteralPath $pair.Source -Algorithm SHA256 -ErrorAction Stop).Hash -ne $pair.Hash) {
+                throw "Legacy file changed before cleanup: '$($pair.Source)'; remaining originals were preserved."
+            }
             Remove-Item -LiteralPath $pair.Source -ErrorAction Stop
             Write-Host "Migrated '$($pair.Source)' to '$($pair.Destination)'."
         }
