@@ -43,7 +43,7 @@ $psFiles = @(
     'configs\powershell\git.ps1',
     'configs\powershell\navigation.ps1',
     'configs\powershell\search.ps1',
-    'configs\powershell\visual-studio.ps1',
+    'configs\powershell\launchers.ps1',
     'configs\powershell\ai.ps1',
     'workspaces\personal\powershell\profile.ps1',
     'workspaces\work\powershell\profile.ps1',
@@ -68,7 +68,7 @@ $testDocs = Join-Path $sandbox 'docs'
 $testLocalAppData = Join-Path $sandbox 'local-app-data'
 $previousLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $testLocalAppData
-$sharedProfileText = (@('Microsoft.PowerShell_profile', 'git', 'navigation', 'search', 'visual-studio', 'ai') |
+$sharedProfileText = (@('Microsoft.PowerShell_profile', 'git', 'navigation', 'search', 'launchers', 'ai') |
     ForEach-Object { [System.IO.File]::ReadAllText((Join-Path $RepoRoot "configs\powershell\$_.ps1")) }) -join "`n"
 $combinedProfileAst = [System.Management.Automation.Language.Parser]::ParseInput($sharedProfileText, [ref]$null, [ref]$null)
 
@@ -310,8 +310,10 @@ try {
         try {
             $PROFILE = Join-Path $testRepo 'configs\powershell\Microsoft.PowerShell_profile.ps1'
             $whichProfile = (which profile -h 6>&1 | Out-String)
-            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Creates and opens named issue file sets') 'which profile discovers workset synopsis'
-            Assert-True ($whichProfile -match '(?s)\[search\].*?find\s+Interactive fuzzy.*?findstr\s+Dual-mode') 'which profile groups search functions with synopses'
+            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Manages named issue file sets') 'which profile discovers workset synopsis'
+            Assert-True ($whichProfile -match '(?s)\[search\].*?find\s+Interactive fuzzy.*?findstr\s+Filters piped input') 'which profile groups search functions with synopses'
+            Assert-True ($whichProfile -match '(?s)\[launchers\].*?brave\s+Launches Brave Browser.*?vs\s+Opens Visual Studio') 'which profile groups program launchers with synopses'
+            Assert-True ($whichProfile -match 'p\s+Universal Project Jumper: searches roots in %LOCALAPPDATA%\\PersonalSettingsSync\\project-roots') 'which profile shows the current project roots location'
             Assert-True ($whichProfile -match '\[worksets\]' -and $whichProfile -notmatch 'ConvertTo-WorksetName') 'which profile hides workset helpers'
             [System.IO.File]::WriteAllText($testState.Workspace, 'personal')
             $personalHelp = (which profile -h 6>&1 | Out-String)
@@ -333,32 +335,38 @@ try {
         }
         $testPssText = [System.IO.File]::ReadAllText($testPss)
         $searchPath = Join-Path $testRepo 'configs\powershell\search.ps1'
+        $launchersPath = Join-Path $testRepo 'configs\powershell\launchers.ps1'
         $worksetsPath = Join-Path $testRepo 'workspaces\work\powershell\worksets.ps1'
         $originalSearch = [System.IO.File]::ReadAllText($searchPath)
+        $originalLaunchers = [System.IO.File]::ReadAllText($launchersPath)
         $originalWorksets = [System.IO.File]::ReadAllText($worksetsPath)
         try {
             $interactivePss = $testPssText.Replace('$isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected', '$isInteractive = $true')
             Assert-True ($interactivePss -ne $testPssText) 'bootstrap test enables interactive routing only in isolated copy'
             [System.IO.File]::WriteAllText($testPss, $interactivePss)
-            [System.IO.File]::WriteAllText($testLocalProfile, "function find { 'bootstrap-shared' }`nfunction workset { 'bootstrap-workspace' }`n")
+            [System.IO.File]::WriteAllText($testLocalProfile, "function find { 'bootstrap-shared' }`nfunction brave { 'bootstrap-launcher' }`nfunction workset { 'bootstrap-workspace' }`n")
             $routingOutput = & {
                 function Read-Host {
                     param($Prompt)
                     if ($Prompt -match 'function find') { return 'S' }
+                    if ($Prompt -match 'function brave') { return 'S' }
                     if ($Prompt -match 'function workset') { return 'W' }
                     throw "Unexpected bootstrap prompt: $Prompt"
                 }
                 & $testPss bootstrap -Include powershell -HomeOverride $testHome -DocumentsOverride $testDocs *>&1 | Out-String
             }
             $updatedSearch = [System.IO.File]::ReadAllText($searchPath)
+            $updatedLaunchers = [System.IO.File]::ReadAllText($launchersPath)
             $updatedWorksets = [System.IO.File]::ReadAllText($worksetsPath)
             Assert-True ($updatedSearch -match "function find \{ 'bootstrap-shared' \}" -and $updatedSearch -match 'function findstr') 'bootstrap updates shared function in its source file'
+            Assert-True ($updatedLaunchers -match "function brave \{ 'bootstrap-launcher' \}" -and $updatedLaunchers -match 'function vs') 'bootstrap updates a launcher in its source file'
             Assert-True ($updatedWorksets -match "function workset \{ 'bootstrap-workspace' \}" -and $updatedWorksets -match 'function Get-WorksetContext') 'bootstrap updates workset function in its source file'
             Assert-True ($routingOutput -match [regex]::Escape($searchPath) -and $routingOutput -match [regex]::Escape($worksetsPath)) 'bootstrap reports actual destination paths'
         } finally {
             [System.IO.File]::WriteAllText($testPss, $testPssText)
             [System.IO.File]::WriteAllText($testLocalProfile, $savedLoader)
             [System.IO.File]::WriteAllText($searchPath, $originalSearch)
+            [System.IO.File]::WriteAllText($launchersPath, $originalLaunchers)
             [System.IO.File]::WriteAllText($worksetsPath, $originalWorksets)
         }
         $personalPath = Join-Path $testRepo 'workspaces\personal\powershell\profile.ps1'

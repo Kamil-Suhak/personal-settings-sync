@@ -195,7 +195,7 @@ function find {
 
 <#
 .SYNOPSIS
-Dual-mode text finder. Filters piped input or searches codebase files recursively while auto-skipping junk directories and binary files.
+Filters piped input or searches files with git grep inside repositories; elsewhere searches recursively, excluding common junk directories and selected binary extensions.
 #>
 function findstr {
     [CmdletBinding()]

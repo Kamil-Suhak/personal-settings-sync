@@ -1,6 +1,6 @@
 # PowerShell Profile Cheatsheet
 
-Quick reference for custom functions, aliases, and keybindings in the shared profile and its `git`, `navigation`, `search`, `visual-studio`, and `ai` groups under `configs/powershell/`, plus workspace profiles (`workspaces/<workspace>/powershell/`). [`scripts/profile-groups.ps1`](scripts/profile-groups.ps1) registers the files used for loading, help, and bootstrap; modified functions are routed back to their source files.
+Quick reference for custom functions, aliases, and keybindings in the shared profile and its `git`, `navigation`, `search`, `launchers`, and `ai` groups under `configs/powershell/`, plus workspace profiles (`workspaces/<workspace>/powershell/`). [`scripts/profile-groups.ps1`](scripts/profile-groups.ps1) registers the files used for loading, help, and bootstrap; modified functions are routed back to their source files.
 
 ---
 

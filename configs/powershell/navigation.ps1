@@ -20,7 +20,7 @@ function .... { Set-Location ../../.. }
 
 <#
 .SYNOPSIS
-Universal Project Jumper: searches configured project roots in ~/.project-roots and jumps to matching project directory. Supports -add, -remove, and -list.
+Universal Project Jumper: searches roots in %LOCALAPPDATA%\PersonalSettingsSync\project-roots and jumps to a matching project directory. Supports -add, -remove, and -list.
 #>
 function p {
     [CmdletBinding()]
@@ -36,7 +36,7 @@ function p {
 
     $rootsFile = $global:__pss_state.ProjectRoots
 
-    # Load configured roots from local uncommitted file (~/.project-roots)
+    # Load configured machine-local project roots
     $roots = [System.Collections.Generic.List[string]]::new()
     if (Test-Path -LiteralPath $rootsFile) {
         Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue | ForEach-Object {

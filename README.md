@@ -28,7 +28,7 @@ personal-settings-sync/
 ├── configs/                                   # Shared baseline (all machines)
 │   ├── powershell/
 │   │   ├── Microsoft.PowerShell_profile.ps1   # Core profile and loader (see POWERSHELL.md)
-│   │   └── {git,navigation,search,visual-studio,ai}.ps1 # Shared function groups
+│   │   └── {git,navigation,search,launchers,ai}.ps1 # Shared function groups
 │   ├── git/
 │   │   └── .gitconfig.shared                  # Shared Git defaults
 │   ├── gemini/
