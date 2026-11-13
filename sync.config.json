@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "2.0",
+  "version": "3.0",
   "workspacesDir": "workspaces",
   "defaultWorkspace": "personal",
   "packages": [
@@ -8,16 +8,6 @@
       "id": "Microsoft.VisualStudioCode",
       "name": "Visual Studio Code",
       "category": "Development"
-    },
-    {
-      "id": "Brave.Brave",
-      "name": "Brave Browser",
-      "category": "Browsers"
-    },
-    {
-      "id": "Spotify.Spotify",
-      "name": "Spotify",
-      "category": "Media"
     },
     {
       "id": "Git.Git",
@@ -38,6 +28,18 @@
       "id": "Python.Latest",
       "name": "Python 3 (Latest)",
       "category": "Development"
+    },
+    {
+      "id": "Brave.Brave",
+      "name": "Brave Browser",
+      "category": "Browsers",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Spotify.Spotify",
+      "name": "Spotify",
+      "category": "Media",
+      "workspaces": ["personal"]
     }
   ],
   "fonts": [
@@ -48,106 +50,67 @@
       "checkFile": "JetBrainsMono-Regular.ttf"
     }
   ],
-  "apps": [
-    {
-      "name": "vscode",
-      "displayName": "Visual Studio Code",
-      "description": "Editor configuration and keybindings",
-      "files": [
-        {
-          "repoPath": "configs/vscode/settings.shared.json",
-          "workspacePath": "workspaces/{workspace}/vscode/settings.json",
-          "localPath": "%APPDATA%/Code/User/settings.json",
-          "layered": true,
-          "required": true
-        },
-        {
-          "repoPath": "configs/vscode/keybindings.json",
-          "localPath": "%APPDATA%/Code/User/keybindings.json",
-          "layered": false,
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "powershell",
+  "subsystems": {
+    "powershell": {
       "displayName": "PowerShell Profile",
-      "description": "PowerShell 7+ profile",
-      "files": [
-        {
-          "repoPath": "configs/powershell/Microsoft.PowerShell_profile.ps1",
-          "workspacePath": "workspaces/{workspace}/powershell/profile.ps1",
-          "localPath": "$DOCUMENTS/PowerShell/Microsoft.PowerShell_profile.ps1",
-          "required": true
-        }
-      ]
+      "sharedPath": "configs/powershell/Microsoft.PowerShell_profile.ps1",
+      "workspacePath": "workspaces/{workspace}/powershell/profile.ps1",
+      "localTarget": "$DOCUMENTS/PowerShell/Microsoft.PowerShell_profile.ps1"
     },
-    {
-      "name": "terminal",
-      "displayName": "Windows Terminal",
-      "description": "Windows Terminal profiles, keybindings, and color schemes",
-      "files": [
-        {
-          "repoPath": "configs/terminal/settings.shared.json",
-          "workspacePath": "workspaces/{workspace}/terminal/settings.json",
-          "localPath": "%LOCALAPPDATA%/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json",
-          "layered": true,
-          "required": true
-        }
-      ]
+    "git": {
+      "displayName": "Git Config",
+      "sharedPath": "configs/git/.gitconfig.shared",
+      "workspacePath": "workspaces/{workspace}/git/.gitconfig",
+      "localTarget": "%USERPROFILE%/.gitconfig"
     },
-    {
-      "name": "git",
-      "displayName": "Git",
-      "description": "Global Git shared configuration and workspace overrides",
-      "files": [
-        {
-          "repoPath": "configs/git/.gitconfig.shared",
-          "localPath": "%USERPROFILE%/.gitconfig.shared",
-          "required": true
-        },
-        {
-          "workspacePath": "workspaces/{workspace}/git/.gitconfig",
-          "localPath": "%USERPROFILE%/.gitconfig.workspace",
-          "required": false
-        }
-      ]
-    },
-    {
-      "name": "gemini",
+    "gemini": {
       "displayName": "AI Agent Rules",
-      "description": "Global AGENTS.md and GEMINI.md rules for AI coding assistants",
       "files": [
         {
+          "name": "AGENTS.md",
           "repoPath": "configs/gemini/AGENTS.md",
+          "workspacePath": "workspaces/{workspace}/gemini/AGENTS.md",
           "localPath": "%USERPROFILE%/.gemini/AGENTS.md",
-          "required": true
+          "mode": "concat"
         },
         {
+          "name": "GEMINI.md",
           "repoPath": "configs/gemini/GEMINI.md",
+          "workspacePath": "workspaces/{workspace}/gemini/GEMINI.md",
           "localPath": "%USERPROFILE%/.gemini/GEMINI.md",
-          "required": true
+          "mode": "concat"
         },
         {
+          "name": "skills.json",
           "repoPath": "configs/gemini/skills.json",
           "localPath": "%USERPROFILE%/.gemini/config/skills.json",
-          "required": true
+          "mode": "template"
         }
       ]
+    },
+    "skills": {
+      "displayName": "AI Skills",
+      "repoDir": "configs/skills",
+      "workspaceDir": "workspaces/{workspace}/skills",
+      "targetDir": "%USERPROFILE%/.agents/skills",
+      "mirrorLinks": [
+        "%USERPROFILE%/.gemini/skills"
+      ],
+      "items": [
+        "developer-profile",
+        "repo-intro",
+        "ask",
+        "ux",
+        "readme"
+      ]
+    },
+    "plugins": {
+      "displayName": "AI Plugins",
+      "repoDir": "configs/plugins",
+      "targetDir": "%USERPROFILE%/.gemini/config/plugins",
+      "items": [
+        "egm"
+      ]
     }
-  ],
-  "skillsRepoDir": "configs/skills",
-  "skillsTargetDir": "%USERPROFILE%/.agents/skills",
-  "skills": [
-    "developer-profile",
-    "repo-intro",
-    "ask",
-    "ux",
-    "readme"
-  ],
-  "pluginsRepoDir": "configs/plugins",
-  "pluginsTargetDir": "%USERPROFILE%/.gemini/config/plugins",
-  "plugins": [
-    "egm"
-  ]
+  }
 }

@@ -1,6 +1,6 @@
 # PowerShell Profile Cheatsheet
 
-Quick reference for all custom functions, aliases, and keybindings configured in [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1).
+Quick reference for custom functions, aliases, and keybindings across [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1) and workspace profiles (`workspaces/<workspace>/powershell/profile.ps1`).
 
 ---
 
@@ -8,38 +8,22 @@ Quick reference for all custom functions, aliases, and keybindings configured in
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `push` | `[<message>]` | Pushes commits to remote. If `<message>` is passed, stages and commits first (`git add -A; git commit -m`). **Automatically sets upstream tracking** on new branches. |
+| `push` | `[<message>]` | Pushes commits to remote. If `<message>` is passed, stages and commits first. Automatically sets upstream tracking on new branches. |
 | `commit` | `<message>` | Stages all files and creates a commit: `git add -A; git commit -m "<message>"`. |
-| `amend` | `[<message>]` | Stages all local changes and amends the latest commit without editing message (`git commit --amend --no-edit`). If `<message>` is provided, updates commit message. |
-| `catchup` | `[<branch>] [-r\|--rebase] [-c\|--check]` | Fetches upstream updates from `develop` (or `main`) and **merges into current branch**. Use `-r` or `--rebase` for a rebase with autostash, or `-c` / `--check` to preview incoming commits without applying. |
-| `gsync` | `[-r\|--rebase]` | Safely syncs current git branch: pulls with **merge** (or `-r` for rebase with autostash), then pushes. |
-| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Without args, lists **10 most recently active branches**. If `<branch>` exists, switches to it (`git switch`). If it doesn't exist, **prompts to create it** (`[Y/n]`) with `git switch -c`. Pass `-n` or `-new` to create directly without prompting. |
-| `nb` | `<branch>` | Convenience alias for `b <branch> -New`: creates and switches to a new branch directly (`git switch -c`). |
-| `main` | *none* | Jumps directly back to `main` via `git switch` (automatically falls back to `master` if repo uses master). |
-| `undo` | *none* | **The safety net**: unwinds the last commit while keeping all changes safely staged (`git reset --soft HEAD~1`). |
-| `wip` | `[<message>] [-a\|--all]` | **Work In Progress**: Stashes staged changes by default (`git stash push --staged`). Pass `-a` or `--all` to stage all changes (`git add -A`) and stash everything including untracked. Defaults to timestamped message. |
-| `unwip` | *none* | Restores the latest stash by popping it back into the working tree (`git stash pop`). |
-| `stashes` | *none* | Displays formatted, colorized list of all git stashes with index, age, and description. |
-| `st` | *none* | Compact, clean 1-line branch and file status (`git status -sb`). |
-| `lg` | `[<count>]` | Compact colorized commit graph (`git log --graph --oneline`). Defaults to 10 commits. |
-| `gbc` | *none* | Deletes all local branches that have already been merged into `main`. |
-
-### Git Workflow Examples:
-```powershell
-b feature-auth           # 1. Switch to feature-auth, or prompts to create if new (git switch -c)
-commit "feat: add login" # 2. Stages and creates commit
-amend                    # 3. Quickly fold staged/unstaged tweaks into last commit
-wip                      # 4. Stashes staged changes with timestamp
-wip -a "refactoring api" # 5. Auto-stages all files and stashes everything
-stashes                  # 6. Views formatted list of stashes
-unwip                    # 7. Pops latest stash back to working tree
-push                     # 8. Push to remote (auto-sets upstream on GitHub)
-catchup -Check           # 9. See what commits teammates pushed to develop
-catchup                  # 10. Merge cleanly with latest develop
-undo                     # 11. Undo accidental commit without losing code
-main                     # 12. Jump back to main branch (git switch)
-gbc                      # 13. Clean up merged branches
-```
+| `amend` | `[<message>]` | Stages all changes and amends the latest commit (updates message if provided). |
+| `catchup` | `[<branch>] [-r\|--rebase] [-c\|--check]` | Fetches upstream `develop` (or `main`) and merges or rebases (`-r`) into current branch. Use `-c` to preview without applying. |
+| `gsync` | `[-r\|--rebase]` | Pulls with merge (or `-r` for rebase with autostash), then pushes. |
+| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Lists 10 recent branches with no args, switches if found, or prompts to create. |
+| `nb` | `<branch>` | Creates and switches to a new branch (`git switch -c`). |
+| `main` | *none* | Switches back to `main` (falls back to `master`). |
+| `undo` | *none* | Soft-resets the last commit while keeping changes staged (`git reset --soft HEAD~1`). |
+| `wip` | `[<message>] [-a\|--all]` | Stashes staged changes (or everything including untracked with `-a`). |
+| `unwip` | *none* | Pops the latest stash back into the working tree. |
+| `stashes` | *none* | Formatted, colorized list of all git stashes. |
+| `st` | *none* | Compact status (`git status -sb`). |
+| `lg` | `[<count>]` | Compact colorized commit graph (default: 10 commits). |
+| `gbc` | *none* | Deletes local branches already merged into `main`. |
+| `groot` | *none* | Jumps to the root directory of the current git repository. |
 
 ---
 
@@ -47,102 +31,51 @@ gbc                      # 13. Clean up merged branches
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `..` | *none* | Go up 1 directory (`Set-Location ..`). |
-| `...` | *none* | Go up 2 directories (`Set-Location ../..`). |
-| `....` | *none* | Go up 3 directories (`Set-Location ../../..`). |
-| `back` | *none* | Jumps back to the previous working directory (toggles between current and previous location). |
-| `mkcd` | `<path>` | Creates directory (including nested parents) and navigates into it in one step (`New-Item -ItemType Directory -Force; Set-Location`). |
-| `p` | `[<name>] [-add\|-a [<path>]] [-remove\|-r [<path>]] [-list\|-l]` | **Universal Project Jumper**: searches all configured project roots and jumps to `<name>`. Reads local paths from `~/.project-roots`. Run `p -add` to register new roots, `p -remove` to remove roots, or `p -list` to view them. |
-| `rev` | `[<path>]` | Opens Windows File Explorer at the specified path (defaults to current directory `.`). |
-
-### Navigation Examples:
-```powershell
-p my-app         # Jumps to project matching 'my-app'
-p -add ~/Dev     # Registers ~/Dev to your project roots
-p -add           # Prompts to add current directory (or any path)
-p -remove Dev    # Removes Dev directory from registered project roots
-p -remove        # Interactively lists roots with numbers to choose and remove
-p -list          # Displays all currently registered project roots
-mkcd src/auth    # Creates nested directory and navigates into it
-back             # Jumps back to previous directory (run again to toggle back)
-rev              # Opens current folder in Windows Explorer
-...              # Jumps up 2 folder levels
-```
+| `..` / `...` / `....` | *none* | Jump up 1, 2, or 3 directory levels. |
+| `back` | *none* | Toggles back to the previous working directory. |
+| `mkcd` | `<path>` | Creates directory (including parents) and navigates into it. |
+| `p` | `[<name>] [-a\|-r\|-l]` | Project jumper reading roots from `~/.project-roots` (`-a` add, `-r` remove, `-l` list). |
+| `rev` | `[<path>]` | Opens Windows File Explorer at `<path>` (defaults to `.`). |
 
 ---
 
-## 3. Development & System Helpers
+## 3. Development, AI & System Helpers (Shared)
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `venv` | `[<name>]` | Activates Python virtual environment (default: `.venv`). **Automatically creates it** via `py -m venv` if it doesn't exist yet. |
-| `find` | `<name> [<path>] [-o\|--open]` | Interactive fuzzy file finder. Uses **instant git index acceleration (`git ls-files`)** inside repositories (monolith optimized), falls back to .NET file walker outside, copies selection to clipboard, and optionally opens in VS Code with `-o` or `--open`. |
-| `sudo` | `<command>` | Windows 11 native elevation. Supports `sudo !!` to re-run the previous command as Administrator. |
-| `which` | `<command> [-h\|--help]`<br>`which profile [-h]` | Locates commands. By default, prints the path for an application or the profile path for a custom function. With `-h`, displays path + manual/help for an application, or path + description for a custom function. Run `which profile` to get the profile path, or `which profile -h` to list all custom profile functions and their descriptions. |
-| `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files to verify whether they are identical. |
-| `findstr` | `<pattern> [<path>] [-v\|--invert] [-c\|--case] [-l\|--files-only]` | Dual-mode text finder. Uses **git grep acceleration** inside repositories (blazing fast in monoliths), falls back to .NET walker outside. Filters piped input (`docker ps \| findstr auth`) or searches codebase files with `-l`, `-v`, `-c`. |
-| `brave` | `[<arguments>...]` | Launches Brave Browser with optional arguments (URLs, flags like `--incognito`, `--app=...`, profiles). Supports piped URLs (`git remote get-url origin \| brave`). Non-blocking. |
-| `copy` | `[<value>]` | Alias for `Set-Clipboard`. Copies input, arguments, or pipeline data directly to the clipboard (`"token" \| copy`). |
-| `paste` | *none* | Alias for `Get-Clipboard`. Retrieves and outputs text from the clipboard (`paste \| findstr api`). |
-| `passbolt` | `[<arguments>...]` | Starts the Passbolt password manager in `~/passbolt` via `docker compose start`. |
-| `passbolt-stop` | `[<arguments>...]` | Stops the Passbolt password manager in `~/passbolt` via `docker compose stop`. |
-| `pss` | `[<arguments>...]` | Personal Settings Sync CLI runner (`pss.ps1`). Executes workspace and sync operations from any directory. |
-
-### Development Examples:
-```powershell
-venv                  # Creates/activates .venv and integrates badge into prompt
-find user -o          # Searches for files matching 'user' and opens choice in VS Code
-findstr "TODO"        # Fast text search across codebase files (git grep in repos)
-findstr "TODO" -l     # Only print filenames containing matches
-docker ps | findstr auth  # Filters pipeline output for 'auth'
-"hello world" | copy  # Copies text to clipboard
-copy (git status -s)  # Copies git status output to clipboard
-paste                 # Outputs clipboard contents
-paste | findstr auth  # Pipes clipboard text into search filter
-passbolt              # Starts Passbolt containers (~/passbolt)
-passbolt-stop         # Stops Passbolt containers
-brave                 # Launches Brave Browser
-brave https://github.com  # Opens URL in Brave
-brave --incognito     # Opens Brave in incognito mode
-git remote get-url origin | brave # Opens current repo remote URL in Brave
-sudo winget upgrade   # Runs single command elevated
-sudo !!               # Re-runs previous command as Administrator
-which python          # Default: prints path C:\Python314\python.exe
-which commit          # Default: prints profile path where function is defined
-which git -h          # Help mode: prints path, version, and manual/help
-which commit -h       # Help mode: prints profile path and description
-which profile         # Prints profile path
-which profile -h      # Lists all custom profile functions and their short descriptions
-```
+| `decide` (`decision`) | `[-Choices <a,b>] [-Instructions <text>] <question>` | Evaluates a scenario or piped input via the Gemini Decision API (`gemini-decision-1`) with a confidence bar. Requires `$env:GEMINI_API_KEY`. |
+| `jwt` | `<token>` (or piped) | Offline JWT header & payload decoder with expiration status (zero network calls). |
+| `find` | `<name> [<path>] [-o\|--open]` | Fuzzy file finder (`git ls-files` inside repos, `.NET` walker outside); copies selection to clipboard and optionally opens in VS Code (`-o`). |
+| `findstr` | `<pattern> [<path>] [-v\|-c\|-l]` | Dual-mode search: filters piped output or searches repo via `git grep` (with `.NET` fallback outside repos). |
+| `which` | `<command> [-h]` / `which profile [-h]` | Locates executables/functions. `which profile -h` lists both Shared and active Workspace functions. |
+| `venv` | `[<name>]` | Activates Python virtualenv (default: `.venv`), creating it first if missing. |
+| `cmp` | `<file1> <file2>` | Compares SHA-256 hashes of two files. |
+| `sudo` | `<command>` | Windows 11 native elevation (supports `sudo !!`). |
+| `copy` / `paste` | `[<value>]` | Clipboard aliases for `Set-Clipboard` / `Get-Clipboard`. |
+| `pss` | `[<arguments>...]` | Invokes `pss.ps1` from any directory. Run `. $PROFILE` to reload profile edits in the current shell. |
 
 ---
 
-## 4. PSReadLine & Autocomplete Keybindings
+## 4. Workspace-Specific Functions
 
-Configured for **classic CMD inline cycling** (no popup menus getting in the way):
+### `personal` ([`workspaces/personal/powershell/profile.ps1`](workspaces/personal/powershell/profile.ps1))
+| Command | Description |
+| :--- | :--- |
+| `ask` | Ephemeral `agy -p` query using recent terminal commands, screen buffer, and piped input (`-High`, `-Clean`, `-KeepHistory`). |
+| `brave` | Non-blocking Brave Browser launcher (supports piped URLs and flags). |
+| `passbolt` / `passbolt-stop` | Starts or stops local Passbolt containers (`~/passbolt`). |
 
-| Keybinding | Function | Description |
-| :--- | :--- | :--- |
-| `Tab` | `TabCompleteNext` | Cycles forward through matching files and commands inline. |
-| `Shift + Tab` | `TabCompletePrevious` | Cycles backward through autocomplete options. |
-| `Ctrl + Spacebar` | `MenuComplete` | Opens visual popup menu on demand if you want to inspect all options. |
-| `Right Arrow` | `AcceptNextSuggestionWord` | Accepts a single word from gray inline history prediction (Fish shell style). |
-| `F2` | `SwitchPredictionView` | Toggles predictive IntelliSense between single-line `InlineView` and multiline `ListView`. |
+### `work` ([`workspaces/work/powershell/profile.ps1`](workspaces/work/powershell/profile.ps1))
+| Command | Description |
+| :--- | :--- |
+| `git` wrapper | Automatically routes `git` through `cmd.exe /c` when Carbon Black / AppLocker blocks direct `git.exe` execution. |
+| `ask` | Company-compliant `copilot -p` query using recent terminal commands, screen buffer, and piped input (`-Clean`). |
+| `azwho` | Prints the active Azure CLI subscription, tenant, and signed-in account. |
+| `slnclean` | Recursively deletes `.NET` `bin/` and `obj/` build artifact folders (supports `-WhatIf`). |
 
 ---
 
-## 5. Powerline Status Prompt
+## 5. PSReadLine & Powerline Prompt
 
-A single-line, lightweight native Powerline prompt with dynamic transitions:
-
-```text
- ⚡ ADMIN  Projects/dodge-backend-api  (.venv)  main  ⏱ 1.2s  ❯
-```
-
-### Prompt Segments (Rendered Only When Active):
-1. **`⚡ ADMIN`** *(DarkRed / Yellow)*: Displays only when the PowerShell window itself is elevated as Administrator.
-2. **`Parent/Child`** *(Blue / White)*: 2-tier working directory path (e.g. `Projects/personal-settings-sync` or `~/Documents`) to eliminate folder ambiguity without long paths.
-3. **`(.venv)`** *(DarkGreen / White)*: Displays your active Python virtual environment name inside the status bar (no extra lines).
-4. **`Git Branch`** *(DarkMagenta / White)*: Displays current git branch (fast cached check: never queries git outside repositories).
-5. **`⏱ Timer`** *(DarkYellow / Black)*: Displays execution duration only if the previous command took $>500$ms.
-6. **`❯ Chevron`** *(Green / Red)*: Green if previous command succeeded (`$global:?`), Red if it failed.
+- **PSReadLine**: `Tab`/`Shift+Tab` inline completion cycling, `Ctrl+Space` menu complete, `RightArrow` accept next prediction word, `F2` toggle `InlineView`/`ListView`.
+- **Powerline Prompt**: Renders `⚡ ADMIN`, 2-tier `Parent/Child` path, active `(.venv)`, cached Git branch, command duration (`> 500ms`), and `❯` status chevron.
