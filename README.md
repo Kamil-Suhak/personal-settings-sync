@@ -7,7 +7,7 @@ A lean, repo-as-source-of-truth developer environment manager across **Workspace
 Instead of copying configs back and forth and trying to reverse-engineer edits into layers, **the repository is always the source of truth**:
 
 - **PowerShell**: `$PROFILE` is a tiny managed loader stub dot-sourcing [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1), which loads shared groups, the active workspace, and machine-local overrides in that order. [`scripts/profile-groups.ps1`](scripts/profile-groups.ps1) registers the source files used by loading, `which profile -h`, and bootstrap.
-- **Git**: `~/.gitconfig` uses native `[include]` directives pointing directly to [`configs/git/.gitconfig.shared`](configs/git/.gitconfig.shared) and `workspaces/<active>/git/.gitconfig`, preserving local credentials and machine overrides.
+- **Git**: `~/.gitconfig` uses native `[include]` directives pointing directly to [`configs/git/.gitconfig.shared`](configs/git/.gitconfig.shared) and `workspaces/<active>/git/.gitconfig`, preserving local credentials and machine overrides, plus a directory junction `~/.git-hooks` $\rightarrow$ [`configs/git/hooks/`](configs/git/hooks/) wired via `core.hooksPath = ~/.git-hooks`.
 - **AI Skills & Plugins**: Per-item Windows directory junctions (`~/.agents/skills/<name>` and `~/.gemini/config/plugins/<name>`) link directly into `configs/` without touching third-party skills/plugins, plus `~/.gemini/skills` $\rightarrow$ `~/.agents/skills`.
 - **AI Agent Rules (`AGENTS.md`, `GEMINI.md`)**: One-way concatenation of `configs/gemini/` + `workspaces/<active>/gemini/`, plus `~` expansion for `skills.json`.
 - **One-Time Machine Onboarding**: `pss bootstrap` parses existing standalone `$PROFILE` (via PowerShell AST), `~/.gitconfig`, and `AGENTS.md` to help route functions and sections into `Shared`, `Workspace`, or `Local`.
@@ -30,7 +30,8 @@ personal-settings-sync/
 │   │   ├── Microsoft.PowerShell_profile.ps1   # Core profile and loader (see POWERSHELL.md)
 │   │   └── {git,navigation,search,launchers,ai}.ps1 # Shared function groups
 │   ├── git/
-│   │   └── .gitconfig.shared                  # Shared Git defaults
+│   │   ├── .gitconfig.shared                  # Shared Git defaults
+│   │   └── hooks/                             # Global Git hooks (linked to ~/.git-hooks)
 │   ├── gemini/
 │   │   ├── AGENTS.md                          # Shared AI agent guidelines
 │   │   ├── GEMINI.md                          # Canonical pointer to AGENTS.md
@@ -43,7 +44,7 @@ personal-settings-sync/
 │   │   ├── git/.gitconfig                     # Personal git identity
 │   │   └── gemini/AGENTS.md                   # Personal AI workspace context
 │   └── work/
-│       ├── powershell/profile.ps1             # Work additions (Carbon Black git bypass, copilot -p ask, slnclean, azwho)
+│       ├── powershell/profile.ps1             # Work additions (Carbon Black git bypass, copilot -p ask, azwho)
 │       ├── powershell/worksets.ps1            # Work-only issue file sets
 │       ├── git/.gitconfig                     # Work git identity & large-repo tuning
 │       └── gemini/AGENTS.md                   # Work AI compliance & stack context
@@ -93,15 +94,15 @@ In the `work` workspace, a workset is a local, named set of files for an issue, 
 ```powershell
 b feature/123-dashboard -New
 workset new                           # name: feature-123-dashboard
-workset add "C:\projects\api\src\Dashboard.cs"
-workset add feature-123-dashboard "C:\projects\docs\guide.md"
+workset add -Files "C:\projects\api\src\Dashboard.cs" "C:\projects\api\src\Model.cs"
+workset add feature-123-dashboard -Files "C:\projects\docs\guide.md"
 workset edit                          # edit the list in VS Code
 workset show
 workset open                          # VS for one repo with a solution; otherwise VS Code
 workset open -Code                    # explicitly use VS Code
 workset archive
 workset restore feature-123-dashboard
-workset delete                        # confirm before deleting the list
+workset delete                        # removes the workset list immediately
 ```
 
 Omitted names resolve using the current repository checkout and branch. Use an explicit name outside that context. `workset list` lists active sets; `workset list -Archived`, `workset show <name> -Archived`, and `workset delete <name> -Archived` operate on archived sets. Branch-derived names are normalized; collisions must be resolved by choosing another name. Lists edited by hand contain one absolute file path per line. Opening reports missing files and warns if a recorded repository has changed branches; it never switches branches. `-Vs` requires a single repository and a solution discoverable by `vs`.
@@ -127,7 +128,7 @@ To prevent old tabs reopening with worksets in Visual Studio, disable **Tools �
 | `pss workspace current` | Shows active workspace and path. |
 | `pss workspace use <name>` | Sets the checkout's active workspace in local app data and re-links workspace configs (pass `-NoApply` to skip). |
 | `pss workspace new <name>` | Scaffolds a new workspace under `workspaces/<name>/`. |
-| `pss workspace delete <name>` | Removes an inactive workspace. |
+| `pss workspace delete <name> [-y]` | Removes an inactive workspace (`-y`/`-Yes` skips confirmation while still printing preview). |
 | `pss apps [list\|install\|update]` | Manages workspace-filtered Winget packages. |
 | `pss fonts` | Installs JetBrains Mono font in user scope. |
 | `pss setup` | Applies Windows developer tweaks, font, and local identity setup. |

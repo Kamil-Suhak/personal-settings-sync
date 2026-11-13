@@ -8,12 +8,12 @@ Quick reference for custom functions, aliases, and keybindings in the shared pro
 
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
-| `commit` | `<message> \| amend [<message>] \| undo` | Stages all files and creates a commit, amends the latest commit (`amend`), or soft-resets `HEAD~1` keeping changes staged (`undo`). |
-| `push` | `[<message>]` | Pushes commits to remote. If `<message>` is passed, stages and commits first. Automatically sets upstream tracking on new branches. |
-| `repo` | `[<base>] [-f\|-n\|-a\|-i]` / `catchup` / `sync` | Fetches `origin --prune` (1m cooldown, `-f` force, `-n` skip), shows commit divergence vs remote & base (`branch.base` or `develop -> beta -> main`), and displays grouped working tree state. `repo catchup [<base>] [-r\|-m\|-c]` merges/rebases from base; `repo sync [-r]` pulls and pushes. |
-| `diff` | `[staged\|all\|up\|base\|last] [<args>] [-s\|-f]` | **Overrides built-in `diff` (`Compare-Object`)**. Unpaged, side-labeled `git diff` across unstaged (default), `staged` (`s`), `all` (`a`), `up`, `base [<branch>]`, or `last [<n>]`; supports `-s` (`-Stat`), `-f` (`-Files`), and path filters. |
-| `b` | `[<branch>] [-n\|-new]` | Smart branch switcher. Lists 10 recent branches with no args, switches if found, or prompts to create. |
-| `nb` | `<branch> [<from>]` | Creates and switches to a new branch (`git switch -c`), recording its base branch locally for `repo` / `diff base`. |
+| `commit` | `<message> \| amend [<message>] [-y] \| undo [-y]` | Stages all files and creates a commit (no prompt), amends (`amend`), or soft-resets `HEAD~1` (`undo`); `amend` and `undo` preview and prompt `[y/N]` (`-y`/`-Yes` skips prompt). |
+| `push` | `[<message>] [-y]` | Previews exact git push command(s) and prompts `[y/N]` before pushing to remote (`-y`/`-Yes` skips prompt). Stages and commits first if `<message>` is passed; sets upstream on new branches. |
+| `st` | `[<branch>...] [-f\|-n\|-a\|-i] [-Files] [-Full]` | Working tree status + upstream delta. Never guesses a base branch; pass branch names (`st develop beta main`) to compare commits ahead/behind, `-Files` for modified files, or `-Full` to run `diff pr` per branch. Auto-fetches stale origin refs (`>24h`); `-f` forces refresh, `-n` skips. |
+| `diff` | `[staged\|all\|up\|pr <branch>\|last] [<args>] [-s\|-f]` | **Overrides built-in `diff` (`Compare-Object`)**. Unpaged `git diff` across unstaged (default), `staged` (`s`), `all` (`a`), `up`, `pr <branch>` (**GitHub PR preview**: lists included commits `<ref>..HEAD` + merge-base diff `<ref>...HEAD`), or `last [<n>]`; `-s` (`-Stat`), `-f` (`-Files` -> `--name-status`). |
+| `b` | `[<branch>] [-n\|-new] [-y]` | Smart branch switcher. Lists 10 recent branches with no args, switches if found, or previews and prompts to create (`-y`/`-Yes` skips prompt). |
+| `nb` | `<branch> [<from>]` | Creates and switches to a new branch (`git switch -c [<from>]`). |
 | `lg` | `[<count>]` | Compact colorized commit graph (default: 10 commits). |
 | `wip` | `[<message>] [-a]` | Stashes staged changes (or everything including untracked with `-a`). |
 | `unwip` | *none* | Pops the latest stash back into the working tree. |
@@ -39,6 +39,8 @@ Quick reference for custom functions, aliases, and keybindings in the shared pro
 | Command | Arguments | Description |
 | :--- | :--- | :--- |
 | `decide` (`decision`) | `[-Choices <a,b>] [-Instructions <text>] <question>` | Evaluates a scenario or piped input via the Gemini Decision API (`gemini-decision-1`) with a confidence bar. Requires `$env:GEMINI_API_KEY`. |
+| `out` (`lastout`) | `[<n>\|~<n>\|~<a>..<b>] [-c]` | Captures passive output of recent completed command(s) from the terminal buffer (`~2` 2nd-last, `~3..2` or `~3..~2` slice, `N` last N); pipable to `copy` or `ask`. |
+| `rerun` | `[<n>\|~<n>\|~<a>..<b>] [-y]` | Previews recent command(s) from history (`~2`, `~3..2` / `~3..~2`, or `N`) and prompts `[y/N]` before re-executing (`-y`/`-Yes` bypasses confirmation). |
 | `jwt` | `[<token>]` (or piped / clipboard) | Offline JWT header & payload decoder with expiration status (zero network calls; pulls clipboard if omitted). |
 | `find` | `[<name>] [<path>] [-o]` (or piped / clipboard) | Fuzzy file finder (`git ls-files` inside repos, `.NET` walker outside); accepts piped query or short clipboard text when omitted. |
 | `findstr` | `[<pattern>] [<path>] [-v\|-c\|-l]` | Dual-mode search: filters piped output or searches repo via `git grep`; pulls short single-line clipboard text if `<pattern>` omitted. |
@@ -58,16 +60,15 @@ Quick reference for custom functions, aliases, and keybindings in the shared pro
 ### `personal` ([`workspaces/personal/powershell/profile.ps1`](workspaces/personal/powershell/profile.ps1))
 | Command | Description |
 | :--- | :--- |
-| `ask` | Ephemeral `agy -p` query using recent terminal commands, screen buffer, and piped input (`-High`, `-Clean`, `-KeepHistory`). |
+| `ask` | Ephemeral streamed `agy -p` query (clean by default, pipable stdout). Pass `-Ctx` (`[<n>\|~<n>\|~<a>..<b>]`) to include terminal context, `-High`, or `-KeepHistory`. |
 
 ### `work` ([`workspaces/work/powershell/profile.ps1`](workspaces/work/powershell/profile.ps1))
 | Command | Description |
 | :--- | :--- |
 | `git` wrapper | Automatically routes `git` through `cmd.exe /c` when Carbon Black / AppLocker blocks direct `git.exe` execution. |
-| `ask` | Company-compliant `copilot -p` query using recent terminal commands, screen buffer, and piped input (`-Clean`). |
+| `ask` | Company-compliant streamed `copilot -p` query (clean by default, pipable stdout; exit-0 usage stderr shown dimmed and excluded on pipe). Pass `-Ctx` (`[<n>\|~<n>\|~<a>..<b>]`) to include terminal context. |
 | `azwho` | Prints the active Azure CLI subscription, tenant, and signed-in account. |
-| `slnclean` | Recursively deletes `.NET` `bin/` and `obj/` build artifact folders (supports `-WhatIf`). |
-| `workset` | Manages named local issue file sets: `new`, `add`, `edit`, `show`, `list`, `open`, `archive`, `restore`, and `delete`. See [Worksets](README.md#worksets). |
+| `workset` | Manages named local issue file sets: `new`, `add [-Files]`, `edit`, `show`, `list`, `open`, `archive`, `restore`, and `delete`. See [Worksets](README.md#worksets). |
 
 ---
 
