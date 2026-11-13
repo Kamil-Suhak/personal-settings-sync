@@ -79,7 +79,7 @@ function Get-WorksetFiles {
 
 <#
 .SYNOPSIS
-Creates and opens named issue file sets across repositories.
+Manages named issue file sets across repositories, including adding files and opening, archiving, and restoring worksets.
 #>
 function workset {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]

@@ -1,6 +1,6 @@
 # PowerShell Profile Cheatsheet
 
-Quick reference for custom functions, aliases, and keybindings across [`configs/powershell/Microsoft.PowerShell_profile.ps1`](configs/powershell/Microsoft.PowerShell_profile.ps1) and workspace profiles (`workspaces/<workspace>/powershell/profile.ps1`).
+Quick reference for custom functions, aliases, and keybindings in the shared profile and its `git`, `navigation`, `search`, `launchers`, and `ai` groups under `configs/powershell/`, plus workspace profiles (`workspaces/<workspace>/powershell/`). [`scripts/profile-groups.ps1`](scripts/profile-groups.ps1) registers the files used for loading, help, and bootstrap; modified functions are routed back to their source files.
 
 ---
 
@@ -42,7 +42,7 @@ Quick reference for custom functions, aliases, and keybindings across [`configs/
 | `jwt` | `[<token>]` (or piped / clipboard) | Offline JWT header & payload decoder with expiration status (zero network calls; pulls clipboard if omitted). |
 | `find` | `[<name>] [<path>] [-o]` (or piped / clipboard) | Fuzzy file finder (`git ls-files` inside repos, `.NET` walker outside); accepts piped query or short clipboard text when omitted. |
 | `findstr` | `[<pattern>] [<path>] [-v\|-c\|-l]` | Dual-mode search: filters piped output or searches repo via `git grep`; pulls short single-line clipboard text if `<pattern>` omitted. |
-| `which` | `<command> [-h]` / `which profile [-h]` | Locates executables/functions. `which profile -h` lists both Shared and active Workspace functions. |
+| `which` | `<command> [-h]` / `which profile [-h]` | Locates executables/functions. `which profile -h` lists public functions and synopses under shared and active workspace group headings. |
 | `venv` | `[<name>]` | Activates Python virtualenv (default: `.venv`), creating it first if missing. |
 | `cmp` | `[<file1> [<file2>]] [-w] [-q]` | `cmp` watches next 2 clipboard copies; `cmp <file>` diffs file vs clipboard; `cmp <f1> <f2>` diffs files (`-w` ignores whitespace, `-q` summary only). |
 | `brave` | `[<url\|args>...]` | Non-blocking Brave Browser launcher (supports piped URLs, flags, and clipboard URL fallback). |

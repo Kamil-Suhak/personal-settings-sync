@@ -57,6 +57,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $ConfigFile = Join-Path $ScriptDir 'sync.config.json'
 . (Join-Path $ScriptDir 'scripts\local-state.ps1')
+. (Join-Path $ScriptDir 'scripts\profile-groups.ps1')
 $localAppData = if ($LocalAppDataOverride) { $LocalAppDataOverride } else { $env:LOCALAPPDATA }
 $PssLocalState = Get-PssLocalStatePaths -Checkout $ScriptDir -LocalAppData $localAppData
 $ValidSubsystems = @('powershell', 'git', 'gemini', 'skills', 'plugins')
@@ -829,6 +830,20 @@ function Get-GitSections {
     return $sections
 }
 
+function Set-PssBootstrapFunction {
+    param([string]$Path, [string]$Name, [string]$Code)
+    if (Test-PathSafe $Path -PathType Leaf) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+        $old = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $Name }, $false) | Select-Object -First 1
+        if ($old) {
+            $updated = $ast.Extent.Text.Substring(0, $old.Extent.StartOffset) + $Code + $ast.Extent.Text.Substring($old.Extent.EndOffset)
+            Write-Utf8File -Path $Path -Content $updated
+            return
+        }
+    }
+    throw "Cannot update function '$Name': its registered source '$Path' no longer contains it."
+}
+
 function Invoke-BootstrapWizard {
     param([string]$Workspace)
     $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
@@ -857,24 +872,22 @@ function Invoke-BootstrapWizard {
             }
 
             $localFuncs = & $parseFuncs $localPs
-            $sharedFuncs = & $parseFuncs $sharedPs
-            $wsFuncs = & $parseFuncs $wsPs
-            $wsFunctionPaths = @{}
-            if ($Workspace -eq 'work') {
-                $worksetPath = Join-Path $ScriptDir 'workspaces\work\powershell\worksets.ps1'
-                $worksetFuncs = & $parseFuncs $worksetPath
-                foreach ($name in $worksetFuncs.Keys) {
-                    if ($wsFuncs.Contains($name)) { throw "Duplicate workspace function '$name' in '$wsPs' and '$worksetPath'." }
-                    $wsFuncs[$name] = $worksetFuncs[$name]
-                    $wsFunctionPaths[$name] = $worksetPath
+            $sharedFuncs = [ordered]@{}
+            $wsFuncs = [ordered]@{}
+            foreach ($group in Get-PssProfileGroups -Root $ScriptDir -Workspace $Workspace) {
+                $functions = & $parseFuncs $group.Path
+                $target = if ($group.Scope -eq 'shared') { $sharedFuncs } else { $wsFuncs }
+                foreach ($name in $functions.Keys) {
+                    if ($target.Contains($name)) { throw "Duplicate $($group.Scope) function '$name' in '$($target[$name].Path)' and '$($group.Path)'." }
+                    $target[$name] = [pscustomobject]@{ Code = $functions[$name]; Path = $group.Path }
                 }
             }
 
             $pending = [System.Collections.Generic.List[PSCustomObject]]::new()
             foreach ($name in $localFuncs.Keys) {
                 $localHash = Get-TextHash $localFuncs[$name]
-                $sharedHash = if ($sharedFuncs.Contains($name)) { Get-TextHash $sharedFuncs[$name] } else { $null }
-                $wsHash = if ($wsFuncs.Contains($name)) { Get-TextHash $wsFuncs[$name] } else { $null }
+                $sharedHash = if ($sharedFuncs.Contains($name)) { Get-TextHash $sharedFuncs[$name].Code } else { $null }
+                $wsHash = if ($wsFuncs.Contains($name)) { Get-TextHash $wsFuncs[$name].Code } else { $null }
                 if ($localHash -eq $sharedHash -or $localHash -eq $wsHash) { continue }
 
                 $kind = if ($sharedFuncs.Contains($name) -or $wsFuncs.Contains($name)) { "Modified" } else { "New" }
@@ -897,14 +910,10 @@ function Invoke-BootstrapWizard {
                     switch ($choice) {
                         'Q' { Write-Host "Bootstrap aborted."; return }
                         'S' {
-                            $targetText = if (Test-PathSafe $sharedPs -PathType Leaf) { Normalize-TextLF ([System.IO.File]::ReadAllText($sharedPs, [System.Text.Encoding]::UTF8)) } else { "" }
-                            if ($item.Kind -eq 'Modified' -and $sharedFuncs.Contains($item.Name)) {
-                                $sharedAst = [System.Management.Automation.Language.Parser]::ParseFile($sharedPs, [ref]$null, [ref]$null)
-                                $oldAst = $sharedAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
-                                if ($oldAst) {
-                                    $updated = $sharedAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $sharedAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
-                                    Write-Utf8File -Path $sharedPs -Content $updated
-                                }
+                            $targetSharedPs = if ($sharedFuncs.Contains($item.Name)) { $sharedFuncs[$item.Name].Path } else { $sharedPs }
+                            $targetText = if (Test-PathSafe $targetSharedPs -PathType Leaf) { Normalize-TextLF ([System.IO.File]::ReadAllText($targetSharedPs, [System.Text.Encoding]::UTF8)) } else { "" }
+                            if ($sharedFuncs.Contains($item.Name)) {
+                                Set-PssBootstrapFunction -Path $targetSharedPs -Name $item.Name -Code $item.Code
                             } elseif ($targetText -match '(?m)^#region 7\.') {
                                 $m = [regex]::Match($targetText, '(?m)^#region 7\.')
                                 $updated = $targetText.Substring(0, $m.Index) + $item.Code + "`n`n" + $targetText.Substring($m.Index)
@@ -912,21 +921,17 @@ function Invoke-BootstrapWizard {
                             } else {
                                 Append-Utf8File -Path $sharedPs -Content $item.Code
                             }
-                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> $($Config.subsystems.powershell.sharedPath)"
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> $targetSharedPs"
                         }
                         'W' {
-                            if ($item.Kind -eq 'Modified' -and $wsFuncs.Contains($item.Name)) {
-                                $targetWsPs = if ($wsFunctionPaths.ContainsKey($item.Name)) { $wsFunctionPaths[$item.Name] } else { $wsPs }
-                                $wsAst = [System.Management.Automation.Language.Parser]::ParseFile($targetWsPs, [ref]$null, [ref]$null)
-                                $oldAst = $wsAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $item.Name }, $false) | Select-Object -First 1
-                                if ($oldAst) {
-                                    $updated = $wsAst.Extent.Text.Substring(0, $oldAst.Extent.StartOffset) + $item.Code + $wsAst.Extent.Text.Substring($oldAst.Extent.EndOffset)
-                                    Write-Utf8File -Path $targetWsPs -Content $updated
-                                }
+                            if ($wsFuncs.Contains($item.Name)) {
+                                $targetWsPs = $wsFuncs[$item.Name].Path
+                                Set-PssBootstrapFunction -Path $targetWsPs -Name $item.Name -Code $item.Code
                             } else {
+                                $targetWsPs = $wsPs
                                 Append-Utf8File -Path $wsPs -Content $item.Code
                             }
-                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' to the $Workspace workspace profile."
+                            Write-Badge "ROUTED" Green "Saved '$($item.Name)' -> $targetWsPs"
                         }
                         'L' {
                             $localOverride = $PssLocalState.LocalProfile

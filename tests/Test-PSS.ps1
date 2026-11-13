@@ -38,7 +38,13 @@ $psFiles = @(
     'setup.ps1',
     'scripts\setup-windows.ps1',
     'scripts\local-state.ps1',
+    'scripts\profile-groups.ps1',
     'configs\powershell\Microsoft.PowerShell_profile.ps1',
+    'configs\powershell\git.ps1',
+    'configs\powershell\navigation.ps1',
+    'configs\powershell\search.ps1',
+    'configs\powershell\launchers.ps1',
+    'configs\powershell\ai.ps1',
     'workspaces\personal\powershell\profile.ps1',
     'workspaces\work\powershell\profile.ps1',
     'workspaces\work\powershell\worksets.ps1'
@@ -62,6 +68,9 @@ $testDocs = Join-Path $sandbox 'docs'
 $testLocalAppData = Join-Path $sandbox 'local-app-data'
 $previousLocalAppData = $env:LOCALAPPDATA
 $env:LOCALAPPDATA = $testLocalAppData
+$sharedProfileText = (@('Microsoft.PowerShell_profile', 'git', 'navigation', 'search', 'launchers', 'ai') |
+    ForEach-Object { [System.IO.File]::ReadAllText((Join-Path $RepoRoot "configs\powershell\$_.ps1")) }) -join "`n"
+$combinedProfileAst = [System.Management.Automation.Language.Parser]::ParseInput($sharedProfileText, [ref]$null, [ref]$null)
 
 try {
     [System.IO.Directory]::CreateDirectory($testRepo) | Out-Null
@@ -285,7 +294,8 @@ try {
         [System.IO.File]::WriteAllText($fileTwo, 'two')
         function code { $global:testCodeArguments = @($args); $global:LASTEXITCODE = 0 }
         function vs { param($Path, $Files) $global:testVsPath = $Path; $global:testVsFiles = $Files }
-        $sharedProfileAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'configs\powershell\Microsoft.PowerShell_profile.ps1'), [ref]$null, [ref]$null)
+        $sharedProfileAst = $combinedProfileAst
+        . (Join-Path $testRepo 'scripts\profile-groups.ps1')
         $vsSolutionsFn = $sharedProfileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-VsSolutions' }, $false) | Select-Object -First 1
         . ([scriptblock]::Create($vsSolutionsFn.Extent.Text))
         foreach ($name in @('Get-PssActiveWorkspace', 'which')) {
@@ -300,7 +310,15 @@ try {
         try {
             $PROFILE = Join-Path $testRepo 'configs\powershell\Microsoft.PowerShell_profile.ps1'
             $whichProfile = (which profile -h 6>&1 | Out-String)
-            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Creates and opens named issue file sets') 'which profile discovers workset synopsis'
+            Assert-True ($whichProfile -match 'workset' -and $whichProfile -match 'Manages named issue file sets') 'which profile discovers workset synopsis'
+            Assert-True ($whichProfile -match '(?s)\[search\].*?find\s+Interactive fuzzy.*?findstr\s+Filters piped input') 'which profile groups search functions with synopses'
+            Assert-True ($whichProfile -match '(?s)\[launchers\].*?brave\s+Launches Brave Browser.*?vs\s+Opens Visual Studio') 'which profile groups program launchers with synopses'
+            Assert-True ($whichProfile -match 'p\s+Universal Project Jumper: searches roots in %LOCALAPPDATA%\\PersonalSettingsSync\\project-roots') 'which profile shows the current project roots location'
+            Assert-True ($whichProfile -match '\[worksets\]' -and $whichProfile -notmatch 'ConvertTo-WorksetName') 'which profile hides workset helpers'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'personal')
+            $personalHelp = (which profile -h 6>&1 | Out-String)
+            Assert-True ($personalHelp -notmatch '\[worksets\]') 'which profile excludes work-only groups in personal workspace'
+            [System.IO.File]::WriteAllText($testState.Workspace, 'work')
         } finally {
             $PROFILE = $savedProfile
         }
@@ -314,6 +332,67 @@ try {
             Assert-True ($bootstrapOut -match 'All functions.*already match repo') 'bootstrap recognizes dot-sourced workset functions'
         } finally {
             [System.IO.File]::WriteAllText($testLocalProfile, $savedLoader)
+        }
+        $testPssText = [System.IO.File]::ReadAllText($testPss)
+        $searchPath = Join-Path $testRepo 'configs\powershell\search.ps1'
+        $launchersPath = Join-Path $testRepo 'configs\powershell\launchers.ps1'
+        $worksetsPath = Join-Path $testRepo 'workspaces\work\powershell\worksets.ps1'
+        $originalSearch = [System.IO.File]::ReadAllText($searchPath)
+        $originalLaunchers = [System.IO.File]::ReadAllText($launchersPath)
+        $originalWorksets = [System.IO.File]::ReadAllText($worksetsPath)
+        try {
+            $interactivePss = $testPssText.Replace('$isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected', '$isInteractive = $true')
+            Assert-True ($interactivePss -ne $testPssText) 'bootstrap test enables interactive routing only in isolated copy'
+            [System.IO.File]::WriteAllText($testPss, $interactivePss)
+            [System.IO.File]::WriteAllText($testLocalProfile, "function find { 'bootstrap-shared' }`nfunction brave { 'bootstrap-launcher' }`nfunction workset { 'bootstrap-workspace' }`n")
+            $routingOutput = & {
+                function Read-Host {
+                    param($Prompt)
+                    if ($Prompt -match 'function find') { return 'S' }
+                    if ($Prompt -match 'function brave') { return 'S' }
+                    if ($Prompt -match 'function workset') { return 'W' }
+                    throw "Unexpected bootstrap prompt: $Prompt"
+                }
+                & $testPss bootstrap -Include powershell -HomeOverride $testHome -DocumentsOverride $testDocs *>&1 | Out-String
+            }
+            $updatedSearch = [System.IO.File]::ReadAllText($searchPath)
+            $updatedLaunchers = [System.IO.File]::ReadAllText($launchersPath)
+            $updatedWorksets = [System.IO.File]::ReadAllText($worksetsPath)
+            Assert-True ($updatedSearch -match "function find \{ 'bootstrap-shared' \}" -and $updatedSearch -match 'function findstr') 'bootstrap updates shared function in its source file'
+            Assert-True ($updatedLaunchers -match "function brave \{ 'bootstrap-launcher' \}" -and $updatedLaunchers -match 'function vs') 'bootstrap updates a launcher in its source file'
+            Assert-True ($updatedWorksets -match "function workset \{ 'bootstrap-workspace' \}" -and $updatedWorksets -match 'function Get-WorksetContext') 'bootstrap updates workset function in its source file'
+            Assert-True ($routingOutput -match [regex]::Escape($searchPath) -and $routingOutput -match [regex]::Escape($worksetsPath)) 'bootstrap reports actual destination paths'
+        } finally {
+            [System.IO.File]::WriteAllText($testPss, $testPssText)
+            [System.IO.File]::WriteAllText($testLocalProfile, $savedLoader)
+            [System.IO.File]::WriteAllText($searchPath, $originalSearch)
+            [System.IO.File]::WriteAllText($launchersPath, $originalLaunchers)
+            [System.IO.File]::WriteAllText($worksetsPath, $originalWorksets)
+        }
+        $personalPath = Join-Path $testRepo 'workspaces\personal\powershell\profile.ps1'
+        $originalPersonal = [System.IO.File]::ReadAllText($personalPath)
+        $localOverride = Join-Path $sandbox 'local-override.ps1'
+        $loaderTest = Join-Path $sandbox 'profile-loader-test.ps1'
+        try {
+            [System.IO.File]::WriteAllText($personalPath, '$global:workspaceSawShared = [bool](Get-Command find -CommandType Function -ErrorAction SilentlyContinue); function find { "workspace" }')
+            [System.IO.File]::WriteAllText($localOverride, '$global:localSawWorkspace = (find) -eq "workspace"; function find { "local" }')
+            $loaderSource = [System.IO.File]::ReadAllText((Join-Path $testRepo 'configs\powershell\Microsoft.PowerShell_profile.ps1'))
+            $sharedLoader = $loaderSource.Substring($loaderSource.IndexOf(". (Join-Path `$global:__pss_root 'scripts\profile-groups.ps1')"))
+            $sharedLoader = $sharedLoader.Substring(0, $sharedLoader.IndexOf('#region 4.'))
+            $workspaceLoader = $loaderSource.Substring($loaderSource.IndexOf('#region 7.'))
+            $loaderScript = @"
+`$global:__pss_root = '$($testRepo.Replace("'", "''"))'
+`$global:__pss_state = @{ LocalProfile = '$($localOverride.Replace("'", "''"))' }
+function Get-PssActiveWorkspace { 'personal' }
+$sharedLoader
+$workspaceLoader
+if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (find) -ne 'local' -or `$null -eq `$global:__git_fetch_cache) { exit 1 }
+"@
+            [System.IO.File]::WriteAllText($loaderTest, $loaderScript)
+            & pwsh -NoLogo -NoProfile -File $loaderTest
+            Assert-Equal $LASTEXITCODE 0 'loader dot-sources initialized shared groups before workspace and local overrides'
+        } finally {
+            [System.IO.File]::WriteAllText($personalPath, $originalPersonal)
         }
         Push-Location $repoOne
         try {
@@ -430,7 +509,7 @@ try {
 
     # Verify shared profile functions work cleanly
     Write-Host "`n=== 3. Profile Function Smoke Tests ===" -ForegroundColor Cyan
-    $profileAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'configs\powershell\Microsoft.PowerShell_profile.ps1'), [ref]$null, [ref]$null)
+    $profileAst = $combinedProfileAst
     $jwtFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'jwt' }, $false) | Select-Object -First 1
     . ([scriptblock]::Create($jwtFn.Extent.Text))
     # Header: {"alg":"HS256","typ":"JWT"}, Payload: {"sub":"123","role":"admin"}
@@ -462,6 +541,32 @@ try {
 
     # Verify passbolt removed, brave in shared, amend & undo merged into commit, st/catchup/gsync consolidated into repo + diff
     $personalAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot 'workspaces\personal\powershell\profile.ps1'), [ref]$null, [ref]$null)
+    foreach ($workspaceName in @('personal', 'work')) {
+        $workspaceAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $RepoRoot "workspaces\$workspaceName\powershell\profile.ps1"), [ref]$null, [ref]$null)
+        $askFn = $workspaceAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'ask' }, $false) | Select-Object -First 1
+        $capturedPrompt = & {
+            param($Definition, $Workspace, $TestHomeDir)
+            function copilot {}
+            function agy {}
+            function Get-TerminalAskContext {
+                param($Question, $Piped, $Clean)
+                [pscustomobject]@{ History = 'history'; Output = 'output'; PipedSection = ''; Question = $Question }
+            }
+            function Invoke-AskCliProcess {
+                param($ExecutablePath, $Arguments, $Label)
+                $Arguments[-1]
+            }
+            . ([scriptblock]::Create($Definition))
+            $savedUserProfile = $env:USERPROFILE
+            try {
+                $env:USERPROFILE = $TestHomeDir
+                if ($Workspace -eq 'personal') { ask -KeepHistory 'test question' } else { ask 'test question' }
+            } finally {
+                $env:USERPROFILE = $savedUserProfile
+            }
+        } $askFn.Extent.Text $workspaceName $testHome
+        Assert-True ($capturedPrompt -match 'Minimize tool and MCP calls and prioritize fast responses while remaining accurate' -and $capturedPrompt -match '\[User Question\]\s*test question') "$workspaceName ask sends speed guidance and the question"
+    }
     $sharedNames = @($profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     $personalNames = @($personalAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Select-Object -ExpandProperty Name)
     Assert-True ($sharedNames -contains 'brave' -and $personalNames -notcontains 'brave') "brave moved to shared profile"
@@ -469,7 +574,7 @@ try {
     Assert-True ($sharedNames -contains 'commit' -and $sharedNames -notcontains 'amend' -and $sharedNames -notcontains 'undo') "amend and undo merged into commit"
     Assert-True ($sharedNames -contains 'repo' -and $sharedNames -contains 'diff' -and $sharedNames -notcontains 'st' -and $sharedNames -notcontains 'catchup' -and $sharedNames -notcontains 'gsync') "st/catchup/gsync consolidated into repo and diff"
 
-    $profileRaw = Get-Content -LiteralPath (Join-Path $RepoRoot 'configs\powershell\Microsoft.PowerShell_profile.ps1') -Raw
+    $profileRaw = $sharedProfileText
     Assert-True ($profileRaw -match 'Remove-Alias\s+-Name\s+diff\s+-Force' -and $profileRaw -match 'Compare-Object' -and $profileRaw -match 'Copy-Item') "profile explicitly documents built-in diff and copy alias overrides"
 
     # Test commit / commit amend / commit undo in isolated git repo

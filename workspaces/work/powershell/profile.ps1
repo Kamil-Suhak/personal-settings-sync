@@ -1,7 +1,5 @@
 ﻿# Work workspace PowerShell profile additions & overrides
 
-. (Join-Path $PSScriptRoot 'worksets.ps1')
-
 # Carbon Black / AppLocker Process Execution Compatibility
 $canRunGitDirectly = $false
 $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -60,6 +58,7 @@ function ask {
     $ctx = Get-TerminalAskContext -Question $Question -Piped $piped -Clean:$Clean
     $fullPrompt = @"
 Keep your response short and do not use markdown formatting. You are given context from the terminal history, recent output, and piped input. Use this information only if it is directly relevant to the question, ignore otherwise.
+Minimize tool and MCP calls and prioritize fast responses while remaining accurate.
 [Context: Recent Terminal Commands]
 $($ctx.History)
 

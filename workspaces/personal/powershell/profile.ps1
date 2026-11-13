@@ -21,6 +21,7 @@ function ask {
     $ctx = Get-TerminalAskContext -Question $Question -Piped $piped -Clean:$Clean
     $fullPrompt = @"
 You are running in an ephemeral session via agy --print. Keep your response short and do not use markdown formatting. You are given context from the terminal history, recent output, and piped input. Use this information only if it is directly relevant to the question, ignore otherwise.
+Minimize tool and MCP calls and prioritize fast responses while remaining accurate.
 [Context: Recent Terminal Commands]
 $($ctx.History)
 
