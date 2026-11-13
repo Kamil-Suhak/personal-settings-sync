@@ -32,9 +32,13 @@ else {
 
 # Resolve repository root dynamically from this shared profile's location
 $global:__pss_root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+. (Join-Path $global:__pss_root 'scripts\local-state.ps1')
+$global:__pss_state = Get-PssLocalStatePaths -Checkout $global:__pss_root
+$profileDir = if ($PROFILE) { Split-Path -Parent $PROFILE } else { $null }
+Invoke-PssLocalStateMigration -Paths $global:__pss_state -Checkout $global:__pss_root -HomePath $HOME -ProfileDirectory $profileDir
 
 function Get-PssActiveWorkspace {
-    $wsFile = Join-Path $global:__pss_root ".workspace.local"
+    $wsFile = $global:__pss_state.Workspace
     if (Test-Path -LiteralPath $wsFile) {
         $rawWs = Get-Content -LiteralPath $wsFile -Raw -ErrorAction SilentlyContinue
         if ($rawWs) {
@@ -921,7 +925,7 @@ function p {
         [Alias("l")][switch]$List
     )
 
-    $rootsFile = Join-Path $HOME ".project-roots"
+    $rootsFile = $global:__pss_state.ProjectRoots
 
     # Load configured roots from local uncommitted file (~/.project-roots)
     $roots = [System.Collections.Generic.List[string]]::new()
@@ -961,6 +965,7 @@ function p {
         }
         $existing = if (Test-Path -LiteralPath $rootsFile) { @(Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue) } else { @() }
         if ($existing -notcontains $resolved.Path) {
+            [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $rootsFile))
             Add-Content -LiteralPath $rootsFile -Value $resolved.Path
             Write-Host "Added '$($resolved.Path)' to $rootsFile" -ForegroundColor Green
         }
@@ -2576,16 +2581,9 @@ if (Test-Path -LiteralPath $workspaceProfile) {
     . $workspaceProfile
 }
 
-# Load optional machine-local overrides (git-ignored, never synced)
-$localCandidates = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-[void]$localCandidates.Add((Join-Path $HOME ".profile.local.ps1"))
-if ($PROFILE) {
-    [void]$localCandidates.Add((Join-Path (Split-Path -Parent $PROFILE) ".profile.local.ps1"))
-}
-foreach ($localFile in $localCandidates) {
-    if (Test-Path -LiteralPath $localFile) {
-        . $localFile
-    }
+# Load optional machine-local overrides (never synced)
+if (Test-Path -LiteralPath $global:__pss_state.LocalProfile) {
+    . $global:__pss_state.LocalProfile
 }
 #endregion
 

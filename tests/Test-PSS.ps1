@@ -37,6 +37,7 @@ $psFiles = @(
     'bootstrap.ps1',
     'setup.ps1',
     'scripts\setup-windows.ps1',
+    'scripts\local-state.ps1',
     'configs\powershell\Microsoft.PowerShell_profile.ps1',
     'workspaces\personal\powershell\profile.ps1',
     'workspaces\work\powershell\profile.ps1'
@@ -57,6 +58,9 @@ $sandbox = Join-Path ([System.IO.Path]::GetTempPath()) "pss-test-$([guid]::NewGu
 $testRepo = Join-Path $sandbox 'repo'
 $testHome = Join-Path $sandbox 'home'
 $testDocs = Join-Path $sandbox 'docs'
+$testLocalAppData = Join-Path $sandbox 'local-app-data'
+$previousLocalAppData = $env:LOCALAPPDATA
+$env:LOCALAPPDATA = $testLocalAppData
 
 try {
     [System.IO.Directory]::CreateDirectory($testRepo) | Out-Null
@@ -111,6 +115,37 @@ try {
     [System.IO.Directory]::CreateDirectory($thirdPartyPlugin) | Out-Null
 
     $testPss = Join-Path $testRepo 'pss.ps1'
+    . (Join-Path $testRepo 'scripts\local-state.ps1')
+    $testState = Get-PssLocalStatePaths -Checkout $testRepo -LocalAppData $testLocalAppData
+
+    $migrationHome = Join-Path $sandbox 'migration-home'
+    $migrationCheckout = Join-Path $sandbox 'migration-checkout'
+    [void][System.IO.Directory]::CreateDirectory($migrationHome)
+    [void][System.IO.Directory]::CreateDirectory($migrationCheckout)
+    $migrationState = Get-PssLocalStatePaths -Checkout $migrationCheckout -LocalAppData $testLocalAppData
+    $oldRoots = Join-Path $migrationHome '.project-roots'
+    $oldProfile = Join-Path $migrationHome '.profile.local.ps1'
+    $oldWorkspace = Join-Path $migrationCheckout '.workspace.local'
+    [System.IO.File]::WriteAllText($oldRoots, 'roots')
+    [System.IO.File]::WriteAllText($oldProfile, 'profile')
+    [System.IO.File]::WriteAllText($oldWorkspace, 'work')
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome -WhatIf | Out-Null
+    Assert-True ((Test-Path $oldRoots) -and -not (Test-Path $migrationState.ProjectRoots)) 'migration what-if leaves all files untouched'
+    [void][System.IO.Directory]::CreateDirectory($migrationState.Root)
+    [System.IO.File]::WriteAllText($migrationState.LocalProfile, 'conflicting')
+    $conflict = $false
+    try { Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome }
+    catch { $conflict = $true }
+    Assert-True ($conflict -and (Test-Path $oldRoots) -and (Test-Path $oldProfile) -and (Test-Path $oldWorkspace)) 'migration conflict preserves every original'
+    Remove-Item -LiteralPath $migrationState.LocalProfile
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome
+    Assert-True ((-not (Test-Path $oldRoots)) -and (-not (Test-Path $oldProfile)) -and (-not (Test-Path $oldWorkspace)) -and
+        [System.IO.File]::ReadAllText($migrationState.ProjectRoots) -eq 'roots' -and
+        [System.IO.File]::ReadAllText($migrationState.LocalProfile) -eq 'profile' -and
+        [System.IO.File]::ReadAllText($migrationState.Workspace) -eq 'work') 'migration verifies copies and removes originals'
+    Invoke-PssLocalStateMigration -Paths $migrationState -Checkout $migrationCheckout -HomePath $migrationHome
+    $otherState = Get-PssLocalStatePaths -Checkout $testRepo -LocalAppData $testLocalAppData
+    Assert-True ($otherState.Workspace -ne $migrationState.Workspace) 'workspace state is isolated per checkout'
 
     # Test empty 0-byte .workspace.local handling
     [System.IO.File]::WriteAllText((Join-Path $testRepo '.workspace.local'), '', [System.Text.UTF8Encoding]::new($false))
@@ -119,11 +154,11 @@ try {
 
     # Test POSIX flags (--no-apply / --what-if)
     & $testPss workspace use work --no-apply -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
-    Assert-Equal ((Get-Content (Join-Path $testRepo '.workspace.local') -Raw).Trim()) 'work' "workspace use --no-apply sets .workspace.local"
+    Assert-Equal ((Get-Content $testState.Workspace -Raw).Trim()) 'work' "workspace use --no-apply sets local workspace"
 
     # Set active workspace to personal without applying yet
     & $testPss workspace use personal -NoApply -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
-    Assert-Equal ((Get-Content (Join-Path $testRepo '.workspace.local') -Raw).Trim()) 'personal' "workspace use sets .workspace.local"
+    Assert-Equal ((Get-Content $testState.Workspace -Raw).Trim()) 'personal' "workspace use sets local workspace"
 
     # Test --what-if does not write loader or junctions
     & $testPss apply --what-if -HomeOverride $testHome -DocumentsOverride $testDocs | Out-Null
@@ -259,8 +294,9 @@ try {
     # Test ExtraArgs binding on findstr, p, find, wip and Get-PssActiveWorkspace empty file guard
     $getWsFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-PssActiveWorkspace' }, $false) | Select-Object -First 1
     . ([scriptblock]::Create($getWsFn.Extent.Text))
-    [System.IO.File]::WriteAllText((Join-Path $testRepo '.workspace.local'), '', [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($testState.Workspace, '', [System.Text.UTF8Encoding]::new($false))
     $global:__pss_root = $testRepo
+    $global:__pss_state = $testState
     Assert-Equal (Get-PssActiveWorkspace) 'personal' "Get-PssActiveWorkspace falls back on empty 0-byte .workspace.local"
 
     $findstrFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'findstr' }, $false) | Select-Object -First 1
@@ -333,7 +369,7 @@ try {
     # Test p fails cleanly with no fallback directories when USERPROFILE has no .project-roots
     $pNoRootsScript = Join-Path $sandbox 'test-p-noroots.ps1'
     $pFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'p' }, $false) | Select-Object -First 1
-    [System.IO.File]::WriteAllText($pNoRootsScript, ($pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($pNoRootsScript, ("`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
     $pNoRootsOut = & {
         $prevProf = $env:USERPROFILE
         $env:USERPROFILE = $testHome
@@ -350,8 +386,8 @@ try {
     $pRootDir = Join-Path $sandbox 'projects-root'
     $pWorkDir = Join-Path $pRootDir 'work-helpers'
     [System.IO.Directory]::CreateDirectory($pWorkDir) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $testHome '.project-roots'), "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
-    $pJumpContent = $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
+    [System.IO.File]::WriteAllText($testState.ProjectRoots, "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
+    $pJumpContent = "`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
     [System.IO.File]::WriteAllText($pJumpScript, $pJumpContent, [System.Text.UTF8Encoding]::new($false))
     $pJumpOut = & {
         $prevProf = $env:USERPROFILE
@@ -359,6 +395,7 @@ try {
         try {
             pwsh -NoProfile -File $pJumpScript 2>&1 | Out-String
         } finally {
+            $env:LOCALAPPDATA = $previousLocalAppData
             $env:USERPROFILE = $prevProf
         }
     }
