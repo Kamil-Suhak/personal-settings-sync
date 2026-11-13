@@ -1,7 +1,5 @@
 ﻿# Work workspace PowerShell profile additions & overrides
 
-. (Join-Path $PSScriptRoot 'worksets.ps1')
-
 # Carbon Black / AppLocker Process Execution Compatibility
 $canRunGitDirectly = $false
 $gitCmd = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
