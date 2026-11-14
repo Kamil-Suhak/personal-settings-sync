@@ -991,4 +991,404 @@ function stashes {
     }
     Write-Host ""
 }
+
+function Get-GitRepositories {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Paths,
+        [int]$MaxDepth = 4
+    )
+
+    $skipDirs = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@(
+            '.git', 'node_modules', 'bin', 'obj', 'target', 'dist',
+            '.vs', '.vscode', '.idea', '.venv', 'venv', '__pycache__',
+            'packages', '$RECYCLE.BIN', 'System Volume Information'
+        ),
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $repos = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($rootPath in $Paths) {
+        if (-not $rootPath -or -not (Test-Path -LiteralPath $rootPath -PathType Container)) { continue }
+        $resolvedRoot = (Resolve-Path -LiteralPath $rootPath -ErrorAction SilentlyContinue).ProviderPath
+        if (-not $resolvedRoot) { continue }
+
+        $foundUnderRoot = $false
+        $stack = [System.Collections.Generic.Stack[object]]::new()
+        $stack.Push(@{ Path = $resolvedRoot; Depth = 0 })
+
+        while ($stack.Count -gt 0) {
+            $item = $stack.Pop()
+            $dir = $item.Path
+            $depth = $item.Depth
+
+            $dotGit = Join-Path $dir '.git'
+            if ([System.IO.Directory]::Exists($dotGit) -or [System.IO.File]::Exists($dotGit)) {
+                $canonical = $dir.TrimEnd('\', '/')
+                if ($canonical.Length -eq 2 -and $canonical[1] -eq ':') { $canonical += '\' }
+                if ($seen.Add($canonical)) {
+                    $repos.Add($canonical)
+                }
+                $foundUnderRoot = $true
+                continue
+            }
+
+            if ($depth -ge $MaxDepth) { continue }
+
+            try {
+                $children = @([System.IO.Directory]::EnumerateDirectories($dir))
+                [array]::Sort($children, [System.StringComparer]::OrdinalIgnoreCase)
+                for ($i = $children.Count - 1; $i -ge 0; $i--) {
+                    $child = $children[$i]
+                    $leaf = [System.IO.Path]::GetFileName($child)
+                    if ($skipDirs.Contains($leaf)) { continue }
+                    try {
+                        $attrs = [System.IO.File]::GetAttributes($child)
+                        if ($attrs -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+                    }
+                    catch { continue }
+                    $stack.Push(@{ Path = $child; Depth = $depth + 1 })
+                }
+            }
+            catch { }
+        }
+
+        # Fallback if user passed a subdirectory inside an already-initialized repo
+        if (-not $foundUnderRoot) {
+            $topLevel = (& git -C $resolvedRoot rev-parse --show-toplevel 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $topLevel) {
+                $nativeTop = $topLevel.Trim().Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+                if ([System.IO.Directory]::Exists($nativeTop) -and $seen.Add($nativeTop)) {
+                    $repos.Add($nativeTop)
+                }
+            }
+        }
+    }
+
+    return @($repos.ToArray())
+}
+
+function Get-GitRepoUnpushedState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RepoPath,
+        [switch]$Fetch
+    )
+
+    if ($Fetch) {
+        & git -C $RepoPath fetch --all --prune 2>$null | Out-Null
+    }
+
+    $headBranch = (& git -C $RepoPath symbolic-ref --quiet --short HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0) { $headBranch = $null }
+
+    & git -C $RepoPath rev-parse --verify --quiet HEAD 2>$null | Out-Null
+    $hasHead = ($LASTEXITCODE -eq 0)
+
+    if ($headBranch) {
+        $displayBranch = $headBranch
+    }
+    elseif ($hasHead) {
+        $shortSha = (& git -C $RepoPath rev-parse --short HEAD 2>$null)
+        $displayBranch = "detached@$shortSha"
+    }
+    else {
+        $displayBranch = '(unborn)'
+    }
+
+    $remotes = @(& git -C $RepoPath remote 2>$null | Where-Object { $_ })
+    $hasRemotes = ($remotes.Count -gt 0)
+
+    # Parse working tree status
+    $porcelain = @(& git -C $RepoPath -c core.quotePath=false status --porcelain=v1 2>$null | Where-Object { $_ -and $_.Length -ge 3 })
+    $conflicts = 0
+    $staged = 0
+    $unstaged = 0
+    $untracked = 0
+    $dirtyFiles = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($line in $porcelain) {
+        $x = $line[0]
+        $y = $line[1]
+        $filePart = $line.Substring(3)
+
+        if ($x -eq '?' -and $y -eq '?') {
+            $untracked++
+            $category = 'Untracked'
+        }
+        elseif ($x -eq 'U' -or $y -eq 'U' -or ($x -eq 'A' -and $y -eq 'A') -or ($x -eq 'D' -and $y -eq 'D')) {
+            $conflicts++
+            $category = 'Conflict'
+        }
+        else {
+            if ($x -ne ' ') { $staged++ }
+            if ($y -ne ' ') { $unstaged++ }
+            $category = if ($x -ne ' ' -and $y -eq ' ') { 'Staged' } else { 'Modified' }
+        }
+
+        $dirtyFiles.Add([pscustomobject]@{
+            Code     = "$x$y"
+            Path     = $filePart
+            Category = $category
+        })
+    }
+
+    # Check unpushed commits across all local branches (and detached HEAD)
+    $unpushedBranches = [System.Collections.Generic.List[object]]::new()
+
+    if ($hasHead) {
+        $refLines = @(& git -C $RepoPath for-each-ref --format='%(refname:short)|%(upstream:short)|%(upstream:track,nobracket)' refs/heads 2>$null | Where-Object { $_ })
+        foreach ($refLine in $refLines) {
+            $parts = $refLine -split '\|', 3
+            $branch = $parts[0]
+            $upstream = if ($parts.Count -ge 2) { $parts[1] } else { '' }
+            $track = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+
+            $aheadCount = 0
+            $rangeSpec = $null
+            $note = $null
+
+            if ($upstream -and ($track -ne 'gone')) {
+                # Only compute commits if ahead indicator is present or track info is non-standard
+                if (-not $track -or ($track -match 'behind \d+' -and $track -notmatch 'ahead')) {
+                    $aheadCount = 0
+                }
+                else {
+                    $rawCount = (& git -C $RepoPath rev-list --count "$upstream..$branch" 2>$null)
+                    if ($LASTEXITCODE -eq 0 -and $rawCount -match '^\d+$') {
+                        $aheadCount = [int]$rawCount
+                        $rangeSpec = "$upstream..$branch"
+                    }
+                }
+            }
+            else {
+                $rawCount = (& git -C $RepoPath rev-list --count $branch --not --remotes 2>$null)
+                if ($LASTEXITCODE -eq 0 -and $rawCount -match '^\d+$') {
+                    $aheadCount = [int]$rawCount
+                }
+                if ($upstream -and $track -eq 'gone') {
+                    $note = 'upstream gone'
+                }
+                elseif (-not $hasRemotes) {
+                    $note = 'no remote'
+                }
+                else {
+                    $note = 'no upstream'
+                }
+            }
+
+            if ($aheadCount -gt 0) {
+                $commitLines = if ($rangeSpec) {
+                    @(& git -C $RepoPath log --oneline $rangeSpec 2>$null | Where-Object { $_ })
+                }
+                else {
+                    @(& git -C $RepoPath log --oneline $branch --not --remotes 2>$null | Where-Object { $_ })
+                }
+
+                $unpushedBranches.Add([pscustomobject]@{
+                    Branch   = $branch
+                    Upstream = if ($upstream -and $track -ne 'gone') { $upstream } else { $null }
+                    Note     = $note
+                    Ahead    = $aheadCount
+                    Commits  = $commitLines
+                })
+            }
+        }
+
+        if (-not $headBranch) {
+            $detachedCount = 0
+            $rawDetached = (& git -C $RepoPath rev-list --count HEAD --not --remotes 2>$null)
+            if ($LASTEXITCODE -eq 0 -and $rawDetached -match '^\d+$') {
+                $detachedCount = [int]$rawDetached
+            }
+            if ($detachedCount -gt 0) {
+                $detachedCommits = @(& git -C $RepoPath log --oneline HEAD --not --remotes 2>$null | Where-Object { $_ })
+                $unpushedBranches.Add([pscustomobject]@{
+                    Branch   = $displayBranch
+                    Upstream = $null
+                    Note     = 'detached HEAD'
+                    Ahead    = $detachedCount
+                    Commits  = $detachedCommits
+                })
+            }
+        }
+    }
+
+    $hasUnpushed = ($dirtyFiles.Count -gt 0) -or ($unpushedBranches.Count -gt 0)
+
+    return [pscustomobject]@{
+        Name             = [System.IO.Path]::GetFileName($RepoPath.TrimEnd('\', '/'))
+        Path             = $RepoPath
+        CurrentBranch    = $displayBranch
+        HasRemotes       = $hasRemotes
+        Conflicts        = $conflicts
+        Staged           = $staged
+        Unstaged         = $unstaged
+        Untracked        = $untracked
+        DirtyFiles       = @($dirtyFiles.ToArray())
+        UnpushedBranches = @($unpushedBranches.ToArray())
+        HasUnpushed      = $hasUnpushed
+    }
+}
+
+<#
+.SYNOPSIS
+Lists unpushed local changes across multiple git repositories by name or directory.
+#>
+function unpushed {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0, ValueFromRemainingArguments = $true)]
+        [string[]]$Targets,
+        [Alias('a')][switch]$All,
+        [switch]$Files,
+        [Alias('c')][switch]$Commits,
+        [Alias('f')][switch]$Fetch,
+        [int]$Depth = 4
+    )
+
+    $repoSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $repoList = [System.Collections.Generic.List[string]]::new()
+    $cachedRootRepos = $null
+
+    $addRepo = {
+        param([string]$RepoDir)
+        if ($RepoDir -and $repoSet.Add($RepoDir)) {
+            $repoList.Add($RepoDir)
+        }
+    }
+
+    if (-not $Targets -or $Targets.Count -eq 0) {
+        $roots = @(Get-PssProjectRoots)
+        if ($roots.Count -eq 0) {
+            Write-Host "✖ unpushed: No project roots configured. Use 'p -add <path>' or pass directory path(s)." -ForegroundColor Red
+            return
+        }
+        foreach ($repo in (Get-GitRepositories -Paths $roots -MaxDepth $Depth)) {
+            & $addRepo $repo
+        }
+    }
+    else {
+        foreach ($target in $Targets) {
+            if (-not $target) { continue }
+
+            $expandedTarget = if ($target -eq '~' -or $target -match '^~[/\\]') {
+                $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($target)
+            }
+            else {
+                $target
+            }
+            $looksLikePath = ($target -match '[/\\:]') -or ($target -in @('.', '..', '~')) -or ($target.StartsWith('.'))
+            if (Test-Path -LiteralPath $expandedTarget -PathType Container) {
+                foreach ($repo in (Get-GitRepositories -Paths @($expandedTarget) -MaxDepth $Depth)) {
+                    & $addRepo $repo
+                }
+            }
+            elseif ($looksLikePath) {
+                Write-Host "⚠ Path not found: $target" -ForegroundColor Yellow
+            }
+            else {
+                if ($null -eq $cachedRootRepos) {
+                    $roots = @(Get-PssProjectRoots)
+                    if ($roots.Count -eq 0) {
+                        Write-Host "✖ unpushed: '$target' is not a directory and no project roots are configured ('p -add <path>')." -ForegroundColor Red
+                        return
+                    }
+                    $cachedRootRepos = @(Get-GitRepositories -Paths $roots -MaxDepth $Depth)
+                }
+
+                $pattern = if ($target -match '[\*\?]') { $target } else { "*$target*" }
+                $matched = @($cachedRootRepos | Where-Object {
+                    [System.IO.Path]::GetFileName($_.TrimEnd('\', '/')) -like $pattern
+                })
+
+                if ($matched.Count -eq 0) {
+                    Write-Host "⚠ No repository matched '$target'." -ForegroundColor Yellow
+                }
+                else {
+                    foreach ($repo in $matched) { & $addRepo $repo }
+                }
+            }
+        }
+    }
+
+    if ($repoList.Count -eq 0) {
+        Write-Host "No git repositories found." -ForegroundColor Yellow
+        return
+    }
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    foreach ($repoPath in $repoList) {
+        $results.Add((Get-GitRepoUnpushedState -RepoPath $repoPath -Fetch:$Fetch))
+    }
+
+    $dirtyCount = 0
+    $printedAny = $false
+    foreach ($res in $results) {
+        if ($res.HasUnpushed) { $dirtyCount++ }
+        if (-not $res.HasUnpushed -and -not $All) { continue }
+
+        if (-not $printedAny) {
+            Write-Host ""
+            $printedAny = $true
+        }
+
+        if (-not $res.HasUnpushed) {
+            Write-Host "✓ $($res.Name) [$($res.CurrentBranch)]  clean  $($res.Path)" -ForegroundColor DarkGray
+            continue
+        }
+
+        Write-Host "▸ $($res.Name)" -NoNewline -ForegroundColor Yellow
+        Write-Host " [$($res.CurrentBranch)]" -NoNewline -ForegroundColor Cyan
+        Write-Host "  $($res.Path)" -ForegroundColor DarkGray
+
+        if ($res.DirtyFiles.Count -gt 0) {
+            $wtParts = [System.Collections.Generic.List[string]]::new()
+            if ($res.Conflicts -gt 0) { $wtParts.Add("$($res.Conflicts) conflict(s)") }
+            if ($res.Staged -gt 0) { $wtParts.Add("$($res.Staged) staged") }
+            if ($res.Unstaged -gt 0) { $wtParts.Add("$($res.Unstaged) unstaged") }
+            if ($res.Untracked -gt 0) { $wtParts.Add("$($res.Untracked) untracked") }
+            Write-Host "  Working tree: $($wtParts -join ', ')" -ForegroundColor White
+
+            if ($Files) {
+                foreach ($f in $res.DirtyFiles) {
+                    $fileColor = switch ($f.Category) {
+                        'Conflict'  { 'Red' }
+                        'Staged'    { 'Green' }
+                        'Modified'  { 'Yellow' }
+                        'Untracked' { 'DarkGray' }
+                        default     { 'Gray' }
+                    }
+                    Write-Host "    $($f.Code) $($f.Path)" -ForegroundColor $fileColor
+                }
+            }
+        }
+
+        foreach ($b in $res.UnpushedBranches) {
+            $targetText = if ($b.Upstream) { "-> $($b.Upstream)" } elseif ($b.Note) { "($($b.Note))" } else { '' }
+            Write-Host "  Branch $($b.Branch)" -NoNewline -ForegroundColor White
+            if ($targetText) {
+                Write-Host " $targetText" -NoNewline -ForegroundColor DarkGray
+            }
+            Write-Host ": +$($b.Ahead) unpushed" -ForegroundColor Yellow
+
+            if ($Commits -and $b.Commits.Count -gt 0) {
+                foreach ($c in $b.Commits) {
+                    Write-Host "    $c" -ForegroundColor Gray
+                }
+            }
+        }
+    }
+
+    $cleanCount = $results.Count - $dirtyCount
+    if ($dirtyCount -eq 0 -and -not $All) {
+        Write-Host "✓ All $($results.Count) repo(s) are clean and pushed." -ForegroundColor Green
+    }
+    else {
+        Write-Host "`nScanned $($results.Count) repo(s): $dirtyCount with unpushed changes, $cleanCount clean." -ForegroundColor Cyan
+    }
+}
 #endregion

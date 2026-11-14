@@ -665,8 +665,9 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
 
     # Test p fails cleanly with no fallback directories when USERPROFILE has no .project-roots
     $pNoRootsScript = Join-Path $sandbox 'test-p-noroots.ps1'
+    $getRootsFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-PssProjectRoots' }, $false) | Select-Object -First 1
     $pFn = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'p' }, $false) | Select-Object -First 1
-    [System.IO.File]::WriteAllText($pNoRootsScript, ("`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($pNoRootsScript, ("`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $getRootsFn.Extent.Text + "`n" + $pFn.Extent.Text + "`np anything`n"), [System.Text.UTF8Encoding]::new($false))
     $pNoRootsOut = & {
         $prevProf = $env:USERPROFILE
         $env:USERPROFILE = $testHome
@@ -684,7 +685,7 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
     $pWorkDir = Join-Path $pRootDir 'work-helpers'
     [System.IO.Directory]::CreateDirectory($pWorkDir) | Out-Null
     [System.IO.File]::WriteAllText($testState.ProjectRoots, "$pRootDir`n", [System.Text.UTF8Encoding]::new($false))
-    $pJumpContent = "`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
+    $pJumpContent = "`$global:__pss_state = @{ ProjectRoots = '$($testState.ProjectRoots)' }`n" + $getRootsFn.Extent.Text + "`n" + $pFn.Extent.Text + "`nSet-Location '$sandbox'`np work-h`n(Get-Location).Path`n"
     [System.IO.File]::WriteAllText($pJumpScript, $pJumpContent, [System.Text.UTF8Encoding]::new($false))
     $pJumpOut = & {
         $prevProf = $env:USERPROFILE
@@ -834,6 +835,71 @@ if (-not `$global:workspaceSawShared -or -not `$global:localSawWorkspace -or (fi
 
         $diffLast = (diff last -Stat *>&1 | Out-String)
         Assert-True ($diffLast -match 'Last 1 commit\(s\)' -and $diffLast -match 'feature\.txt') "diff last -Stat summarizes latest commit"
+
+        # Test unpushed multi-repo scanner (project roots default, recursive .git discovery, all local branches, name & directory targets)
+        foreach ($fnName in @('Get-PssProjectRoots', 'Get-GitRepositories', 'Get-GitRepoUnpushedState', 'unpushed')) {
+            $fnDef = $profileAst.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq $fnName }, $false) | Select-Object -First 1
+            . ([scriptblock]::Create($fnDef.Extent.Text))
+        }
+        $unpushedRoot = Join-Path $sandbox 'unpushed-root'
+        $repoClean = Join-Path $unpushedRoot 'repo-clean'
+        $repoDirty = Join-Path $unpushedRoot 'repo-dirty'
+        $repoAhead = Join-Path $unpushedRoot 'nested\group\repo-ahead'
+        [System.IO.Directory]::CreateDirectory((Join-Path $unpushedRoot 'nested\group')) | Out-Null
+
+        & git clone $bareOrigin $repoClean 2>&1 | Out-Null
+        & git clone $bareOrigin $repoDirty 2>&1 | Out-Null
+        & git clone $bareOrigin $repoAhead 2>&1 | Out-Null
+
+        foreach ($r in @($repoClean, $repoDirty, $repoAhead)) {
+            & git -C $r config user.email 'test@example.com'
+            & git -C $r config user.name 'Test User'
+        }
+
+        # repo-dirty: non-checked-out local branch with unpushed commit + dirty working tree while sitting on clean main
+        & git -C $repoDirty checkout -b feat/local-only 2>&1 | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $repoDirty 'branch-only.txt'), "branch commit`n")
+        & git -C $repoDirty add . 2>&1 | Out-Null
+        & git -C $repoDirty commit -m 'feat: unpushed branch commit' 2>&1 | Out-Null
+        & git -C $repoDirty checkout main 2>&1 | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $repoDirty 'staged.txt'), "staged`n")
+        & git -C $repoDirty add staged.txt 2>&1 | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $repoDirty 'app.txt'), "modified app`n")
+        [System.IO.File]::WriteAllText((Join-Path $repoDirty 'untracked.txt'), "untracked`n")
+
+        # repo-ahead: commit ahead of origin/main
+        [System.IO.File]::WriteAllText((Join-Path $repoAhead 'ahead.txt'), "ahead commit`n")
+        & git -C $repoAhead add ahead.txt 2>&1 | Out-Null
+        & git -C $repoAhead commit -m 'feat: ahead commit subject' 2>&1 | Out-Null
+
+        # Fake repos inside node_modules (both inside repo-dirty and standalone) must be skipped
+        [System.IO.Directory]::CreateDirectory((Join-Path $repoDirty 'node_modules\nested-ignored\.git')) | Out-Null
+        [System.IO.Directory]::CreateDirectory((Join-Path $unpushedRoot 'node_modules\top-ignored\.git')) | Out-Null
+
+        $prevPssState = $global:__pss_state
+        $unpushedRootsFile = Join-Path $sandbox 'unpushed-project-roots.txt'
+        [System.IO.File]::WriteAllText($unpushedRootsFile, "$unpushedRoot`n", [System.Text.UTF8Encoding]::new($false))
+        $global:__pss_state = @{ ProjectRoots = $unpushedRootsFile }
+        try {
+            $upDefault = (unpushed *>&1 | Out-String)
+            Assert-True ($upDefault -match 'repo-dirty' -and $upDefault -match 'feat/local-only' -and $upDefault -match '1 staged, 1 unstaged, 1 untracked') "unpushed default scans ProjectRoots and surfaces non-checked-out local branch + working tree changes"
+            Assert-True ($upDefault -match 'repo-ahead' -and $upDefault -match '\+1 unpushed') "unpushed discovers nested repositories recursively and reports ahead commits"
+            Assert-True ($upDefault -notmatch 'repo-clean' -and $upDefault -notmatch 'ignored' -and $upDefault -match 'Scanned 3 repo\(s\): 2 with unpushed changes, 1 clean') "unpushed skips clean repos by default and ignores node_modules"
+
+            $upAll = (unpushed -All *>&1 | Out-String)
+            Assert-True ($upAll -match 'repo-clean.*clean') "unpushed -All includes clean repositories"
+
+            $upByName = (unpushed repo-ahead -Commits *>&1 | Out-String)
+            Assert-True ($upByName -match 'repo-ahead' -and $upByName -match 'feat: ahead commit subject' -and $upByName -notmatch 'repo-dirty') "unpushed resolves repository target by name across ProjectRoots and lists commit subjects with -Commits"
+
+            $upByDir = (unpushed $repoDirty -Files *>&1 | Out-String)
+            Assert-True ($upByDir -match 'staged\.txt' -and $upByDir -match 'untracked\.txt' -and $upByDir -notmatch 'repo-ahead') "unpushed resolves explicit directory path and lists changed files with -Files"
+
+            $upShallow = (unpushed $unpushedRoot -Depth 0 *>&1 | Out-String)
+            Assert-True ($upShallow -match 'No git repositories found') "unpushed respects -Depth limit"
+        } finally {
+            $global:__pss_state = $prevPssState
+        }
 
         # Test AI/terminal buffer helpers, out/rerun slicing (~3..2 and ~3..~2), and Invoke-AskCliProcess streaming + stderr separation
         foreach ($fnName in @('ConvertTo-TerminalCommandBlocks', 'Resolve-TerminalBlockIndices', 'Get-TerminalCommandBlocks', 'Resolve-AskRequest', 'Invoke-AskCliProcess', 'out', 'rerun')) {

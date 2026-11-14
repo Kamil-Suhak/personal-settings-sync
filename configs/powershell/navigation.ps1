@@ -20,6 +20,27 @@ function .... { Set-Location ../../.. }
 
 <#
 .SYNOPSIS
+Loads existing configured project root paths from the machine-local project-roots file.
+#>
+function Get-PssProjectRoots {
+    param(
+        [string]$RootsFile = $(if ($global:__pss_state) { $global:__pss_state.ProjectRoots } else { $null })
+    )
+
+    $roots = [System.Collections.Generic.List[string]]::new()
+    if ($RootsFile -and (Test-Path -LiteralPath $RootsFile)) {
+        Get-Content -LiteralPath $RootsFile -ErrorAction SilentlyContinue | ForEach-Object {
+            $line = $_.Trim()
+            if ($line -and -not $line.StartsWith('#') -and (Test-Path -LiteralPath $line)) {
+                $roots.Add($line)
+            }
+        }
+    }
+    return @($roots.ToArray())
+}
+
+<#
+.SYNOPSIS
 Universal Project Jumper: searches roots in %LOCALAPPDATA%\PersonalSettingsSync\project-roots and jumps to a matching project directory. Supports -add, -remove, and -list.
 #>
 function p {
@@ -37,15 +58,7 @@ function p {
     $rootsFile = $global:__pss_state.ProjectRoots
 
     # Load configured machine-local project roots
-    $roots = [System.Collections.Generic.List[string]]::new()
-    if (Test-Path -LiteralPath $rootsFile) {
-        Get-Content -LiteralPath $rootsFile -ErrorAction SilentlyContinue | ForEach-Object {
-            $line = $_.Trim()
-            if ($line -and -not $line.StartsWith('#') -and (Test-Path -LiteralPath $line)) {
-                $roots.Add($line)
-            }
-        }
-    }
+    $roots = @(Get-PssProjectRoots -RootsFile $rootsFile)
 
     # 1. List configured roots (p -l or p list)
     if ($List -or $Name -eq 'list') {
