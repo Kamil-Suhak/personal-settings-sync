@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -271,3 +272,36 @@ def read_config_lines(path: Path) -> list[str]:
         if line and not line.startswith("#"):
             out.append(line)
     return out
+
+
+def resolve_workspace_chain(root: str | Path, workspace: str) -> list[str]:
+    """Resolve workspace inheritance chain from parent(s) to child via workspace.json `extends`."""
+    root_path = Path(root)
+    ws_dir = root_path / "workspaces"
+    chain: list[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def _visit(name: str) -> None:
+        if name in visited:
+            return
+        if name in visiting:
+            raise ValueError(f"Workspace inheritance cycle detected involving '{name}'.")
+        visiting.add(name)
+        meta_path = ws_dir / name / "workspace.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in {meta_path}: {exc}") from exc
+            extends = meta.get("extends")
+            parents = [extends] if isinstance(extends, str) else list(extends or [])
+            for parent in parents:
+                if parent and isinstance(parent, str):
+                    _visit(parent)
+        visiting.remove(name)
+        visited.add(name)
+        chain.append(name)
+
+    _visit(workspace)
+    return chain

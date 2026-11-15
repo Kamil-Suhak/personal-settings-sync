@@ -349,14 +349,18 @@ class PssApp:
             "target": self.resolve_dynamic_path(cfg["localTarget"]),
         }
 
+    def get_workspace_chain(self, workspace: str) -> list[str]:
+        return profile_groups.resolve_workspace_chain(SCRIPT_DIR, workspace)
+
     def get_git_include_targets(self, workspace: str) -> list[str]:
         git_cfg = self.config["subsystems"]["git"]
         shared_abs = to_forward_path(SCRIPT_DIR / git_cfg["sharedPath"])
-        ws_rel = git_cfg["workspacePath"].replace("{workspace}", workspace)
-        ws_file = SCRIPT_DIR / ws_rel
         targets = [shared_abs]
-        if ws_file.is_file():
-            targets.append(to_forward_path(ws_file))
+        for ws in self.get_workspace_chain(workspace):
+            ws_rel = git_cfg["workspacePath"].replace("{workspace}", ws)
+            ws_file = SCRIPT_DIR / ws_rel
+            if ws_file.is_file():
+                targets.append(to_forward_path(ws_file))
         return targets
 
     @staticmethod
@@ -447,17 +451,22 @@ class PssApp:
         if not repo_abs.is_file():
             return None
         shared_raw = normalize_lf(repo_abs.read_text(encoding="utf-8", errors="replace"))
+        chain = self.get_workspace_chain(workspace)
         if file_entry.get("mode") == "template":
             home_fwd = to_forward_path(self.home_dir)
             repo_fwd = to_forward_path(SCRIPT_DIR)
             expanded = shared_raw.replace("~/", f"{home_fwd}/").replace("{REPO}", repo_fwd)
             if file_entry["name"] == "skills.json":
-                ws_skills_dir = SCRIPT_DIR / "workspaces" / workspace / "skills"
-                if ws_skills_dir.is_dir():
+                extra_entries: list[dict] = []
+                for ws in reversed(chain):
+                    ws_skills_dir = SCRIPT_DIR / "workspaces" / ws / "skills"
+                    if ws_skills_dir.is_dir():
+                        extra_entries.append({"path": to_forward_path(ws_skills_dir)})
+                if extra_entries:
                     parsed = json.loads(expanded)
-                    ws_fwd = to_forward_path(ws_skills_dir)
-                    parsed["entries"] = [{"path": ws_fwd}] + [
-                        e for e in parsed.get("entries", []) if e.get("path") != ws_fwd
+                    extra_paths = {e["path"] for e in extra_entries}
+                    parsed["entries"] = extra_entries + [
+                        e for e in parsed.get("entries", []) if e.get("path") not in extra_paths
                     ]
                     expanded = json.dumps(parsed, indent=2)
             return expanded
@@ -465,16 +474,17 @@ class PssApp:
         parts: list[str] = []
         if file_entry["name"] == "AGENTS.md":
             parts.append(
-                f"<!-- Managed by pss (shared + {workspace}). Edit repo files, not this output. -->"
+                f"<!-- Managed by pss (shared + {' + '.join(chain)}). Edit repo files, not this output. -->"
             )
         parts.append(shared_raw)
         if file_entry.get("workspacePath"):
-            ws_rel = file_entry["workspacePath"].replace("{workspace}", workspace)
-            ws_abs = SCRIPT_DIR / ws_rel
-            if ws_abs.is_file():
-                ws_raw = normalize_lf(ws_abs.read_text(encoding="utf-8", errors="replace")).strip()
-                if ws_raw:
-                    parts.append(ws_raw)
+            for ws in chain:
+                ws_rel = file_entry["workspacePath"].replace("{workspace}", ws)
+                ws_abs = SCRIPT_DIR / ws_rel
+                if ws_abs.is_file():
+                    ws_raw = normalize_lf(ws_abs.read_text(encoding="utf-8", errors="replace")).strip()
+                    if ws_raw:
+                        parts.append(ws_raw)
         return "\n\n".join(parts)
 
     def get_desired_skill_links(self, workspace: str) -> list[dict]:
@@ -482,15 +492,18 @@ class PssApp:
         target_base = self.resolve_dynamic_path(cfg["targetDir"])
         shared_base = SCRIPT_DIR / cfg["repoDir"]
         ws_dir_tpl = cfg.get("workspaceDir")
-        ws_base = SCRIPT_DIR / ws_dir_tpl.replace("{workspace}", workspace) if ws_dir_tpl else None
+        chain = self.get_workspace_chain(workspace)
 
         links: list[dict] = []
         seen: set[str] = set()
-        if ws_base and ws_base.is_dir():
-            for d in sorted(ws_base.iterdir(), key=lambda p: p.name):
-                if d.is_dir():
-                    seen.add(d.name.lower())
-                    links.append({"name": d.name, "source": d, "target": target_base / d.name})
+        if ws_dir_tpl:
+            for ws in reversed(chain):
+                ws_base = SCRIPT_DIR / ws_dir_tpl.replace("{workspace}", ws)
+                if ws_base.is_dir():
+                    for d in sorted(ws_base.iterdir(), key=lambda p: p.name):
+                        if d.is_dir() and d.name.lower() not in seen:
+                            seen.add(d.name.lower())
+                            links.append({"name": d.name, "source": d, "target": target_base / d.name})
 
         for name in cfg.get("items", []):
             if name.lower() in seen:
@@ -985,9 +998,10 @@ class PssApp:
         return available, missing
 
     def cmd_apps(self, workspace: str, sub: str) -> None:
+        chain = set(self.get_workspace_chain(workspace))
         pkgs = [
             p for p in self.config.get("packages", [])
-            if not p.get("workspaces") or workspace in p["workspaces"]
+            if not p.get("workspaces") or any(w in chain for w in p["workspaces"])
         ]
         if sub in ("list", ""):
             print(ctext(f"\n=== Configured Applications ({workspace}) ===", "cyan"))

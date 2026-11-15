@@ -236,6 +236,40 @@ class TestPssCli(unittest.TestCase):
         shutil.copytree(REPO_ROOT / "workspaces", sandbox_repo / "workspaces")
         return sandbox_repo
 
+    def test_workspace_inheritance_rbc_extends_work(self) -> None:
+        common = load_extensionless_module("pss_common_ws_mod", BIN_DIR / "_pss_common.py")
+        self.assertEqual(common.resolve_workspace_chain(REPO_ROOT, "rbc"), ["work", "rbc"])
+
+        rbc_groups = profile_groups.get_profile_groups(REPO_ROOT, "rbc")
+        self.assertEqual([g["name"] for g in rbc_groups], ["shared", "git", "navigation", "search", "ai", "worksets", "work", "rbc"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = Path(tmp)
+            sandbox_repo = self._create_sandbox_checkout(tpath)
+            home_dir = tpath / "home"
+            state_home = tpath / "state" / "pss"
+            home_dir.mkdir(parents=True)
+            env = {"HOME": str(home_dir), "PSS_STATE_HOME": str(state_home)}
+
+            self.assertEqual(run_cli(sandbox_repo / "pss", ["workspace", "use", "rbc", "--no-apply"], env=env).returncode, 0)
+            self.assertEqual(run_cli(sandbox_repo / "pss", ["apply"], env=env).returncode, 0)
+
+            # Git includes shared + work + rbc
+            gitconfig = (home_dir / ".gitconfig").read_text(encoding="utf-8")
+            self.assertIn("workspaces/work/git/.gitconfig", gitconfig)
+            self.assertIn("workspaces/rbc/git/.gitconfig", gitconfig)
+
+            # AGENTS.md includes shared + work + rbc
+            agents = (home_dir / ".gemini" / "AGENTS.md").read_text(encoding="utf-8")
+            self.assertIn("shared + work + rbc", agents)
+            self.assertIn("Work Workspace Context", agents)
+            self.assertIn("RBC Workspace Context", agents)
+
+            # Apps list inherits work-scoped DotnetSdk10
+            apps_res = run_cli(sandbox_repo / "pss", ["apps", "list"], env=env)
+            self.assertEqual(apps_res.returncode, 0, apps_res.stderr)
+            self.assertIn("dotnet-sdk-10.0", apps_res.stdout)
+
     def test_workspace_status_apply_diff_and_backups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

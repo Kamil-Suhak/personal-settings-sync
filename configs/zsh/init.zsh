@@ -81,7 +81,25 @@ _pss_prepend_path() {
 _pss_prepend_path "$HOME/.local/bin"
 _pss_prepend_path "$PSS_ROOT"
 _pss_prepend_path "$PSS_ROOT/configs/bin"
-_pss_prepend_path "$PSS_ROOT/workspaces/$PSS_WORKSPACE/bin"
+
+PSS_WORKSPACE_CHAIN="$("$PSS_PYTHON" - "$PSS_ROOT" "$PSS_WORKSPACE" <<'PY' 2>/dev/null || printf '%s\n' "$PSS_WORKSPACE"
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
+from _pss_common import resolve_workspace_chain
+
+for ws in resolve_workspace_chain(sys.argv[1], sys.argv[2]):
+    print(ws)
+PY
+)"
+
+while IFS= read -r _pss_ws; do
+    [ -n "$_pss_ws" ] && _pss_prepend_path "$PSS_ROOT/workspaces/$_pss_ws/bin"
+done <<EOF
+$PSS_WORKSPACE_CHAIN
+EOF
+unset _pss_ws
 
 # Source shared command groups
 for _pss_group in git navigation search ai; do
@@ -309,8 +327,8 @@ _pss_update_prompt_vars() {
         local branch
         branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || true)"
         export cb="$branch"
-        if [ "$PSS_WORKSPACE" = "work" ] && [ -f "$PSS_ROOT/workspaces/work/bin/workset" ] && [ -n "$branch" ]; then
-            export cw="$("$PSS_PYTHON" "$PSS_ROOT/workspaces/work/bin/workset" --prompt-badge --root "$top" --branch "$branch" 2>/dev/null || true)"
+        if command -v workset >/dev/null 2>&1 && [ -n "$branch" ]; then
+            export cw="$(workset --prompt-badge --root "$top" --branch "$branch" 2>/dev/null || true)"
         else
             unset cw 2>/dev/null || true
         fi
@@ -393,9 +411,14 @@ fi
 
 # --- Workspace & Machine-Local Profile Layers ---
 
-if [ -f "$PSS_ROOT/workspaces/$PSS_WORKSPACE/zsh/profile.zsh" ]; then
-    . "$PSS_ROOT/workspaces/$PSS_WORKSPACE/zsh/profile.zsh"
-fi
+while IFS= read -r _pss_ws; do
+    if [ -n "$_pss_ws" ] && [ -f "$PSS_ROOT/workspaces/$_pss_ws/zsh/profile.zsh" ]; then
+        . "$PSS_ROOT/workspaces/$_pss_ws/zsh/profile.zsh"
+    fi
+done <<EOF
+$PSS_WORKSPACE_CHAIN
+EOF
+unset _pss_ws
 
 if [ -f "$PSS_LOCAL_PROFILE" ]; then
     . "$PSS_LOCAL_PROFILE"

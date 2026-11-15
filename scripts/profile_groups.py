@@ -12,6 +12,11 @@ from pathlib import Path
 CMD_ANNOTATION_RE = re.compile(r"^\s*#\s*@cmd:\s*(\S+)\s+[—\-–]+\s+(.+?)\s*$")
 FUNC_DEF_RE = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_.\-]*)\s*\(\s*\)\s*\{?")
 
+_BIN_DIR = Path(__file__).resolve().parent.parent / "configs" / "bin"
+if str(_BIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_BIN_DIR))
+from _pss_common import resolve_workspace_chain  # noqa: E402
+
 
 def get_profile_groups(root: str | Path, workspace: str) -> list[dict]:
     root_path = Path(root)
@@ -32,23 +37,25 @@ def get_profile_groups(root: str | Path, workspace: str) -> list[dict]:
                 "required": True,
             }
         )
-    if workspace == "work":
+    for ws in resolve_workspace_chain(root_path, workspace):
+        worksets_file = root_path / "workspaces" / ws / "zsh" / "worksets.zsh"
+        if worksets_file.is_file():
+            groups.append(
+                {
+                    "name": "worksets",
+                    "path": worksets_file,
+                    "scope": "workspace",
+                    "required": True,
+                }
+            )
         groups.append(
             {
-                "name": "worksets",
-                "path": root_path / "workspaces" / "work" / "zsh" / "worksets.zsh",
+                "name": ws,
+                "path": root_path / "workspaces" / ws / "zsh" / "profile.zsh",
                 "scope": "workspace",
-                "required": True,
+                "required": False,
             }
         )
-    groups.append(
-        {
-            "name": workspace,
-            "path": root_path / "workspaces" / workspace / "zsh" / "profile.zsh",
-            "scope": "workspace",
-            "required": False,
-        }
-    )
     return groups
 
 
