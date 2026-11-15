@@ -342,15 +342,15 @@ def stream_ask_process(executable: str, args: list[str], label: str, stream_json
             line_buf.append(combined)
 
     def _spinner_loop() -> None:
-        frames = ["|", "/", "-", "\\"]
+        frames = ["●∙∙∙∙", "∙●∙∙∙", "∙∙●∙∙", "∙∙∙●∙", "∙∙∙∙●"]
         idx = 0
         if animate:
             sys.stderr.write("\033[?25l")
             sys.stderr.flush()
             state["cursor_hidden"] = True
-        while not stop_spinner.wait(timeout=0.08):
+        while not stop_spinner.wait(timeout=0.14):
             if animate and not state["header_shown"]:
-                sys.stderr.write(f"\r{_ce(sys.stderr, frames[idx % len(frames)], 'green')} ")
+                sys.stderr.write(f"\r\033[36m{frames[idx % len(frames)]}\033[0m ")
                 sys.stderr.flush()
                 idx += 1
 

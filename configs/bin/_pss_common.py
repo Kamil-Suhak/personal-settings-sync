@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -195,6 +196,27 @@ def write_clipboard(text: str) -> bool:
         except OSError:
             continue
     return False
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def transform_clipboard_text(
+    text: str,
+    *,
+    trim: bool = False,
+    single_line: bool = False,
+    strip_ansi: bool = False,
+) -> str:
+    """Apply shared string transformations for copy and paste."""
+    out = text
+    if strip_ansi:
+        out = _ANSI_ESCAPE_RE.sub("", out)
+    if single_line:
+        out = " ".join(out.splitlines())
+    if trim:
+        out = out.strip()
+    return out
 
 
 def run_git(args: list[str], cwd: Path | str | None = None) -> subprocess.CompletedProcess[str]:

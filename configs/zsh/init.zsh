@@ -206,44 +206,81 @@ EOF
     printf 'Activated %s (%s)\n' "$env_dir" "$("$PSS_PYTHON" --version 2>&1)"
 }
 
-# @cmd: copy — Copy arguments or piped stdin to the system clipboard
+# @cmd: copy — Copy arguments or piped stdin to the system clipboard (-t/--trim, -1/--single-line, --strip-ansi)
 copy() {
-    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-        printf 'Usage: <cmd> | copy   OR   copy <text...>\n\nCopy piped stdin or arguments to the clipboard.\n'
-        return 0
-    fi
+    case "${1:-}" in
+        -h|--help)
+            cat <<'EOF'
+Usage: <cmd> | copy [options]   OR   copy [options] <text...>
+
+Copy piped stdin or arguments to the clipboard.
+Options:
+  -t, --trim          Strip leading and trailing whitespace
+  -1, --single-line   Collapse newlines into spaces
+  --strip-ansi        Remove ANSI escape sequences
+  -h, --help          Show this help
+EOF
+            return 0
+            ;;
+    esac
     "$PSS_PYTHON" - "$PSS_ROOT" "$@" <<'PY'
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import write_clipboard
+from _pss_common import transform_clipboard_text, write_clipboard
 
-data = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else sys.stdin.read()
+parser = argparse.ArgumentParser(prog="copy", add_help=False)
+parser.add_argument("-t", "--trim", action="store_true")
+parser.add_argument("-1", "--single-line", action="store_true")
+parser.add_argument("--strip-ansi", action="store_true")
+args, rest = parser.parse_known_args(sys.argv[2:])
+
+raw = " ".join(rest) if rest else sys.stdin.read()
+data = transform_clipboard_text(raw, trim=args.trim, single_line=args.single_line, strip_ansi=args.strip_ansi)
 if not write_clipboard(data):
     print("✖ copy: No clipboard tool found (install wl-clipboard or xclip).", file=sys.stderr)
     sys.exit(1)
 PY
 }
 
-# @cmd: paste — Output current clipboard text to stdout
+# @cmd: paste — Output current clipboard text to stdout (-t/--trim, -1/--single-line, --strip-ansi)
 paste() {
-    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
-        printf 'Usage: paste\n\nWrite current clipboard contents to stdout.\n'
-        return 0
-    fi
-    "$PSS_PYTHON" - "$PSS_ROOT" <<'PY'
+    case "${1:-}" in
+        -h|--help)
+            cat <<'EOF'
+Usage: paste [options]
+
+Write current clipboard contents to stdout.
+Options:
+  -t, --trim          Strip leading and trailing whitespace
+  -1, --single-line   Collapse newlines into spaces
+  --strip-ansi        Remove ANSI escape sequences
+  -h, --help          Show this help
+EOF
+            return 0
+            ;;
+    esac
+    "$PSS_PYTHON" - "$PSS_ROOT" "$@" <<'PY'
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import read_clipboard
+from _pss_common import read_clipboard, transform_clipboard_text
+
+parser = argparse.ArgumentParser(prog="paste", add_help=False)
+parser.add_argument("-t", "--trim", action="store_true")
+parser.add_argument("-1", "--single-line", action="store_true")
+parser.add_argument("--strip-ansi", action="store_true")
+args, _ = parser.parse_known_args(sys.argv[2:])
 
 text = read_clipboard()
 if text is None:
     print("✖ paste: Clipboard is empty or unavailable.", file=sys.stderr)
     sys.exit(1)
-sys.stdout.write(text)
+sys.stdout.write(transform_clipboard_text(text, trim=args.trim, single_line=args.single_line, strip_ansi=args.strip_ansi))
 PY
 }
 
@@ -273,7 +310,7 @@ _pss_update_prompt_vars() {
         branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || true)"
         export cb="$branch"
         if [ "$PSS_WORKSPACE" = "work" ] && [ -f "$PSS_ROOT/workspaces/work/bin/workset" ] && [ -n "$branch" ]; then
-            export cw="$("$PSS_PYTHON" "$PSS_ROOT/workspaces/work/bin/workset" --current-name --root "$top" --branch "$branch" 2>/dev/null || true)"
+            export cw="$("$PSS_PYTHON" "$PSS_ROOT/workspaces/work/bin/workset" --prompt-badge --root "$top" --branch "$branch" 2>/dev/null || true)"
         else
             unset cw 2>/dev/null || true
         fi

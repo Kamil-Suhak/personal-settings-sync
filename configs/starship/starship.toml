@@ -43,7 +43,7 @@ format = "([$all_status$ahead_behind ]($style))"
 [env_var.cw]
 variable = "cw"
 style = "bg:cyan fg:black"
-format = "[](fg:prev_bg bg:cyan)[ ws:$env_value ]($style)"
+format = "[](fg:prev_bg bg:cyan)[ $env_value ]($style)"
 
 [cmd_duration]
 min_time = 500
