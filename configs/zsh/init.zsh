@@ -78,6 +78,7 @@ _pss_prepend_path() {
     fi
 }
 
+_pss_prepend_path "$HOME/.local/bin"
 _pss_prepend_path "$PSS_ROOT"
 _pss_prepend_path "$PSS_ROOT/configs/bin"
 _pss_prepend_path "$PSS_ROOT/workspaces/$PSS_WORKSPACE/bin"
