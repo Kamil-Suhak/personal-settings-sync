@@ -307,3 +307,46 @@ PY
     printf '✖ vs: devenv executable not found.\n' >&2
     return 1
 }
+
+# @cmd - List issues assigned to me that are not BackendReady in the OptifyRequirements project.
+optify-issues() {
+    local me
+    me="$(gh api user -q .login)" || return 1
+
+    gh project item-list 11 --owner Dodge-MPTC --limit 200 --format json \
+      | jq -r --arg me "$me" '
+        .items[]
+        | select(
+            .content.type == "Issue"
+            and (.backendStatus // "") != "Ready"
+            and ((.assignees // []) | index($me))
+          )
+        | "#\(.content.number)\t\(.status // "No Status")\t\(.backendStatus // "Unset")\t\(.title)"
+      ' \
+      | column -t -s $'\t' \
+      | if [[ -t 1 ]]; then
+          awk '
+          {
+            line = $0
+            # Issue number (#4519) -> cyan bold
+            sub(/^#[0-9]+/, "\033[1;36m&\033[0m", line)
+
+            # BackendStatus colors
+            gsub(/InProgress/, "\033[1;33mInProgress\033[0m", line)
+            gsub(/ToDo/,       "\033[0;34mToDo\033[0m", line)
+            gsub(/Unset/,      "\033[2;37mUnset\033[0m", line)
+
+            # Title tags ([US], [Epic], [Bug])
+            gsub(/\[Epic\]/,   "\033[1;35m[Epic]\033[0m", line)
+            gsub(/\[US\]/,     "\033[1;32m[US]\033[0m", line)
+            gsub(/\[Bug\]/,    "\033[1;31m[Bug]\033[0m", line)
+
+            # Dim the board status column ("In progress development (PL)")
+            sub(/In progress development \(PL\)/, "\033[2m&\033[0m", line)
+
+            print line
+          }'
+        else
+          cat
+        fi
+}

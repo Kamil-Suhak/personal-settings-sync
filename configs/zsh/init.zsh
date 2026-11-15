@@ -78,6 +78,7 @@ _pss_prepend_path() {
     fi
 }
 
+_pss_prepend_path "$HOME/.local/bin"
 _pss_prepend_path "$PSS_ROOT"
 _pss_prepend_path "$PSS_ROOT/configs/bin"
 _pss_prepend_path "$PSS_ROOT/workspaces/$PSS_WORKSPACE/bin"
@@ -283,7 +284,7 @@ _pss_update_prompt_vars() {
 
 if [ -n "${ZSH_VERSION:-}" ]; then
     # Only configure interactive Zsh plugins/prompt when running interactively
-    if [ -o interactive ]; then
+    if [[ -o interactive ]]; then
         HIST_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/zsh"
         CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/zsh"
         mkdir -p "$HIST_DIR" "$CACHE_DIR"
@@ -326,6 +327,10 @@ if [ -n "${ZSH_VERSION:-}" ]; then
             fi
         done
         unset _autosug
+
+        if [ -f "$PSS_ROOT/configs/zsh/keybinds.zsh" ]; then
+            . "$PSS_ROOT/configs/zsh/keybinds.zsh"
+        fi
 
         if [ -n "${precmd_functions+x}" ]; then
             precmd_functions+=(_pss_update_prompt_vars)

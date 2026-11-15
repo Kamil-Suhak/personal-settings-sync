@@ -149,6 +149,35 @@ def discover_vs_solutions(root: Path, max_depth: int = 3) -> list[Path]:
     return found
 
 
+def resolve_vs_devenv() -> str | None:
+    found = shutil.which("devenv.exe") or shutil.which("devenv")
+    if found:
+        return found
+    vswhere = Path("/mnt/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+    if vswhere.is_file():
+        res = subprocess.run(
+            [str(vswhere), "-latest", "-products", "*", "-property", "productPath"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        win_path = res.stdout.strip().splitlines()[0].strip() if res.returncode == 0 and res.stdout.strip() else ""
+        if win_path:
+            wsl_res = subprocess.run(["wslpath", "-u", win_path], capture_output=True, text=True, check=False)
+            cand = wsl_res.stdout.strip()
+            if wsl_res.returncode == 0 and cand and Path(cand).is_file():
+                return cand
+    return None
+
+
+def to_windows_path(path: Path) -> str:
+    if shutil.which("wslpath"):
+        res = subprocess.run(["wslpath", "-w", str(path)], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    return str(path)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workset",
@@ -401,11 +430,17 @@ def main(argv: list[str] | None = None) -> int:
             if args.what_if:
                 print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({solutions[0]})", "cyan"))
                 return 0
-            devenv = shutil.which("devenv.exe") or shutil.which("devenv")
+            devenv = resolve_vs_devenv()
             if devenv:
-                subprocess.Popen([devenv, str(solutions[0]), *(str(f) for f in files)])
+                win_targets = [to_windows_path(solutions[0]), *(to_windows_path(f) for f in files)]
+                subprocess.Popen(
+                    [devenv, *win_targets],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
                 return 0
-            raise FileNotFoundError("Visual Studio launcher ('devenv') not found in PATH; pass --code.")
+            raise FileNotFoundError("Visual Studio launcher ('devenv') not found in PATH or via vswhere.exe; pass --code.")
 
         if action == "archive":
             ws_dir = resolve_workset_dir(item, archived=False)
