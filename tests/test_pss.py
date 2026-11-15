@@ -656,6 +656,69 @@ class TestWorkset(unittest.TestCase):
             self.assertIn("feat-ticket-99", run_cli(WORK_BIN_DIR / "workset", ["list"], env=env).stdout)
             self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["delete", "feat-ticket-99"], env=env).returncode, 0)
 
+    def test_workset_multirepo_badge_rm_relative_and_split(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = Path(tmp)
+            ws_root = tpath / "worksets-store"
+            backend = tpath / "backend-repo"
+            frontend = tpath / "frontend-repo"
+            init_git_repo(backend, "feat/ticket-101")
+            init_git_repo(frontend, "feat/ui-101")
+
+            (backend / "App.sln").write_text("", encoding="utf-8")
+            cs_file = backend / "Program.cs"
+            cs_file.write_text("class Program {}\n", encoding="utf-8")
+            ts_file = frontend / "index.ts"
+            ts_file.write_text("export const x = 1;\n", encoding="utf-8")
+
+            env = {"PSS_WORKSETS_ROOT": str(ws_root)}
+
+            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["new"], cwd=backend, env=env).returncode, 0)
+            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["add", str(cs_file), str(ts_file)], cwd=backend, env=env).returncode, 0)
+
+            # Repo-relative paths stored in files.txt
+            files_txt = (ws_root / "active" / "feat-ticket-101" / "files.txt").read_text(encoding="utf-8")
+            self.assertIn("backend-repo/Program.cs", files_txt)
+            self.assertIn("frontend-repo/index.ts", files_txt)
+
+            # Multi-repo badge tracking works from secondary frontend repo too
+            r_badge_be = run_cli(
+                WORK_BIN_DIR / "workset",
+                ["--prompt-badge", "--root", str(backend.resolve()), "--branch", "feat/ticket-101"],
+                env=env,
+            )
+            self.assertEqual(r_badge_be.stdout.strip(), "✦2")
+
+            r_badge_fe = run_cli(
+                WORK_BIN_DIR / "workset",
+                ["--prompt-badge", "--root", str(frontend.resolve()), "--branch", "feat/ui-101"],
+                env=env,
+            )
+            self.assertEqual(r_badge_fe.stdout.strip(), "feat-ticket-101 ✦2")
+
+            # Hybrid split open --what-if (on Linux without devenv, falls back cleanly to VS Code; with --code opens all in VS Code)
+            r_split = run_cli(WORK_BIN_DIR / "workset", ["open", "feat-ticket-101", "--what-if"], env=env)
+            self.assertEqual(r_split.returncode, 0, r_split.stderr)
+            self.assertIn("WHAT-IF: Open workset 'feat-ticket-101'", r_split.stdout)
+
+            # Remove one file via workset rm
+            r_rm = run_cli(WORK_BIN_DIR / "workset", ["rm", "feat-ticket-101", str(ts_file)], env=env)
+            self.assertEqual(r_rm.returncode, 0, r_rm.stderr)
+            r_badge_after = run_cli(
+                WORK_BIN_DIR / "workset",
+                ["--prompt-badge", "--root", str(backend.resolve()), "--branch", "feat/ticket-101"],
+                env=env,
+            )
+            self.assertEqual(r_badge_after.stdout.strip(), "✦1")
+
+    def test_clipboard_shared_transforms(self) -> None:
+        common = load_extensionless_module("pss_common_mod", BIN_DIR / "_pss_common.py")
+        raw = "  \033[36mhello\033[0m\nworld  \n"
+        self.assertEqual(
+            common.transform_clipboard_text(raw, trim=True, single_line=True, strip_ansi=True),
+            "hello world",
+        )
+
 
 class TestZshFunctionsViaBash(unittest.TestCase):
     def _run_bash_snippet(self, body: str, *, env: dict[str, str] | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:

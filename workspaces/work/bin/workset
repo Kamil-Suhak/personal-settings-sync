@@ -18,11 +18,19 @@ SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 sys.path.insert(0, str(BIN_COMMON_DIR))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
-from _pss_common import ctext, normalize_legacy_flags, resolve_pss_root, resolve_state_home, run_git  # noqa: E402
+from _pss_common import (  # noqa: E402
+    ctext,
+    normalize_legacy_flags,
+    read_config_lines,
+    resolve_project_roots_file,
+    resolve_pss_root,
+    resolve_state_home,
+    run_git,
+)
 from local_state import get_local_state_paths  # noqa: E402
 
 RESERVED_WIN_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)", re.IGNORECASE)
-VALID_ACTIONS = ("new", "add", "edit", "show", "list", "open", "archive", "restore", "delete")
+VALID_ACTIONS = ("new", "add", "rm", "edit", "show", "list", "open", "archive", "restore", "delete")
 
 
 def convert_to_workset_name(name: str) -> str:
@@ -58,6 +66,15 @@ def get_workset_dir(name: str, *, archived: bool = False) -> Path:
     return resolve_worksets_root() / sub / convert_to_workset_name(name)
 
 
+def _repo_matches(meta: dict, root: str, branch: str) -> bool:
+    if meta.get("originRoot") == root and meta.get("branch") == branch:
+        return True
+    for repo in meta.get("repositories") or []:
+        if isinstance(repo, dict) and repo.get("root") == root and repo.get("branch") == branch:
+            return True
+    return False
+
+
 def find_matching_worksets(root: str, branch: str, *, archived: bool = False) -> list[Path]:
     if not root or not branch:
         return []
@@ -76,9 +93,20 @@ def find_matching_worksets(root: str, branch: str, *, archived: bool = False) ->
             meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
         except json.JSONDecodeError:
             continue
-        if meta.get("originRoot") == root and meta.get("branch") == branch:
+        if _repo_matches(meta, root, branch):
             matches.append(entry)
     return matches
+
+
+def _count_workset_entries(ws_dir: Path) -> int:
+    list_file = ws_dir / "files.txt"
+    if not list_file.is_file():
+        return 0
+    return sum(
+        1
+        for raw in list_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        if raw.strip() and not raw.strip().startswith("#")
+    )
 
 
 def get_current_workset_name(root: str, branch: str) -> str | None:
@@ -90,36 +118,141 @@ def get_current_workset_name(root: str, branch: str) -> str | None:
     return None
 
 
-def resolve_workset_dir(name: str | None, *, archived: bool = False) -> Path:
+def get_current_workset_badge(root: str, branch: str) -> str | None:
+    """Return compact Starship badge: `✦N` when name matches branch, else `<name> ✦N`."""
+    if not root or not branch or branch.startswith(":"):
+        return None
+    matches = find_matching_worksets(root, branch, archived=False)
+    if len(matches) != 1:
+        return None
+    ws_dir = matches[0]
+    count = _count_workset_entries(ws_dir)
+    try:
+        branch_norm = convert_to_workset_name(branch)
+    except ValueError:
+        branch_norm = ""
+    if ws_dir.name == branch_norm:
+        return f"✦{count}"
+    return f"{ws_dir.name} ✦{count}"
+
+
+def _select_workset_with_fzf(*, archived: bool = False) -> Path | None:
+    if not sys.stdin.isatty() or not shutil.which("fzf"):
+        return None
+    sub = "archived" if archived else "active"
+    parent = resolve_worksets_root() / sub
+    if not parent.is_dir():
+        return None
+    names = [
+        entry.name
+        for entry in sorted(parent.iterdir(), key=lambda p: p.name.lower())
+        if entry.is_dir() and not entry.name.startswith(".new-")
+    ]
+    if not names:
+        return None
+    proc = subprocess.run(
+        ["fzf", "--height", "40%", "--reverse", "--prompt", "workset> "],
+        input="\n".join(names) + "\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    chosen = proc.stdout.strip()
+    if proc.returncode != 0 or not chosen:
+        return None
+    return parent / chosen
+
+
+def resolve_workset_dir(name: str | None, *, archived: bool = False, interactive: bool = False) -> Path:
     if name:
         ws_dir = get_workset_dir(name, archived=archived)
         if not ws_dir.is_dir():
             raise FileNotFoundError(f"Workset '{name}' not found.")
         return ws_dir
     ctx = get_workset_context()
-    if not ctx or not ctx[1]:
-        raise ValueError("Specify a workset name outside a repository or on detached HEAD.")
-    matches = find_matching_worksets(ctx[0], ctx[1], archived=archived)
-    if len(matches) != 1:
+    if ctx and ctx[1]:
+        matches = find_matching_worksets(ctx[0], ctx[1], archived=archived)
+        if len(matches) == 1:
+            return matches[0]
+        if interactive:
+            picked = _select_workset_with_fzf(archived=archived)
+            if picked is not None:
+                return picked
         raise ValueError(
             f"Expected one workset for '{ctx[0]}' on '{ctx[1]}'; found {len(matches)}. Specify a name."
         )
-    return matches[0]
+    if interactive:
+        picked = _select_workset_with_fzf(archived=archived)
+        if picked is not None:
+            return picked
+    raise ValueError("Specify a workset name outside a repository or on detached HEAD.")
 
 
-def read_workset_files(ws_dir: Path) -> list[Path]:
+def _find_repo_dir_by_name(repo_name: str, metadata: dict) -> Path | None:
+    for repo in metadata.get("repositories") or []:
+        if isinstance(repo, dict):
+            r_root = repo.get("root")
+            if r_root and Path(r_root).name == repo_name and Path(r_root).is_dir():
+                return Path(r_root)
+    origin_root = metadata.get("originRoot")
+    if origin_root and Path(origin_root).name == repo_name and Path(origin_root).is_dir():
+        return Path(origin_root)
+    roots_file = resolve_project_roots_file()
+    for raw_root in read_config_lines(roots_file):
+        base = Path(os.path.expandvars(raw_root)).expanduser()
+        if not base.is_dir():
+            continue
+        direct = base / repo_name
+        if (direct / ".git").exists():
+            return direct
+        try:
+            for child in base.iterdir():
+                cand = child / repo_name
+                if child.is_dir() and (cand / ".git").exists():
+                    return cand
+        except OSError:
+            continue
+    return None
+
+
+def _encode_workset_path(full_path: Path, repo_root: str | None) -> str:
+    if repo_root:
+        root_p = Path(repo_root).resolve()
+        try:
+            rel = full_path.resolve().relative_to(root_p)
+            return f"{root_p.name}/{rel.as_posix()}"
+        except ValueError:
+            pass
+    return str(full_path.resolve())
+
+
+def _decode_workset_path(raw_line: str, metadata: dict) -> Path:
+    p = Path(raw_line)
+    if p.is_absolute():
+        return p
+    parts = raw_line.split("/", 1)
+    if len(parts) == 2:
+        repo_name, rel = parts
+        repo_dir = _find_repo_dir_by_name(repo_name, metadata)
+        if repo_dir is not None:
+            return repo_dir / rel
+    raise ValueError(f"Could not resolve relative workset path '{raw_line}'.")
+
+
+def read_workset_files(ws_dir: Path, metadata: dict | None = None) -> list[Path]:
     list_file = ws_dir / "files.txt"
     if not list_file.is_file():
         raise FileNotFoundError(f"Workset file list is missing: {list_file}")
+    if metadata is None:
+        meta_path = ws_dir / "metadata.json"
+        metadata = json.loads(meta_path.read_text(encoding="utf-8", errors="replace")) if meta_path.is_file() else {}
     files: list[Path] = []
     seen: set[str] = set()
     for raw in list_file.read_text(encoding="utf-8", errors="replace").splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        p = Path(line)
-        if not p.is_absolute():
-            raise ValueError(f"Workset paths must be absolute: {line}")
+        p = _decode_workset_path(line, metadata)
         if not p.is_file():
             raise FileNotFoundError(f"Workset file not found: {line}")
         resolved = p.resolve()
@@ -178,6 +311,46 @@ def to_windows_path(path: Path) -> str:
     return str(path)
 
 
+def _parse_workset_and_files(
+    item: str | None,
+    extra_paths: list[str],
+    files_flag: list[str] | None,
+    usage: str,
+) -> tuple[str | None, list[str]]:
+    raw_inputs: list[str] = []
+    ws_name: str | None = None
+
+    def _is_file_token(token: str) -> bool:
+        if Path(token).is_file():
+            return True
+        cand_dir: Path | None = None
+        try:
+            cand_dir = get_workset_dir(token)
+        except ValueError:
+            cand_dir = None
+        return ("/" in token or "\\" in token) and not (cand_dir and cand_dir.is_dir())
+
+    if files_flag:
+        raw_inputs.extend(files_flag)
+        if item:
+            if _is_file_token(item):
+                raw_inputs.append(item)
+            else:
+                ws_name = item
+        raw_inputs.extend(extra_paths)
+    elif extra_paths:
+        if item and _is_file_token(item):
+            raw_inputs.append(item)
+        else:
+            ws_name = item
+        raw_inputs.extend(extra_paths)
+    elif item:
+        raw_inputs.append(item)
+    else:
+        raise ValueError(usage)
+    return ws_name, raw_inputs
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workset",
@@ -188,21 +361,23 @@ def build_parser() -> argparse.ArgumentParser:
             "  list [--archived]                  List active or archived worksets (default)\n"
             "  new [<name>]                       Create workset (defaults to current branch)\n"
             "  add [<name>] <file>...             Add files to current or named workset\n"
+            "  rm [<name>] <file>...              Remove files from current or named workset\n"
             "  show [<name>] [--archived]         Print files stored in workset\n"
             "  edit [<name>]                      Open files.txt in editor\n"
-            "  open [<name>] [--code|--vs]        Open workset files in VS Code or Visual Studio\n"
+            "  open [<name>] [--code|--vs]        Open workset (splits VS/.NET & VS Code by default)\n"
             "  archive [<name>]                   Move active workset to archived\n"
             "  restore [<name>]                   Restore archived workset to active\n"
             "  delete [<name>] [--archived]       Remove a workset permanently\n"
         ),
     )
     parser.add_argument("tokens", nargs="*", help="Action and arguments")
-    parser.add_argument("-f", "--files", nargs="+", dest="files_flag", help="Files to add (on 'add')")
-    parser.add_argument("--code", action="store_true", help="Open workset in VS Code ('open' only)")
-    parser.add_argument("--vs", action="store_true", help="Open workset in Visual Studio ('open' only)")
+    parser.add_argument("-f", "--files", nargs="+", dest="files_flag", help="Files to add/remove (on 'add'/'rm')")
+    parser.add_argument("--code", action="store_true", help="Open all workset files in VS Code ('open' only)")
+    parser.add_argument("--vs", action="store_true", help="Force Visual Studio ('open' only)")
     parser.add_argument("--archived", action="store_true", help="Target archived worksets (list/show/delete)")
     parser.add_argument("--what-if", action="store_true", help="Preview mutating or launch actions without executing")
     parser.add_argument("--current-name", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--prompt-badge", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--root", help=argparse.SUPPRESS)
     parser.add_argument("--branch", help=argparse.SUPPRESS)
     return parser
@@ -216,6 +391,12 @@ def main(argv: list[str] | None = None) -> int:
         name = get_current_workset_name(args.root or "", args.branch or "")
         if name:
             print(name)
+        return 0
+
+    if args.prompt_badge:
+        badge = get_current_workset_badge(args.root or "", args.branch or "")
+        if badge:
+            print(badge)
         return 0
 
     tokens = list(args.tokens)
@@ -235,8 +416,8 @@ def main(argv: list[str] | None = None) -> int:
     if (args.code or args.vs) and action != "open":
         print(ctext("--code and --vs are only valid with 'open'.", "red"), file=sys.stderr)
         return 2
-    if args.files_flag and action != "add":
-        print(ctext("--files is only valid with 'add'.", "red"), file=sys.stderr)
+    if args.files_flag and action not in ("add", "rm"):
+        print(ctext("--files is only valid with 'add' or 'rm'.", "red"), file=sys.stderr)
         return 2
     if args.archived and action not in ("list", "show", "delete"):
         print(ctext("--archived is only valid with 'list', 'show', or 'delete'.", "red"), file=sys.stderr)
@@ -245,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
     item = rest[0] if rest else None
     extra_paths = rest[1:] if len(rest) > 1 else []
 
-    if action != "add" and extra_paths:
+    if action not in ("add", "rm") and extra_paths:
         print(ctext(f"Unexpected arguments: {', '.join(extra_paths)}", "red"), file=sys.stderr)
         return 2
 
@@ -293,29 +474,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if action == "add":
-            raw_inputs: list[str] = []
-            ws_name: str | None = None
-            if args.files_flag:
-                raw_inputs.extend(args.files_flag)
-                if item:
-                    is_file = Path(item).is_file()
-                    cand_dir: Path | None = None
-                    try:
-                        cand_dir = get_workset_dir(item)
-                    except ValueError:
-                        cand_dir = None
-                    if (is_file or "/" in item or "\\" in item) and not (cand_dir and cand_dir.is_dir()):
-                        raw_inputs.append(item)
-                    else:
-                        ws_name = item
-                raw_inputs.extend(extra_paths)
-            elif extra_paths:
-                ws_name = item
-                raw_inputs.extend(extra_paths)
-            elif item:
-                raw_inputs.append(item)
-            else:
-                raise ValueError("Usage: workset add [<name>] <file>... | workset add [<name>] --files <file>...")
+            ws_name, raw_inputs = _parse_workset_and_files(
+                item,
+                extra_paths,
+                args.files_flag,
+                "Usage: workset add [<name>] <file>... | workset add [<name>] --files <file>...",
+            )
 
             ws_dir = resolve_workset_dir(ws_name)
             list_path = ws_dir / "files.txt"
@@ -330,13 +494,14 @@ def main(argv: list[str] | None = None) -> int:
                 p = Path(f_raw).expanduser()
                 if not p.is_file():
                     raise FileNotFoundError(f"File not found: {f_raw}")
-                full_str = str(p.resolve())
-                if full_str not in existing and full_str not in added:
-                    added.append(full_str)
-                ctx = get_workset_context(Path(full_str).parent)
+                resolved_p = p.resolve()
+                ctx = get_workset_context(resolved_p.parent)
                 if ctx and ctx[1] and ctx[0] not in known_roots:
-                    repositories.append({"root": ctx[0], "branch": ctx[1]})
+                    repositories.append({"root": ctx[0], "name": Path(ctx[0]).name, "branch": ctx[1]})
                     known_roots.add(ctx[0])
+                entry_str = _encode_workset_path(resolved_p, ctx[0] if ctx else None)
+                if entry_str not in existing and str(resolved_p) not in existing and entry_str not in added:
+                    added.append(entry_str)
 
             if added:
                 if args.what_if:
@@ -349,8 +514,61 @@ def main(argv: list[str] | None = None) -> int:
                 print(ctext(f"✓ Added {len(added)} file(s) to '{metadata.get('name', ws_dir.name)}'.", "green"))
             return 0
 
+        if action == "rm":
+            ws_name, raw_inputs = _parse_workset_and_files(
+                item,
+                extra_paths,
+                args.files_flag,
+                "Usage: workset rm [<name>] <file>... | workset rm [<name>] --files <file>...",
+            )
+            ws_dir = resolve_workset_dir(ws_name)
+            list_path = ws_dir / "files.txt"
+            meta_path = ws_dir / "metadata.json"
+            metadata = json.loads(meta_path.read_text(encoding="utf-8", errors="replace")) if meta_path.is_file() else {}
+            existing = list_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+            targets: set[str] = set()
+            for f_raw in raw_inputs:
+                targets.add(f_raw.strip())
+                p = Path(f_raw).expanduser()
+                if p.exists():
+                    rp = p.resolve()
+                    targets.add(str(rp))
+                    ctx = get_workset_context(rp.parent)
+                    if ctx:
+                        targets.add(_encode_workset_path(rp, ctx[0]))
+
+            kept: list[str] = []
+            removed = 0
+            for line in existing:
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    kept.append(line)
+                    continue
+                matched = s in targets
+                if not matched:
+                    try:
+                        decoded = str(_decode_workset_path(s, metadata).resolve())
+                        matched = decoded in targets
+                    except (ValueError, OSError):
+                        matched = False
+                if matched:
+                    removed += 1
+                else:
+                    kept.append(line)
+
+            if args.what_if:
+                print(ctext(f"WHAT-IF: Remove {removed} file(s) from '{metadata.get('name', ws_dir.name)}'", "cyan"))
+                return 0
+            if removed:
+                list_path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8", newline="\n")
+                print(ctext(f"✓ Removed {removed} file(s) from '{metadata.get('name', ws_dir.name)}'.", "green"))
+            else:
+                print(ctext("No matching files found in workset.", "yellow"))
+            return 0
+
         if action == "show":
-            ws_dir = resolve_workset_dir(item, archived=args.archived)
+            ws_dir = resolve_workset_dir(item, archived=args.archived, interactive=True)
             print(f"\n{ctext('Workset:', 'cyan')} {ctext(ws_dir.name, 'white')}")
             content = (ws_dir / "files.txt").read_text(encoding="utf-8", errors="replace")
             if content:
@@ -373,13 +591,14 @@ def main(argv: list[str] | None = None) -> int:
             raise FileNotFoundError("No editor found (install VS Code 'code' or set VISUAL/EDITOR).")
 
         if action == "open":
-            ws_dir = resolve_workset_dir(item)
-            files = read_workset_files(ws_dir)
+            ws_dir = resolve_workset_dir(item, interactive=True)
+            metadata = json.loads((ws_dir / "metadata.json").read_text(encoding="utf-8", errors="replace"))
+            files = read_workset_files(ws_dir, metadata=metadata)
             if not files:
                 raise ValueError("The workset has no files.")
-            metadata = json.loads((ws_dir / "metadata.json").read_text(encoding="utf-8", errors="replace"))
 
             roots: list[str] = []
+            grouped: dict[str, list[Path]] = {}
             all_in_repos = True
             for fp in files:
                 ctx = get_workset_context(fp.parent)
@@ -390,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
                     r_str = str(fp.parent)
                 if r_str not in roots:
                     roots.append(r_str)
+                grouped.setdefault(r_str, []).append(fp)
 
             for repo in metadata.get("repositories") or []:
                 r_root = repo.get("root")
@@ -411,13 +631,9 @@ def main(argv: list[str] | None = None) -> int:
 
             single_repo = all_in_repos and len(roots) == 1
             if args.vs and not single_repo:
-                raise ValueError("Visual Studio requires all workset files to belong to one repository; use --code.")
+                raise ValueError("Visual Studio requires all workset files to belong to one repository; omit --vs or use --code.")
 
-            solutions = discover_vs_solutions(Path(roots[0])) if (single_repo and not args.code) else []
-            if args.vs and not solutions:
-                raise ValueError(f"No Visual Studio solution found for '{roots[0]}'.")
-
-            if args.code or not solutions:
+            if args.code:
                 if args.what_if:
                     print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in VS Code ({len(files)} file(s))", "cyan"))
                     return 0
@@ -427,11 +643,16 @@ def main(argv: list[str] | None = None) -> int:
                 proc = subprocess.run([code_bin, "--new-window", *roots, *(str(f) for f in files)])
                 return proc.returncode
 
-            if args.what_if:
-                print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({solutions[0]})", "cyan"))
-                return 0
-            devenv = resolve_vs_devenv()
-            if devenv:
+            if args.vs:
+                solutions = discover_vs_solutions(Path(roots[0]))
+                if not solutions:
+                    raise ValueError(f"No Visual Studio solution found for '{roots[0]}'.")
+                if args.what_if:
+                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({solutions[0]})", "cyan"))
+                    return 0
+                devenv = resolve_vs_devenv()
+                if not devenv:
+                    raise FileNotFoundError("Visual Studio launcher ('devenv') not found in PATH or via vswhere.exe; pass --code.")
                 win_targets = [to_windows_path(solutions[0]), *(to_windows_path(f) for f in files)]
                 subprocess.Popen(
                     [devenv, *win_targets],
@@ -440,7 +661,50 @@ def main(argv: list[str] | None = None) -> int:
                     stderr=subprocess.DEVNULL,
                 )
                 return 0
-            raise FileNotFoundError("Visual Studio launcher ('devenv') not found in PATH or via vswhere.exe; pass --code.")
+
+            # Default: hybrid split mode (Visual Studio for .sln/.slnx repos, VS Code for the rest)
+            vs_launches: list[tuple[str, Path, list[Path]]] = []
+            code_roots: list[str] = []
+            code_files: list[Path] = []
+            for r_str in roots:
+                r_files = grouped[r_str]
+                sols = discover_vs_solutions(Path(r_str)) if (Path(r_str) / ".git").exists() else []
+                if sols:
+                    vs_launches.append((r_str, sols[0], r_files))
+                else:
+                    code_roots.append(r_str)
+                    code_files.extend(r_files)
+
+            devenv = resolve_vs_devenv() if vs_launches else None
+            if vs_launches and not devenv:
+                for r_str, _sol, r_files in vs_launches:
+                    code_roots.append(r_str)
+                    code_files.extend(r_files)
+                vs_launches.clear()
+
+            if args.what_if:
+                for _r_str, sol, r_files in vs_launches:
+                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({sol}, {len(r_files)} file(s))", "cyan"))
+                if code_files:
+                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in VS Code ({len(code_files)} file(s))", "cyan"))
+                return 0
+
+            for _r_str, sol, r_files in vs_launches:
+                assert devenv is not None
+                win_targets = [to_windows_path(sol), *(to_windows_path(f) for f in r_files)]
+                subprocess.Popen(
+                    [devenv, *win_targets],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            if code_files:
+                code_bin = shutil.which("code")
+                if not code_bin:
+                    raise FileNotFoundError("✖ workset: VS Code command ('code') not found in PATH.")
+                proc = subprocess.run([code_bin, "--new-window", *code_roots, *(str(f) for f in code_files)])
+                return proc.returncode
+            return 0
 
         if action == "archive":
             ws_dir = resolve_workset_dir(item, archived=False)
