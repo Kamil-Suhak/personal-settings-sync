@@ -1,3 +1,7 @@
 #!/usr/bin/env sh
 HOOK_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-python "$HOOK_DIR/validate_commit_msg.py" "$1"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$HOOK_DIR/validate_commit_msg.py" "$1"
+else
+    exec python "$HOOK_DIR/validate_commit_msg.py" "$1"
+fi

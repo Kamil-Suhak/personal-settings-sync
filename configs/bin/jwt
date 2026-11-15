@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Decode a JWT header/payload from an argument, stdin, or the clipboard."""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
+
+
+def decode_segment(seg: str) -> dict | list | str:
+    padded = seg + "=" * (-len(seg) % 4)
+    raw_bytes = base64.urlsafe_b64decode(padded.encode("ascii"))
+    return json.loads(raw_bytes.decode("utf-8"))
+
+
+def acquire_token(arg_token: str | None) -> str:
+    candidate = (arg_token or "").strip()
+    if not candidate and not sys.stdin.isatty():
+        candidate = sys.stdin.read().strip()
+    if not candidate:
+        candidate = (read_clipboard() or "").strip()
+
+    if candidate.lower().startswith("bearer "):
+        candidate = candidate[7:].strip()
+    return candidate.strip().strip('"').strip("'")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jwt",
+        description="Decode a JWT header and payload (reads argument, piped stdin, or clipboard).",
+    )
+    parser.add_argument("token", nargs="?", help="JWT string (or omit to read from stdin/clipboard)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw))
+
+    token = acquire_token(args.token)
+    if not token:
+        print(ctext("No JWT token supplied (pass token arg, pipe via stdin, or copy to clipboard).", "red"), file=sys.stderr)
+        return 1
+
+    parts = token.split(".")
+    if len(parts) < 2 or not parts[0] or not parts[1]:
+        print(ctext("Invalid JWT format (expected at least header.payload).", "red"), file=sys.stderr)
+        return 1
+
+    try:
+        header = decode_segment(parts[0])
+        payload = decode_segment(parts[1])
+    except Exception as exc:
+        print(ctext(f"Failed to decode JWT: {exc}", "red"), file=sys.stderr)
+        return 1
+
+    print(ctext("Header:", "cyan"))
+    print(json.dumps(header, indent=2, ensure_ascii=False))
+    print()
+    print(ctext("Payload:", "cyan"))
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+
+    if isinstance(payload, dict) and "exp" in payload:
+        try:
+            exp_val = float(payload["exp"])
+            local_dt = datetime.fromtimestamp(exp_val).astimezone()
+            is_valid = exp_val > time.time()
+            badge_str = ctext("VALID", "green") if is_valid else ctext("EXPIRED", "red")
+            print()
+            print(f"{ctext('Expires:', 'cyan')} {local_dt.strftime('%Y-%m-%d %H:%M:%S %Z')} [{badge_str}]")
+        except (ValueError, TypeError, OverflowError, OSError):
+            pass
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

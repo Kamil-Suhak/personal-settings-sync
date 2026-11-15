@@ -1,0 +1,640 @@
+#!/usr/bin/env python3
+"""Terminal screen-buffer parser, context builder, and streaming CLI runner for 'out' and 'ask'."""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ANSI_CODES, normalize_legacy_flags, read_config_lines, should_use_color  # noqa: E402
+
+PROMPT_RE = re.compile(r"^(?:.*?(?:\uE0B0\s*|\s+))?\u276F\s*(.*)$")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+SELECTOR_TOKEN_RE = re.compile(r"^(?:\d+|~\d+(?:\.\.~?\d+)?)$")
+
+DEFAULT_AGY_PREAMBLE = (
+    "You are running in an ephemeral session via agy --print. "
+    "Keep your response short and do not use markdown formatting. "
+    "Minimize tool and MCP calls and prioritize fast responses while remaining accurate."
+)
+DEFAULT_COPILOT_PREAMBLE = (
+    "Keep your response short and do not use markdown formatting. "
+    "Minimize tool and MCP calls and prioritize fast responses while remaining accurate."
+)
+
+
+def strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
+
+
+def _trim_blank_edges(lines: list[str]) -> list[str]:
+    start = 0
+    end = len(lines) - 1
+    while start <= end and not lines[start].strip():
+        start += 1
+    while end >= start and not lines[end].strip():
+        end -= 1
+    return lines[start : end + 1] if start <= end else []
+
+
+def convert_to_terminal_blocks(
+    lines: list[str],
+    include_active: bool = False,
+    fallback_command: str | None = None,
+) -> list[dict[str, object]]:
+    """Split terminal screen lines into completed `{command, output}` blocks."""
+    if not lines:
+        return []
+
+    blocks: list[dict[str, object]] = []
+    leading_out: list[str] = []
+    current_cmd = ""
+    current_out: list[str] = []
+    seen_prompt = False
+
+    def _flush() -> None:
+        if not seen_prompt:
+            return
+        blocks.append({"command": current_cmd, "output": _trim_blank_edges(current_out)})
+
+    for raw in lines:
+        if raw is None:
+            continue
+        clean = strip_ansi(raw).rstrip()
+        match = PROMPT_RE.match(clean)
+        if match:
+            _flush()
+            seen_prompt = True
+            current_cmd = match.group(1).strip()
+            current_out = []
+        elif seen_prompt:
+            current_out.append(clean)
+        else:
+            leading_out.append(clean)
+
+    if include_active and seen_prompt:
+        _flush()
+
+    if not blocks and seen_prompt and fallback_command and fallback_command.strip():
+        trimmed_leading = _trim_blank_edges(leading_out)
+        if trimmed_leading:
+            blocks.append({"command": fallback_command.strip(), "output": trimmed_leading})
+
+    return blocks
+
+
+def resolve_block_indices(spec: str | None, count: int) -> list[int]:
+    """Resolve `N`, `~N`, or `~A..B` / `~A..~B` into chronological block indices."""
+    if count <= 0:
+        return []
+    s = (spec or "1").strip()
+
+    m_single = re.match(r"^~(\d+)$", s)
+    if m_single:
+        offset = int(m_single.group(1))
+        if offset < 1 or offset > count:
+            return []
+        return [count - offset]
+
+    m_range = re.match(r"^~(\d+)\.\.~?(\d+)$", s)
+    if m_range:
+        a = int(m_range.group(1))
+        b = int(m_range.group(2))
+        if a < 1 or b < 1:
+            return []
+        start_off = min(count, max(a, b))
+        end_off = max(1, min(a, b))
+        if start_off < end_off:
+            return []
+        return [count - off for off in range(start_off, end_off - 1, -1)]
+
+    m_count = re.match(r"^(\d+)$", s)
+    if m_count:
+        n = min(count, max(1, int(m_count.group(1))))
+        return list(range(count - n, count))
+
+    raise ValueError(f"Invalid selector '{spec}'. Use N (last N), ~N (Nth last), or ~A..B / ~A..~B (slice).")
+
+
+def read_terminal_buffer() -> list[str]:
+    """Capture recent terminal text from test hook, Kitty, WezTerm, or tmux."""
+    test_buf = os.environ.get("PSS_TEST_TERMINAL_BUFFER")
+    if test_buf:
+        p = Path(test_buf)
+        if p.is_file():
+            return p.read_text(encoding="utf-8", errors="replace").splitlines()
+        return []
+
+    captures: list[list[str]] = []
+    if os.environ.get("KITTY_LISTEN_ON") and shutil.which("kitty"):
+        captures.append(["kitty", "@", "get-text", "--extent=screen"])
+    if os.environ.get("WEZTERM_PANE") and shutil.which("wezterm"):
+        captures.append(["wezterm", "cli", "get-text"])
+    if os.environ.get("TMUX") and shutil.which("tmux"):
+        captures.append(["tmux", "capture-pane", "-p", "-S", "-500"])
+
+    for cmd in captures:
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3)
+            if res.returncode == 0 and res.stdout:
+                return res.stdout.splitlines()
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return []
+
+
+def build_prompt_text(
+    question_args: list[str],
+    piped: str,
+    include_ctx: bool,
+    preamble: str,
+    fallback_command: str | None = None,
+) -> str | None:
+    """Assemble full prompt from preamble, optional terminal context slice, piped text, and question."""
+    ctx_spec = "1"
+    q_list = list(question_args)
+    if include_ctx and q_list and SELECTOR_TOKEN_RE.match(q_list[0].strip()):
+        ctx_spec = q_list[0].strip()
+        q_list = q_list[1:]
+
+    question = " ".join(q_list).strip()
+    has_piped = bool(piped.strip())
+    if not question and not has_piped and not include_ctx:
+        return None
+
+    if question:
+        prompt_question = question
+    elif has_piped:
+        prompt_question = "Analyze or answer based on the piped input above."
+    else:
+        prompt_question = "Explain or address the terminal command and output shown in context above."
+
+    parts = [preamble.strip()]
+
+    if include_ctx:
+        blocks = convert_to_terminal_blocks(read_terminal_buffer(), fallback_command=fallback_command)
+        if blocks:
+            indices = resolve_block_indices(ctx_spec, len(blocks))
+            if indices:
+                ctx_lines: list[str] = []
+                for idx in indices:
+                    b = blocks[idx]
+                    ctx_lines.append(f"$ {b['command']}")
+                    out_lines: list[str] = b["output"]  # type: ignore[assignment]
+                    if out_lines:
+                        ctx_lines.extend(out_lines)
+                    else:
+                        ctx_lines.append("(no output)")
+                    ctx_lines.append("")
+                parts.append(f'[Context: Terminal Commands & Output ("{ctx_spec}")]\n' + "\n".join(ctx_lines).rstrip())
+        else:
+            hist_path = os.environ.get("PSS_SHELL_HISTORY_FILE")
+            if hist_path:
+                hist_lines = read_config_lines(Path(hist_path))
+                if hist_lines:
+                    indices = resolve_block_indices(ctx_spec, len(hist_lines))
+                    sel = [f"{i + 1}: {hist_lines[i]}" for i in indices]
+                    if sel:
+                        parts.append("[Context: Recent Terminal Commands]\n" + "\n".join(sel))
+
+    if has_piped:
+        parts.append(f"[Context: Piped Input]\n{piped.rstrip()}")
+
+    parts.append(f"[User Question]\n{prompt_question}")
+    return "\n\n".join(parts)
+
+
+def _ce(stream, text: str, color: str) -> str:
+    if not should_use_color(stream):
+        return text
+    code = ANSI_CODES.get(color.lower(), "")
+    return f"{code}{text}{ANSI_CODES['reset']}" if code else text
+
+
+def remove_agy_conversation(cli_dir: Path, conv_ids: set[str]) -> None:
+    """Clean up ephemeral agy conversation files and summaries DB entries."""
+    if not conv_ids:
+        return
+    conv_dir = cli_dir / "conversations"
+    brain_dir = cli_dir / "brain"
+    for cid in conv_ids:
+        for match in glob.glob(str(conv_dir / f"{cid}.db*")):
+            try:
+                Path(match).unlink(missing_ok=True)
+            except OSError:
+                pass
+        shutil.rmtree(brain_dir / cid, ignore_errors=True)
+        for sub in ("annotations", "implicit"):
+            for match in glob.glob(str(cli_dir / sub / f"{cid}.*")):
+                try:
+                    Path(match).unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    summaries_db = cli_dir / "conversation_summaries.db"
+    if summaries_db.is_file():
+        con: sqlite3.Connection | None = None
+        try:
+            con = sqlite3.connect(str(summaries_db), timeout=2.0)
+            for cid in conv_ids:
+                for tbl in ("conversation_summaries", "conversations_fts", "conversation_parents"):
+                    try:
+                        con.execute(f"DELETE FROM {tbl} WHERE conversation_id = ?", (cid,))
+                    except sqlite3.Error:
+                        pass
+            con.commit()
+        except sqlite3.Error:
+            pass
+        finally:
+            if con is not None:
+                con.close()
+
+
+def stream_ask_process(executable: str, args: list[str], label: str, stream_json: bool) -> tuple[int, str | None]:
+    """Launch ask backend CLI, show spinner until first output, and stream assistant response."""
+    interactive_out = sys.stdout.isatty()
+    animate = sys.stderr.isatty() and should_use_color(sys.stderr)
+    exe_name = Path(executable).stem
+
+    try:
+        proc = subprocess.Popen(
+            [executable, *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except OSError as exc:
+        print(_ce(sys.stderr, f"\n✖ {exe_name}: failed to start ({exc})\n", "red"), file=sys.stderr)
+        return 1, None
+
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        stderr_chunks.append(proc.stderr.read())
+
+    err_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    err_thread.start()
+
+    state = {
+        "header_shown": False,
+        "cursor_hidden": False,
+        "ended_with_newline": True,
+        "last_step": None,
+        "saw_delta": False,
+        "conv_id": None,
+        "stream_error": None,
+    }
+    line_buf: list[str] = []
+    stop_spinner = threading.Event()
+
+    def _clear_spinner() -> None:
+        if animate and state["cursor_hidden"]:
+            sys.stderr.write("\r\033[2K\033[?25h")
+            sys.stderr.flush()
+            state["cursor_hidden"] = False
+
+    def _show_header() -> None:
+        if not state["header_shown"]:
+            stop_spinner.set()
+            _clear_spinner()
+            sys.stderr.write(f"\n{_ce(sys.stderr, '▸ ask', 'cyan')} {_ce(sys.stderr, f'({label})', 'gray')}\n")
+            sys.stderr.flush()
+            state["header_shown"] = True
+
+    def _emit_line(line: str) -> None:
+        _show_header()
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+        state["ended_with_newline"] = True
+
+    def _append_delta(delta: str) -> None:
+        if not delta:
+            return
+        if interactive_out:
+            _show_header()
+            norm = delta.replace("\r\n", "\n")
+            sys.stdout.write(norm)
+            sys.stdout.flush()
+            state["ended_with_newline"] = norm.endswith("\n")
+            return
+        line_buf.append(delta)
+        combined = "".join(line_buf)
+        while "\n" in combined:
+            head, combined = combined.split("\n", 1)
+            _emit_line(head.rstrip("\r"))
+        line_buf.clear()
+        if combined:
+            line_buf.append(combined)
+
+    def _spinner_loop() -> None:
+        frames = ["|", "/", "-", "\\"]
+        idx = 0
+        if animate:
+            sys.stderr.write("\033[?25l")
+            sys.stderr.flush()
+            state["cursor_hidden"] = True
+        while not stop_spinner.wait(timeout=0.08):
+            if animate and not state["header_shown"]:
+                sys.stderr.write(f"\r{_ce(sys.stderr, frames[idx % len(frames)], 'green')} ")
+                sys.stderr.flush()
+                idx += 1
+
+    spin_thread = threading.Thread(target=_spinner_loop, daemon=True)
+    spin_thread.start()
+
+    try:
+        assert proc.stdout is not None
+        for raw_line in proc.stdout:
+            if not stream_json:
+                _emit_line(raw_line.rstrip("\r\n"))
+                continue
+
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            try:
+                ev = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(ev, dict):
+                continue
+
+            if ev.get("conversation_id") and not state["conv_id"]:
+                state["conv_id"] = str(ev["conversation_id"])
+
+            event_type = ev.get("event")
+            if event_type == "step_update":
+                su = ev.get("step_update") or {}
+                stype = su.get("step_type")
+                if stype == "agent_response":
+                    step_idx = su.get("step_index")
+                    if (
+                        step_idx is not None
+                        and state["last_step"] is not None
+                        and step_idx != state["last_step"]
+                    ):
+                        if interactive_out and state["header_shown"] and not state["ended_with_newline"]:
+                            sys.stdout.write("\n")
+                            sys.stdout.flush()
+                            state["ended_with_newline"] = True
+                        elif not interactive_out and line_buf:
+                            _emit_line("".join(line_buf).rstrip("\r"))
+                            line_buf.clear()
+                    if step_idx is not None:
+                        state["last_step"] = step_idx
+                    delta = su.get("text_delta")
+                    if delta is not None:
+                        state["saw_delta"] = True
+                        _append_delta(str(delta))
+                elif stype == "error_message":
+                    _show_header()
+                    if interactive_out and not state["ended_with_newline"]:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        state["ended_with_newline"] = True
+                    elif not interactive_out and line_buf:
+                        _emit_line("".join(line_buf).rstrip("\r"))
+                        line_buf.clear()
+                    sys.stderr.write(_ce(sys.stderr, "[agy step interrupted — retrying]\n", "yellow"))
+                    sys.stderr.flush()
+            elif event_type == "result":
+                res = ev.get("result") or {}
+                if res.get("conversation_id") and not state["conv_id"]:
+                    state["conv_id"] = str(res["conversation_id"])
+                if not state["saw_delta"] and res.get("response"):
+                    _append_delta(str(res["response"]))
+                status = res.get("status")
+                if status and status != "SUCCESS":
+                    detail = res.get("error") or res.get("message")
+                    if detail:
+                        clean = re.sub(r"\r?\n", " ", str(detail))
+                        clean = re.sub(r"\s*Retries remaining:\s*\d+\s*$", "", clean).strip()
+                        state["stream_error"] = f"{status} — {clean}"
+                    else:
+                        state["stream_error"] = f"Status: {status}"
+
+        if not interactive_out and line_buf:
+            _emit_line("".join(line_buf).rstrip("\r"))
+            line_buf.clear()
+    finally:
+        stop_spinner.set()
+        spin_thread.join(timeout=1.0)
+        _clear_spinner()
+        if proc.poll() is None:
+            proc.terminate()
+        exit_code = proc.wait()
+        err_thread.join(timeout=1.0)
+
+    if state["header_shown"]:
+        if interactive_out and not state["ended_with_newline"]:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    stderr_text = "".join(stderr_chunks).strip()
+    stream_error = state["stream_error"]
+    if stream_error and not stderr_text:
+        print(_ce(sys.stderr, f"\n✖ {exe_name} ({label}) error: {stream_error}\n", "red"), file=sys.stderr)
+
+    if stderr_text:
+        if exit_code != 0:
+            print(_ce(sys.stderr, f"\n✖ {exe_name} failed (exit {exit_code}):", "red"), file=sys.stderr)
+            for err_line in stderr_text.splitlines():
+                print(_ce(sys.stderr, f"  {err_line}", "red"), file=sys.stderr)
+            print(file=sys.stderr)
+        else:
+            for err_line in stderr_text.splitlines():
+                print(_ce(sys.stderr, f"  {err_line}", "darkgray"), file=sys.stderr)
+            print(file=sys.stderr)
+    elif exit_code != 0 and not stream_error:
+        print(_ce(sys.stderr, f"\n✖ {exe_name} failed (exit {exit_code}).\n", "red"), file=sys.stderr)
+
+    if exit_code == 0 and stream_error:
+        exit_code = 1
+    return exit_code, state["conv_id"]
+
+
+def cmd_out(args: argparse.Namespace) -> int:
+    blocks = convert_to_terminal_blocks(read_terminal_buffer(), fallback_command=args.fallback_command)
+    if not blocks:
+        print(_ce(sys.stderr, "No completed command blocks found in terminal buffer.", "yellow"), file=sys.stderr)
+        return 1
+    try:
+        indices = resolve_block_indices(args.selector, len(blocks))
+    except ValueError as exc:
+        print(_ce(sys.stderr, str(exc), "red"), file=sys.stderr)
+        return 2
+    if not indices:
+        print(
+            _ce(sys.stderr, f"Selector '{args.selector}' matched none of the {len(blocks)} captured block(s).", "yellow"),
+            file=sys.stderr,
+        )
+        return 1
+
+    for pos, idx in enumerate(indices):
+        if pos > 0:
+            print()
+        blk = blocks[idx]
+        if args.include_command:
+            print(f"$ {blk['command']}")
+        for line in blk["output"]:  # type: ignore[attr-defined]
+            print(line)
+    return 0
+
+
+def cmd_resolve_slice(args: argparse.Namespace) -> int:
+    try:
+        indices = resolve_block_indices(args.spec, args.count)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(indices))
+    else:
+        for i in indices:
+            print(i)
+    return 0
+
+
+def cmd_build_prompt(args: argparse.Namespace) -> int:
+    piped = sys.stdin.read() if not sys.stdin.isatty() else ""
+    try:
+        prompt = build_prompt_text(
+            args.query,
+            piped,
+            args.ctx,
+            args.preamble or DEFAULT_AGY_PREAMBLE,
+            fallback_command=args.fallback_command,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not prompt:
+        print("Usage: ask [--ctx [<sel>]] <question>", file=sys.stderr)
+        return 1
+    print(prompt)
+    return 0
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    piped = sys.stdin.read() if not sys.stdin.isatty() else ""
+    preamble = args.preamble or (DEFAULT_AGY_PREAMBLE if args.engine == "agy" else DEFAULT_COPILOT_PREAMBLE)
+    try:
+        full_prompt = build_prompt_text(
+            args.query,
+            piped,
+            args.ctx,
+            preamble,
+            fallback_command=args.fallback_command,
+        )
+    except ValueError as exc:
+        print(_ce(sys.stderr, str(exc), "red"), file=sys.stderr)
+        return 2
+
+    if not full_prompt:
+        print(_ce(sys.stderr, "Usage: ask [--ctx [<n>|~<n>|~<a>..<b>]] [--high] [--keep-history] <question>", "yellow"), file=sys.stderr)
+        return 1
+
+    default_bin = "agy" if args.engine == "agy" else "copilot"
+    exe = args.executable or os.environ.get("PSS_ASK_EXECUTABLE") or shutil.which(default_bin)
+    if not exe:
+        print(_ce(sys.stderr, f"✖ ask: '{default_bin}' CLI not found in PATH.", "red"), file=sys.stderr)
+        return 1
+
+    if args.engine == "copilot":
+        code, _ = stream_ask_process(exe, ["-p", full_prompt], "copilot", stream_json=False)
+        return code
+
+    cli_dir = Path(os.environ.get("PSS_AGY_CLI_DIR") or (Path.home() / ".gemini" / "antigravity-cli")).expanduser()
+    conv_dir = cli_dir / "conversations"
+    brain_dir = cli_dir / "brain"
+    before_convs = {p.stem for p in conv_dir.glob("*.db")} if conv_dir.is_dir() else set()
+    before_brain = {p.name for p in brain_dir.iterdir() if p.is_dir()} if brain_dir.is_dir() else set()
+
+    model = "gemini-4-hydrogen-high" if args.high else "gemini-4-hydrogen-low"
+    code, conv_id = stream_ask_process(
+        exe,
+        ["--model", model, "--output-format", "stream-json", "-p", full_prompt],
+        model,
+        stream_json=True,
+    )
+
+    if not args.keep_history:
+        time.sleep(0.05)
+        new_ids: set[str] = set()
+        if conv_id:
+            new_ids.add(conv_id)
+        if conv_dir.is_dir():
+            new_ids.update({p.stem for p in conv_dir.glob("*.db")} - before_convs)
+        if brain_dir.is_dir():
+            new_ids.update({p.name for p in brain_dir.iterdir() if p.is_dir()} - before_brain)
+        remove_agy_conversation(cli_dir, new_ids)
+
+    return code
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ask-helper",
+        description="Terminal screen capture and streaming AI CLI helper for 'out' and 'ask'.",
+    )
+    sub = parser.add_subparsers(dest="subcommand", required=True)
+
+    p_out = sub.add_parser("out", help="Print output from recent completed command block(s)")
+    p_out.add_argument("selector", nargs="?", default="1", help="Block selector: N, ~N, or ~A..B")
+    p_out.add_argument("-c", "--include-command", action="store_true", help="Prepend '$ <command>' line")
+    p_out.add_argument("--fallback-command", help="Fallback command name if top prompt scrolled off")
+    p_out.set_defaults(func=cmd_out)
+
+    p_slice = sub.add_parser("resolve-slice", help="Resolve block selector indices for a given count")
+    p_slice.add_argument("spec", help="Selector specification")
+    p_slice.add_argument("--count", type=int, required=True, help="Total block count")
+    p_slice.add_argument("--json", action="store_true", help="Output JSON list")
+    p_slice.set_defaults(func=cmd_resolve_slice)
+
+    p_prompt = sub.add_parser("build-prompt", help="Assemble context-aware prompt text")
+    p_prompt.add_argument("--ctx", action="store_true", help="Include captured terminal context")
+    p_prompt.add_argument("--preamble", help="System/behavior preamble")
+    p_prompt.add_argument("--fallback-command", help="Fallback command if top prompt scrolled off")
+    p_prompt.add_argument("query", nargs="*", help="Optional leading slice spec and question")
+    p_prompt.set_defaults(func=cmd_build_prompt)
+
+    p_run = sub.add_parser("run", help="Run agy or copilot with streaming output and cleanup")
+    p_run.add_argument("--engine", choices=["agy", "copilot"], required=True, help="AI CLI engine")
+    p_run.add_argument("--ctx", action="store_true", help="Include recent terminal context")
+    p_run.add_argument("--high", action="store_true", help="Use high-reasoning model (agy only)")
+    p_run.add_argument("--keep-history", action="store_true", help="Retain agy conversation state")
+    p_run.add_argument("--executable", help="Override CLI binary path (for testing)")
+    p_run.add_argument("--preamble", help="Override prompt preamble")
+    p_run.add_argument("--fallback-command", help="Fallback command if top prompt scrolled off")
+    p_run.add_argument("query", nargs="*", help="Question and optional leading context selector")
+    p_run.set_defaults(func=cmd_run)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    args = parser.parse_args(normalize_legacy_flags(raw))
+    return int(args.func(args))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

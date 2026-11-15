@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""Scan multiple git repositories or project roots for uncommitted work and unpushed commits."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import (  # noqa: E402
+    ctext,
+    git_root,
+    normalize_legacy_flags,
+    read_config_lines,
+    resolve_project_roots_file,
+    run_git,
+)
+
+SKIP_DIRS = {
+    ".git",
+    "node_modules",
+    "bin",
+    "obj",
+    "target",
+    "dist",
+    ".vs",
+    ".vscode",
+    ".idea",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "packages",
+}
+
+CONFLICT_PAIRS = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+
+def expand_path(raw: str) -> Path:
+    return Path(os.path.expandvars(raw)).expanduser()
+
+
+def walk_repos(start_dir: Path, max_depth: int) -> list[Path]:
+    """Recursively discover git repos up to max_depth without descending into discovered repos."""
+    discovered: list[Path] = []
+
+    def _visit(current: Path, depth: int) -> None:
+        if (current / ".git").exists():
+            discovered.append(current)
+            return
+        if depth >= max_depth:
+            return
+        try:
+            entries = sorted(current.iterdir(), key=lambda p: p.name.lower())
+        except OSError:
+            return
+        for entry in entries:
+            if not entry.is_dir() or entry.is_symlink():
+                continue
+            if entry.name in SKIP_DIRS:
+                continue
+            _visit(entry, depth + 1)
+
+    _visit(start_dir, 0)
+    if not discovered:
+        top = git_root(start_dir)
+        if top is not None:
+            discovered.append(top)
+    return discovered
+
+
+def resolve_targets(targets: list[str], max_depth: int) -> tuple[list[Path], list[str]]:
+    """Resolve CLI targets or configured project roots into deduplicated repo paths."""
+    warnings: list[str] = []
+    candidates: list[Path] = []
+
+    roots_file = resolve_project_roots_file()
+    configured_roots = [expand_path(line) for line in read_config_lines(roots_file)]
+
+    if not targets:
+        if not configured_roots:
+            warnings.append(
+                f"No targets provided and no project roots configured in {roots_file}. Scanning current directory."
+            )
+            search_dirs = [Path.cwd()]
+        else:
+            search_dirs = configured_roots
+        for sdir in search_dirs:
+            if sdir.is_dir():
+                candidates.extend(walk_repos(sdir, max_depth))
+            else:
+                warnings.append(f"Configured project root does not exist: {sdir}")
+    else:
+        for target in targets:
+            as_path = expand_path(target)
+            if as_path.is_dir():
+                candidates.extend(walk_repos(as_path, max_depth))
+                continue
+            # Treat non-directory target as a repo name under configured project roots
+            matched = False
+            for rdir in configured_roots:
+                direct = rdir / target
+                if direct.is_dir():
+                    candidates.extend(walk_repos(direct, max_depth))
+                    matched = True
+            if not matched:
+                warnings.append(f"Target not found as directory or named project: {target}")
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for p in candidates:
+        try:
+            key = str(p.resolve())
+        except OSError:
+            key = str(p)
+        if key not in seen:
+            seen.add(key)
+            unique.append(p)
+    return unique, warnings
+
+
+def inspect_repo(repo: Path, do_fetch: bool, include_files: bool, include_commits: bool) -> dict:
+    """Inspect a single git repo's working tree and all local branches."""
+    if do_fetch:
+        try:
+            subprocess.run(
+                ["git", "-C", str(repo), "fetch", "--prune", "--quiet"],
+                capture_output=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+    sym_res = run_git(["symbolic-ref", "--short", "HEAD"], cwd=repo)
+    is_detached = sym_res.returncode != 0
+    if not is_detached:
+        current_branch = sym_res.stdout.strip()
+    else:
+        sha = run_git(["rev-parse", "--short", "HEAD"], cwd=repo).stdout.strip() or "unborn"
+        current_branch = f"detached@{sha}"
+
+    porc = run_git(["status", "--porcelain=v1"], cwd=repo).stdout.splitlines()
+    conflicts = staged = unstaged = untracked = 0
+    file_entries: list[str] = []
+    for line in porc:
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        if code in CONFLICT_PAIRS:
+            conflicts += 1
+        elif code == "??":
+            untracked += 1
+        else:
+            if code[0] != " ":
+                staged += 1
+            if code[1] != " ":
+                unstaged += 1
+        if include_files:
+            file_entries.append(line)
+
+    unpushed_branches: list[dict] = []
+    ref_res = run_git(
+        [
+            "for-each-ref",
+            "--format=%(refname:short)|%(upstream:short)|%(upstream:track,nobracket)",
+            "refs/heads",
+        ],
+        cwd=repo,
+    )
+    for row in ref_res.stdout.splitlines():
+        parts = row.split("|", 2)
+        if len(parts) < 3:
+            continue
+        branch, upstream, track = parts
+        is_gone = "gone" in track.lower()
+        if upstream and not is_gone:
+            rev_args = [f"{upstream}..refs/heads/{branch}"]
+            note = f"-> {upstream}"
+        else:
+            rev_args = [f"refs/heads/{branch}", "--not", "--remotes"]
+            note = "(upstream gone)" if is_gone else "(local only / no remote)"
+
+        cnt_res = run_git(["rev-list", "--count", *rev_args], cwd=repo)
+        count = int(cnt_res.stdout.strip()) if cnt_res.returncode == 0 and cnt_res.stdout.strip().isdigit() else 0
+        if count > 0:
+            commits: list[str] = []
+            if include_commits:
+                commits = run_git(["log", "--oneline", *rev_args], cwd=repo).stdout.strip().splitlines()
+            unpushed_branches.append({"branch": branch, "count": count, "note": note, "commits": commits})
+
+    if is_detached and run_git(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=repo).returncode == 0:
+        cnt_res = run_git(["rev-list", "--count", "HEAD", "--not", "--remotes"], cwd=repo)
+        dcount = int(cnt_res.stdout.strip()) if cnt_res.returncode == 0 and cnt_res.stdout.strip().isdigit() else 0
+        if dcount > 0:
+            dcommits = (
+                run_git(["log", "--oneline", "HEAD", "--not", "--remotes"], cwd=repo).stdout.strip().splitlines()
+                if include_commits
+                else []
+            )
+            unpushed_branches.append(
+                {"branch": current_branch, "count": dcount, "note": "(detached HEAD)", "commits": dcommits}
+            )
+
+    wt_total = conflicts + staged + unstaged + untracked
+    is_clean = wt_total == 0 and len(unpushed_branches) == 0
+
+    return {
+        "name": repo.name,
+        "path": str(repo),
+        "branch": current_branch,
+        "clean": is_clean,
+        "conflicts": conflicts,
+        "staged": staged,
+        "unstaged": unstaged,
+        "untracked": untracked,
+        "files": file_entries,
+        "unpushed_branches": unpushed_branches,
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="unpushed",
+        description="List uncommitted working-tree changes and unpushed local commits across multiple repos.",
+    )
+    parser.add_argument(
+        "targets",
+        nargs="*",
+        help="Directories or project names (omit to scan configured project roots)",
+    )
+    parser.add_argument("-a", "--all", action="store_true", help="Include clean, fully pushed repos in output")
+    parser.add_argument("--files", action="store_true", help="List dirty working-tree file paths per repo")
+    parser.add_argument("-c", "--commits", action="store_true", help="List unpushed commit subjects per branch")
+    parser.add_argument("-f", "--fetch", action="store_true", help="Run git fetch --prune before inspecting repos")
+    parser.add_argument("--depth", "--max-depth", dest="depth", type=int, default=4, help="Max directory scan depth (default 4)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw))
+
+    repos, warnings = resolve_targets(args.targets, max(0, args.depth))
+    for w in warnings:
+        print(ctext(f"[warn] {w}", "yellow"), file=sys.stderr)
+
+    if not repos:
+        print(ctext("No git repositories found.", "yellow"))
+        return 0
+
+    results = [inspect_repo(r, args.fetch, args.files, args.commits) for r in repos]
+    dirty_count = sum(1 for r in results if not r["clean"])
+    clean_count = len(results) - dirty_count
+
+    for item in results:
+        if item["clean"]:
+            if args.all:
+                print(
+                    f"{ctext('✓', 'green')} {item['name']} {ctext('[' + item['branch'] + ']', 'cyan')}  "
+                    f"{ctext('clean', 'green')}  {ctext(item['path'], 'darkgray')}"
+                )
+            continue
+
+        wt_bits: list[str] = []
+        if item["conflicts"]:
+            wt_bits.append(ctext(f"{item['conflicts']} conflict", "red"))
+        if item["staged"]:
+            wt_bits.append(ctext(f"{item['staged']} staged", "green"))
+        if item["unstaged"]:
+            wt_bits.append(ctext(f"{item['unstaged']} unstaged", "yellow"))
+        if item["untracked"]:
+            wt_bits.append(ctext(f"{item['untracked']} untracked", "cyan"))
+
+        total_commits = sum(b["count"] for b in item["unpushed_branches"])
+        header_notes: list[str] = list(wt_bits)
+        if total_commits:
+            header_notes.append(ctext(f"{total_commits} unpushed commit(s)", "magenta"))
+
+        print(
+            f"{ctext('•', 'yellow')} {ctext(item['name'], 'white')} "
+            f"{ctext('[' + item['branch'] + ']', 'cyan')}  "
+            f"{', '.join(header_notes)}  {ctext(item['path'], 'darkgray')}"
+        )
+
+        for ub in item["unpushed_branches"]:
+            print(
+                f"    {ctext(ub['branch'], 'cyan')}: {ctext(str(ub['count']) + ' ahead', 'magenta')} "
+                f"{ctext(ub['note'], 'darkgray')}"
+            )
+            for c_line in ub["commits"][:20]:
+                print(f"      {c_line}")
+            if len(ub["commits"]) > 20:
+                print(ctext(f"      ... ({len(ub['commits']) - 20} more)", "darkgray"))
+
+        for fline in item["files"]:
+            print(f"    {fline}")
+
+    if dirty_count == 0:
+        print(ctext(f"✓ All {len(results)} repo(s) are clean and pushed.", "green"))
+    else:
+        print(
+            ctext(
+                f"Scanned {len(results)} repo(s): {dirty_count} with unpushed changes, {clean_count} clean.",
+                "cyan",
+            )
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -50,11 +50,11 @@ Always choose the **simplest** tool that renders cleanly without label truncatio
      - **Escaping `$`:** Escape literal `$` as `\$` inside double-quoted D2 strings (`"\$HOME"`, `"\$DOCUMENTS"`) because unescaped `$` triggers D2 variable substitution errors.
    - **Workflow:**
      1. **Write `.d2` source of truth:** Save to the project's `docs/diagrams/<name>.d2` if persistent architecture documentation, or to the conversation `<Artifact Directory Path>/scratch/<name>.d2` if exploratory.
-     2. **Compile & strip fonts in one step:** Run [`scripts/prepare-d2-svg.ps1`](./scripts/prepare-d2-svg.ps1) (resolves `d2` on `PATH` or `C:\Program Files\D2\d2.exe`, compiles with `--pad 24`, strips `<?xml?>` + embedded `@font-face` WOFF blobs, and prints `WxH`, aspect ratio, and size):
-        ```powershell
-        pwsh -NoProfile -File "<skill-dir>\scripts\prepare-d2-svg.ps1" "<source>.d2" "<out>.svg" -Layout elk
+     2. **Compile & strip fonts in one step:** Run [`scripts/prepare-d2-svg.py`](./scripts/prepare-d2-svg.py) (resolves `d2` on `PATH`, compiles with `--pad 24`, strips `<?xml?>` + embedded `@font-face` WOFF blobs, and prints `WxH`, aspect ratio, and size):
+        ```sh
+        python3 "<skill-dir>/scripts/prepare-d2-svg.py" "<source>.d2" "<out>.svg" --layout elk
         ```
-        Omit `-Layout elk` for simpler graphs where dagre is preferred; use `-Layout elk` when crisp 90° orthogonal routing is needed.
+        Omit `--layout elk` for simpler graphs where dagre is preferred; use `--layout elk` when crisp 90° orthogonal routing is needed.
      3. **Fallback if `d2` is unavailable (exit code `2`):** Fall back cleanly to Mermaid `flowchart LR` (splitting into focused sub-diagrams if needed) or build a clean hand-crafted `<svg>` and inject it into the HTML viewer below.
      4. **Wrap in the pan/zoom viewer & embed:**
         - Read `<out>.svg` and [`resources/viewer-template.html`](./resources/viewer-template.html).

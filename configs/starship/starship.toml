@@ -1,0 +1,55 @@
+"$schema" = "https://starship.rs/config-schema.json"
+
+add_newline = true
+
+format = """
+$username\
+$directory\
+$python\
+$git_branch\
+$git_status\
+${env_var.cw}\
+$cmd_duration\
+$character"""
+
+[username]
+show_always = false
+style_root = "bg:red fg:yellow bold"
+style_user = "bg:yellow fg:black bold"
+format = "[ ⚡ $user ]($style)[](fg:yellow bg:blue)"
+
+[directory]
+truncation_length = 2
+truncation_symbol = ""
+style = "bg:blue fg:white"
+format = "[ $path ]($style)[](fg:blue)"
+
+[python]
+style = "bg:green fg:white"
+format = "[ ($virtualenv) ]($style)[](fg:green)"
+detect_extensions = []
+detect_files = []
+detect_folders = [".venv", "venv"]
+
+[git_branch]
+style = "bg:purple fg:white"
+format = "[ $symbol$branch ]($style)"
+symbol = ""
+
+[git_status]
+style = "bg:purple fg:bright-yellow"
+format = "([$all_status$ahead_behind ]($style))[](fg:purple)"
+
+[env_var.cw]
+variable = "cw"
+style = "bg:cyan fg:black"
+format = "[ ws:$env_value ]($style)[](fg:cyan)"
+
+[cmd_duration]
+min_time = 500
+style = "bg:yellow fg:black"
+format = "[ ⏱ $duration ]($style)[](fg:yellow)"
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"

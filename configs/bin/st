@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Rich Git status report: upstream tracking, working tree categories, stashes, and branch comparison."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ctext, git_root, normalize_legacy_flags, run_git  # noqa: E402
+
+FRESH_FETCH_SECONDS = 24 * 3600
+
+
+def format_age(seconds: float) -> str:
+    secs = max(0, int(seconds))
+    if secs < 60:
+        return f"{secs}s ago"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m ago"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    return f"{days}d ago"
+
+
+def handle_fetch_state(root: Path, force_fetch: bool, no_fetch: bool) -> str:
+    remote_res = run_git(["config", "--get", "remote.origin.url"], cwd=root)
+    if remote_res.returncode != 0 or not remote_res.stdout.strip():
+        return "no remote 'origin' configured"
+
+    fetch_head_res = run_git(["rev-parse", "--git-path", "FETCH_HEAD"], cwd=root)
+    fetch_head = Path(fetch_head_res.stdout.strip())
+    if not fetch_head.is_absolute():
+        fetch_head = root / fetch_head
+
+    if no_fetch and not force_fetch:
+        if fetch_head.is_file():
+            age = time.time() - fetch_head.stat().st_mtime
+            return f"fetch skipped (--no-fetch; last {format_age(age)})"
+        return "fetch skipped (--no-fetch)"
+
+    if not force_fetch and fetch_head.is_file():
+        age = time.time() - fetch_head.stat().st_mtime
+        if age < FRESH_FETCH_SECONDS:
+            return f"refs fetched {format_age(age)} (-f to refresh)"
+
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(root), "fetch", "--prune", "--quiet"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+        if res.returncode == 0:
+            return "refs fetched just now"
+        return "fetch failed (using local refs)"
+    except (OSError, subprocess.TimeoutExpired):
+        return "fetch timed out (using local refs)"
+
+
+def resolve_branch_ref(root: Path, branch: str) -> str | None:
+    if "/" not in branch:
+        remote_candidate = f"origin/{branch}"
+        if run_git(["rev-parse", "--verify", "--quiet", f"{remote_candidate}^{{commit}}"], cwd=root).returncode == 0:
+            return remote_candidate
+    if run_git(["rev-parse", "--verify", "--quiet", f"{branch}^{{commit}}"], cwd=root).returncode == 0:
+        return branch
+    return None
+
+
+def print_commit_list(label: str, items: list[str], show_all: bool, color: str) -> None:
+    if not items:
+        return
+    limit = len(items) if show_all else 10
+    print(f"    {ctext(f'{label} ({len(items)}):', color)}")
+    for line in items[:limit]:
+        print(f"      {line}")
+    if len(items) > limit:
+        print(ctext(f"      ... ({len(items) - limit} more; pass -a/--all to show all)", "darkgray"))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="st",
+        description="Rich Git status: upstream tracking, working tree categories, stashes, and branch comparison.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("branches", nargs="*", help="Base branch(es) to compare against HEAD (e.g. main develop)")
+    parser.add_argument("-f", "--fetch", action="store_true", help="Force git fetch --prune before reporting")
+    parser.add_argument("-n", "--no-fetch", action="store_true", help="Skip auto-fetch completely")
+    parser.add_argument("-i", "--ignored", action="store_true", help="Include ignored files in working tree listing")
+    parser.add_argument("-a", "--all", action="store_true", help="Show all commits/files without truncation")
+    parser.add_argument("--files", action="store_true", help="Show changed filenames against compared branch merge-base")
+    parser.add_argument("--full", action="store_true", help="Show full PR-style diff against compared branch")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw))
+
+    root = git_root()
+    if root is None:
+        print(ctext("Not inside a git repository.", "red"), file=sys.stderr)
+        return 1
+
+    fetch_note = handle_fetch_state(root, args.fetch, args.no_fetch)
+
+    branch_res = run_git(["symbolic-ref", "--short", "HEAD"], cwd=root)
+    if branch_res.returncode == 0 and branch_res.stdout.strip():
+        branch_display = branch_res.stdout.strip()
+    else:
+        sha = run_git(["rev-parse", "--short", "HEAD"], cwd=root).stdout.strip() or "unborn"
+        branch_display = f"(detached at {sha})"
+
+    print(f"{ctext('Branch:', 'cyan')} {ctext(branch_display, 'white')}  {ctext(f'({fetch_note})', 'darkgray')}")
+
+    # Upstream delta
+    up_res = run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=root)
+    if up_res.returncode == 0 and up_res.stdout.strip():
+        upstream = up_res.stdout.strip()
+        ahead = run_git(["log", "--oneline", f"{upstream}..HEAD"], cwd=root).stdout.strip().splitlines()
+        behind = run_git(["log", "--oneline", f"HEAD..{upstream}"], cwd=root).stdout.strip().splitlines()
+        if not ahead and not behind:
+            print(f"{ctext('Upstream:', 'cyan')} {upstream} {ctext('(in sync)', 'green')}")
+        else:
+            print(
+                f"{ctext('Upstream:', 'cyan')} {upstream} "
+                f"{ctext(f'↑{len(ahead)} ahead', 'yellow')} / {ctext(f'↓{len(behind)} behind', 'magenta')}"
+            )
+            print_commit_list("Ahead", ahead, args.all, "yellow")
+            print_commit_list("Behind", behind, args.all, "magenta")
+    else:
+        print(f"{ctext('Upstream:', 'cyan')} {ctext('none', 'darkgray')}")
+
+    # Working tree categorized
+    porc_args = ["status", "--porcelain=v1"]
+    if args.ignored:
+        porc_args.append("--ignored")
+    porc_lines = run_git(porc_args, cwd=root).stdout.splitlines()
+
+    conflicts: list[str] = []
+    staged: list[str] = []
+    unstaged: list[str] = []
+    untracked: list[str] = []
+    ignored: list[str] = []
+
+    conflict_pairs = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+    for line in porc_lines:
+        if len(line) < 4:
+            continue
+        code = line[:2]
+        path = line[3:]
+        if code in conflict_pairs:
+            conflicts.append(f"{code} {path}")
+        elif code == "??":
+            untracked.append(path)
+        elif code == "!!":
+            ignored.append(path)
+        else:
+            x, y = code[0], code[1]
+            if x != " ":
+                staged.append(f"{x} {path}")
+            if y != " ":
+                unstaged.append(f"{y} {path}")
+
+    stashes = run_git(["stash", "list"], cwd=root).stdout.strip().splitlines()
+
+    summary_parts: list[str] = []
+    if conflicts:
+        summary_parts.append(ctext(f"{len(conflicts)} conflict(s)", "red"))
+    if staged:
+        summary_parts.append(ctext(f"{len(staged)} staged", "green"))
+    if unstaged:
+        summary_parts.append(ctext(f"{len(unstaged)} unstaged", "yellow"))
+    if untracked:
+        summary_parts.append(ctext(f"{len(untracked)} untracked", "cyan"))
+    if ignored:
+        summary_parts.append(ctext(f"{len(ignored)} ignored", "darkgray"))
+    if stashes:
+        summary_parts.append(ctext(f"{len(stashes)} stash(es)", "magenta"))
+
+    if summary_parts:
+        print(f"{ctext('Working tree:', 'cyan')} {', '.join(summary_parts)}")
+    else:
+        print(f"{ctext('Working tree:', 'cyan')} {ctext('clean', 'green')}")
+
+    def print_bucket(title: str, entries: list[str], color: str) -> None:
+        if not entries:
+            return
+        limit = len(entries) if args.all else 10
+        print(f"  {ctext(title + ':', color)}")
+        for entry in entries[:limit]:
+            print(f"    {entry}")
+        if len(entries) > limit:
+            print(ctext(f"    ... ({len(entries) - limit} more; pass -a/--all to show all)", "darkgray"))
+
+    print_bucket("Conflicts", conflicts, "red")
+    print_bucket("Staged", staged, "green")
+    print_bucket("Unstaged", unstaged, "yellow")
+    print_bucket("Untracked", untracked, "cyan")
+    print_bucket("Ignored", ignored, "darkgray")
+
+    # Base branch comparison
+    if not args.branches:
+        print(
+            ctext(
+                "Base branch: not compared (pass branch names, e.g. 'st develop main', or add -Files / -Full)",
+                "darkgray",
+            )
+        )
+        return 0
+
+    diff_helper = Path(__file__).resolve().parent / "git-pss-diff"
+    for target in args.branches:
+        ref = resolve_branch_ref(root, target)
+        if not ref:
+            print(f"{ctext('Base branch:', 'cyan')} {target} {ctext('(not found)', 'red')}")
+            continue
+        ahead = run_git(["log", "--oneline", f"{ref}..HEAD"], cwd=root).stdout.strip().splitlines()
+        behind = run_git(["log", "--oneline", f"HEAD..{ref}"], cwd=root).stdout.strip().splitlines()
+        print(
+            f"{ctext('Base branch:', 'cyan')} {ref} "
+            f"({ctext(f'Commits ahead: {len(ahead)}', 'yellow')} | "
+            f"{ctext(f'Commits behind: {len(behind)}', 'magenta')})"
+        )
+        print_commit_list("Commits ahead", ahead, args.all, "yellow")
+        print_commit_list("Commits behind", behind, args.all, "magenta")
+
+        if args.files:
+            mb_res = run_git(["merge-base", ref, "HEAD"], cwd=root)
+            if mb_res.returncode == 0 and mb_res.stdout.strip():
+                mb = mb_res.stdout.strip()
+                files_out = run_git(["diff", "--name-status", f"{mb}..HEAD"], cwd=root).stdout.strip().splitlines()
+                print_bucket(f"Changed files vs {ref}", files_out, "cyan")
+
+        if args.full:
+            subprocess.run([sys.executable, str(diff_helper), "pr", target], cwd=str(root))
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

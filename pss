@@ -1,0 +1,1174 @@
+#!/usr/bin/env python3
+"""Personal Settings Sync (PSS) — Repo-as-source-of-truth environment manager."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR / "scripts"))
+
+import local_state  # noqa: E402
+import profile_groups  # noqa: E402
+
+VALID_SUBSYSTEMS = ("zsh", "starship", "git", "gemini", "skills", "plugins")
+MAX_BACKUPS = 10
+
+COLORS = {
+    "cyan": "\033[36m",
+    "darkcyan": "\033[36m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "darkyellow": "\033[33m",
+    "red": "\033[31m",
+    "magenta": "\033[35m",
+    "darkgray": "\033[90m",
+    "white": "\033[37m",
+    "reset": "\033[0m",
+}
+
+
+def ctext(text: str, color: str | None = None) -> str:
+    if not color or color.lower() not in COLORS:
+        return text
+    return f"{COLORS[color.lower()]}{text}{COLORS['reset']}"
+
+
+def badge(tag: str, tag_color: str, msg: str, msg_color: str | None = None) -> None:
+    print(f"{ctext(f'[{tag}]', tag_color)} {ctext(msg, msg_color)}")
+
+
+def normalize_lf(text: str | None) -> str:
+    if text is None:
+        return ""
+    return text.replace("\r\n", "\n").rstrip("\r\n")
+
+
+def text_hash(text: str) -> str:
+    return hashlib.sha256(normalize_lf(text).encode("utf-8")).hexdigest()
+
+
+def file_hash_safe(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    return text_hash(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def write_utf8_file(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    normalized = normalize_lf(content) + "\n"
+    path.write_text(normalized, encoding="utf-8", newline="\n")
+
+
+def append_utf8_file(path: Path, content: str) -> None:
+    existing = normalize_lf(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else ""
+    new_part = normalize_lf(content)
+    combined = f"{existing}\n\n{new_part}" if existing else new_part
+    write_utf8_file(path, combined)
+
+
+def to_forward_path(path: str | Path) -> str:
+    return str(path).replace("\\", "/")
+
+
+def is_link(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junc = getattr(os.path, "isjunction", None)
+    if callable(is_junc) and is_junc(path):
+        return True
+    return False
+
+
+def get_link_target(path: Path) -> str | None:
+    if not is_link(path):
+        return None
+    try:
+        raw = os.readlink(path)
+        if os.name == "nt":
+            if raw.startswith("\\\\?\\UNC\\"):
+                raw = "\\\\" + raw[8:]
+            elif raw.startswith("\\\\?\\") or raw.startswith("\\??\\"):
+                raw = raw[4:]
+        target = Path(raw)
+        if not target.is_absolute():
+            target = path.parent / target
+        return os.path.abspath(str(target))
+    except OSError:
+        return ""
+
+
+def paths_equal(a: str | Path, b: str | Path) -> bool:
+    return os.path.normcase(os.path.abspath(str(a))) == os.path.normcase(os.path.abspath(str(b)))
+
+
+def get_link_status(source: Path, target: Path) -> str:
+    if not os.path.lexists(target):
+        return "Missing on Machine"
+    if is_link(target):
+        cur = get_link_target(target)
+        if not cur:
+            return "Stale Link"
+        if paths_equal(cur, source):
+            return "Linked"
+        return "Stale Link"
+    if source.is_file() and target.is_file():
+        try:
+            if os.path.samefile(source, target):
+                return "Linked"
+        except OSError:
+            pass
+        return "File (Not Linked)"
+    return "Directory (Not Linked)"
+
+
+def remove_existing_target(target: Path, backup_root: Path | None, backup_rel: str, no_backup: bool) -> None:
+    if not os.path.lexists(target):
+        return
+    if is_link(target):
+        if os.name == "nt" and target.is_dir():
+            os.rmdir(target)
+        else:
+            target.unlink()
+        return
+
+    if backup_root and not no_backup:
+        dest = backup_root / backup_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if target.is_dir():
+            shutil.copytree(target, dest, symlinks=True, dirs_exist_ok=True)
+        else:
+            shutil.copy2(target, dest)
+        try:
+            rel = dest.relative_to(SCRIPT_DIR)
+        except ValueError:
+            rel = dest
+        badge("BACKUP", "darkcyan", f"Backed up -> {rel}")
+
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+
+
+def create_link(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    is_dir = source.is_dir()
+    try:
+        os.symlink(source, target, target_is_directory=is_dir)
+    except OSError:
+        if os.name != "nt":
+            raise
+        if is_dir:
+            res = subprocess.run(
+                ["cmd", "/d", "/c", "mklink", "/J", str(target), str(source)],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode != 0:
+                raise RuntimeError(f"mklink /J failed: {res.stderr or res.stdout}")
+        else:
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copy2(source, target)
+
+
+def prune_backups() -> None:
+    backups_root = SCRIPT_DIR / ".backups"
+    if not backups_root.is_dir():
+        return
+    dirs = sorted([d for d in backups_root.iterdir() if d.is_dir()], key=lambda p: p.name, reverse=True)
+    if len(dirs) > MAX_BACKUPS:
+        to_remove = dirs[MAX_BACKUPS:]
+        for old in to_remove:
+            shutil.rmtree(old, ignore_errors=True)
+        badge("CLEANUP", "darkgray", f"Pruned {len(to_remove)} old backup folder(s).")
+
+
+class PssApp:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        config_file = SCRIPT_DIR / "sync.config.json"
+        if not config_file.is_file():
+            badge("ERROR", "red", f"Configuration file missing at: {config_file}")
+            raise SystemExit(1)
+        self.config = json.loads(config_file.read_text(encoding="utf-8"))
+
+        self.home_dir = Path(args.home_override).resolve() if args.home_override else Path.home()
+        self.local_paths = local_state.get_local_state_paths(
+            SCRIPT_DIR,
+            state_home=args.state_home_override,
+            home_dir=self.home_dir,
+        )
+        local_state.migrate_legacy_local_state(
+            self.local_paths,
+            SCRIPT_DIR,
+            home_dir=self.home_dir,
+            what_if=args.what_if,
+        )
+
+        self.workspace_file = self.local_paths["workspace"]
+        legacy_ws_file = SCRIPT_DIR / ".workspace.local"
+        if args.what_if and not self.workspace_file.is_file() and legacy_ws_file.is_file():
+            self.workspace_file = legacy_ws_file
+
+        self.included = self._parse_subsystems(args.include)
+        self.excluded = self._parse_subsystems(args.exclude)
+        self.timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.backup_dir = SCRIPT_DIR / ".backups" / self.timestamp
+
+    def _parse_subsystems(self, items: list[str] | None) -> set[str]:
+        result: set[str] = set()
+        for item in items or []:
+            for part in re.split(r"[,;]", item):
+                cleaned = part.strip().lower()
+                if not cleaned:
+                    continue
+                if cleaned not in VALID_SUBSYSTEMS:
+                    badge("ERROR", "red", f"Invalid subsystem '{cleaned}'. Valid: {', '.join(VALID_SUBSYSTEMS)}")
+                    raise SystemExit(1)
+                result.add(cleaned)
+        return result
+
+    def should_process(self, subsystem: str) -> bool:
+        name = subsystem.lower()
+        if name in self.excluded:
+            return False
+        if self.included and name not in self.included:
+            return False
+        return True
+
+    def resolve_dynamic_path(self, pattern: str) -> Path:
+        home_str = str(self.home_dir)
+        resolved = pattern
+        if resolved == "~":
+            resolved = home_str
+        elif resolved.startswith("~/") or resolved.startswith("~\\"):
+            resolved = os.path.join(home_str, resolved[2:])
+        resolved = resolved.replace("%USERPROFILE%", home_str).replace("$HOME", home_str)
+        resolved = os.path.expandvars(resolved)
+        return Path(os.path.abspath(resolved))
+
+    def get_available_workspaces(self) -> list[str]:
+        ws_dir = SCRIPT_DIR / self.config["workspacesDir"]
+        if not ws_dir.is_dir():
+            return [self.config["defaultWorkspace"]]
+        dirs = sorted([d.name for d in ws_dir.iterdir() if d.is_dir()])
+        return dirs or [self.config["defaultWorkspace"]]
+
+    def new_workspace(self, name: str | None) -> None:
+        if not name:
+            badge("ERROR", "red", "Workspace name required: pss workspace new <name>")
+            raise SystemExit(1)
+        ws_name = name.strip().lower()
+        ws_path = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
+        if ws_path.is_dir():
+            badge("WARN", "yellow", f"Workspace '{ws_name}' already exists at workspaces/{ws_name}")
+            return
+        for sub in ("zsh", "git", "gemini"):
+            (ws_path / sub).mkdir(parents=True, exist_ok=True)
+        write_utf8_file(ws_path / "zsh" / "profile.zsh", f"# Zsh overrides for workspace: {ws_name}")
+        write_utf8_file(
+            ws_path / "git" / ".gitconfig",
+            f"# Git overrides for workspace: {ws_name}\n[user]\n\t# email = user@{ws_name}.local",
+        )
+        cap = ws_name[0].upper() + ws_name[1:]
+        write_utf8_file(ws_path / "gemini" / "AGENTS.md", f"## {cap} Workspace Context")
+        badge("CREATED", "green", f"Created workspace '{ws_name}' in workspaces/{ws_name}")
+
+    def set_active_workspace(self, name: str | None) -> str:
+        if not name:
+            badge("ERROR", "red", "Workspace name required: pss workspace use <name>")
+            raise SystemExit(1)
+        ws_name = name.strip().lower()
+        ws_path = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
+        if not ws_path.is_dir():
+            self.new_workspace(ws_name)
+        write_utf8_file(self.workspace_file, ws_name)
+        badge("ACTIVE", "green", f"Active workspace set to: {ws_name}")
+        return ws_name
+
+    def get_active_workspace(self, prompt_if_missing: bool = True) -> str:
+        if self.workspace_file.is_file():
+            active = self.workspace_file.read_text(encoding="utf-8", errors="replace").strip()
+            if active:
+                return active
+        if not prompt_if_missing:
+            return ""
+        available = self.get_available_workspaces()
+        if not sys.stdin.isatty():
+            badge("ERROR", "red", "No active workspace configured. Run 'pss workspace use <name>' first.")
+            raise SystemExit(1)
+        print(ctext("\n=== First-Run Workspace Selection ===", "cyan"))
+        print(f"Available workspaces: {', '.join(available)}")
+        sel = input(f"Enter workspace to use (default: '{available[0]}'): ").strip() or available[0]
+        return self.set_active_workspace(sel)
+
+    # --- Subsystem Computations ---
+
+    def expected_zsh_loader(self) -> str:
+        shared_init = Path(os.path.abspath(SCRIPT_DIR / self.config["subsystems"]["zsh"]["sharedPath"]))
+        return (
+            "# Managed by personal-settings-sync (pss). Edit files in the repository, not here.\n"
+            f'source "{to_forward_path(shared_init)}"'
+        )
+
+    def is_managed_zsh_loader(self, local_path: Path) -> bool:
+        if not local_path.is_file():
+            return False
+        raw = local_path.read_text(encoding="utf-8", errors="replace")
+        return bool(re.search(r"(?m)^#\s*Managed by personal-settings-sync \(pss\)", raw))
+
+    def get_zsh_status(self) -> dict:
+        local_path = self.resolve_dynamic_path(self.config["subsystems"]["zsh"]["localTarget"])
+        expected = self.expected_zsh_loader()
+        if not local_path.is_file():
+            return {"status": "Missing on Machine", "local_path": local_path, "expected": expected}
+        local_text = local_path.read_text(encoding="utf-8", errors="replace")
+        if text_hash(local_text) == text_hash(expected):
+            return {"status": "In Sync", "local_path": local_path, "expected": expected}
+        if self.is_managed_zsh_loader(local_path):
+            return {"status": "Needs Relink", "local_path": local_path, "expected": expected}
+        return {"status": "Unmanaged Local File", "local_path": local_path, "expected": expected}
+
+    def get_starship_link(self) -> dict:
+        cfg = self.config["subsystems"]["starship"]
+        return {
+            "name": "starship.toml",
+            "source": SCRIPT_DIR / cfg["sharedPath"],
+            "target": self.resolve_dynamic_path(cfg["localTarget"]),
+        }
+
+    def get_git_include_targets(self, workspace: str) -> list[str]:
+        git_cfg = self.config["subsystems"]["git"]
+        shared_abs = to_forward_path(SCRIPT_DIR / git_cfg["sharedPath"])
+        ws_rel = git_cfg["workspacePath"].replace("{workspace}", workspace)
+        ws_file = SCRIPT_DIR / ws_rel
+        targets = [shared_abs]
+        if ws_file.is_file():
+            targets.append(to_forward_path(ws_file))
+        return targets
+
+    @staticmethod
+    def unquote_git_include_value(raw_val: str) -> str:
+        val = raw_val.strip()
+        m1 = re.match(r'^"([^"]+)"(?:\s*[#;].*)?$', val)
+        m2 = re.match(r"^'([^']+)'(?:\s*[#;].*)?$", val)
+        if m1:
+            val = m1.group(1)
+        elif m2:
+            val = m2.group(1)
+        else:
+            val = re.split(r"\s+[#;]", val, maxsplit=1)[0].strip()
+        return to_forward_path(val)
+
+    @classmethod
+    def is_pss_managed_git_include(cls, include_path: str) -> bool:
+        norm = cls.unquote_git_include_value(include_path)
+        return (
+            norm in ("~/.gitconfig.shared", "~/.gitconfig.workspace", "~/.gitconfig.local")
+            or bool(re.search(r"/configs/git/\.gitconfig\.shared$", norm))
+            or bool(re.search(r"/workspaces/[^/]+/git/\.gitconfig$", norm))
+        )
+
+    @classmethod
+    def build_updated_gitconfig(cls, existing: str, desired_includes: list[str]) -> str:
+        lines = normalize_lf(existing).split("\n") if existing else []
+        kept: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            if re.match(r"^\s*\[include\]\s*(?:[#;].*)?$", line):
+                section_body: list[str] = []
+                j = i + 1
+                while j < len(lines) and not re.match(r"^\s*\[", lines[j]):
+                    body_line = lines[j]
+                    m = re.match(r"^\s*path\s*=\s*(.+)$", body_line)
+                    if m:
+                        if not cls.is_pss_managed_git_include(m.group(1)):
+                            section_body.append(body_line)
+                    elif body_line.strip() != "":
+                        section_body.append(body_line)
+                    j += 1
+                if section_body:
+                    kept.append(line)
+                    kept.extend(section_body)
+                i = j
+                continue
+            kept.append(line)
+            i += 1
+
+        header: list[str] = []
+        for inc in desired_includes:
+            formatted = f'"{inc}"' if re.search(r"\s", inc) else inc
+            header.append("[include]")
+            header.append(f"\tpath = {formatted}")
+
+        body = "\n".join(kept).lstrip("\n")
+        if body:
+            return "\n".join(header) + "\n" + body
+        return "\n".join(header)
+
+    def get_git_config_status(self, workspace: str) -> dict:
+        local_path = self.resolve_dynamic_path(self.config["subsystems"]["git"]["localTarget"])
+        desired = self.get_git_include_targets(workspace)
+        if not local_path.is_file():
+            return {"status": "Missing on Machine", "local_path": local_path, "desired": desired}
+        raw = local_path.read_text(encoding="utf-8", errors="replace")
+        expected = self.build_updated_gitconfig(raw, desired)
+        status = "In Sync" if text_hash(raw) == text_hash(expected) else "Needs Update"
+        return {"status": status, "local_path": local_path, "desired": desired}
+
+    def get_git_hooks_link(self) -> dict | None:
+        git_cfg = self.config["subsystems"]["git"]
+        if not git_cfg.get("hooksDir") or not git_cfg.get("hooksTarget"):
+            return None
+        src = SCRIPT_DIR / git_cfg["hooksDir"]
+        if not src.is_dir():
+            return None
+        return {
+            "name": "git-hooks",
+            "source": src,
+            "target": self.resolve_dynamic_path(git_cfg["hooksTarget"]),
+        }
+
+    def expected_gemini_content(self, file_entry: dict, workspace: str) -> str | None:
+        repo_abs = SCRIPT_DIR / file_entry["repoPath"]
+        if not repo_abs.is_file():
+            return None
+        shared_raw = normalize_lf(repo_abs.read_text(encoding="utf-8", errors="replace"))
+        if file_entry.get("mode") == "template":
+            home_fwd = to_forward_path(self.home_dir)
+            repo_fwd = to_forward_path(SCRIPT_DIR)
+            expanded = shared_raw.replace("~/", f"{home_fwd}/").replace("{REPO}", repo_fwd)
+            if file_entry["name"] == "skills.json":
+                ws_skills_dir = SCRIPT_DIR / "workspaces" / workspace / "skills"
+                if ws_skills_dir.is_dir():
+                    parsed = json.loads(expanded)
+                    ws_fwd = to_forward_path(ws_skills_dir)
+                    parsed["entries"] = [{"path": ws_fwd}] + [
+                        e for e in parsed.get("entries", []) if e.get("path") != ws_fwd
+                    ]
+                    expanded = json.dumps(parsed, indent=2)
+            return expanded
+
+        parts: list[str] = []
+        if file_entry["name"] == "AGENTS.md":
+            parts.append(
+                f"<!-- Managed by pss (shared + {workspace}). Edit repo files, not this output. -->"
+            )
+        parts.append(shared_raw)
+        if file_entry.get("workspacePath"):
+            ws_rel = file_entry["workspacePath"].replace("{workspace}", workspace)
+            ws_abs = SCRIPT_DIR / ws_rel
+            if ws_abs.is_file():
+                ws_raw = normalize_lf(ws_abs.read_text(encoding="utf-8", errors="replace")).strip()
+                if ws_raw:
+                    parts.append(ws_raw)
+        return "\n\n".join(parts)
+
+    def get_desired_skill_links(self, workspace: str) -> list[dict]:
+        cfg = self.config["subsystems"]["skills"]
+        target_base = self.resolve_dynamic_path(cfg["targetDir"])
+        shared_base = SCRIPT_DIR / cfg["repoDir"]
+        ws_dir_tpl = cfg.get("workspaceDir")
+        ws_base = SCRIPT_DIR / ws_dir_tpl.replace("{workspace}", workspace) if ws_dir_tpl else None
+
+        links: list[dict] = []
+        seen: set[str] = set()
+        if ws_base and ws_base.is_dir():
+            for d in sorted(ws_base.iterdir(), key=lambda p: p.name):
+                if d.is_dir():
+                    seen.add(d.name.lower())
+                    links.append({"name": d.name, "source": d, "target": target_base / d.name})
+
+        for name in cfg.get("items", []):
+            if name.lower() in seen:
+                continue
+            src = shared_base / name
+            if src.is_dir():
+                seen.add(name.lower())
+                links.append({"name": name, "source": src, "target": target_base / name})
+
+        for mirror in cfg.get("mirrorLinks", []):
+            if mirror:
+                links.append({"name": "skills-mirror", "source": target_base, "target": self.resolve_dynamic_path(mirror)})
+        return links
+
+    def get_desired_plugin_links(self) -> list[dict]:
+        cfg = self.config["subsystems"]["plugins"]
+        target_base = self.resolve_dynamic_path(cfg["targetDir"])
+        shared_base = SCRIPT_DIR / cfg["repoDir"]
+        links: list[dict] = []
+        for name in cfg.get("items", []):
+            src = shared_base / name
+            if src.is_dir():
+                links.append({"name": name, "source": src, "target": target_base / name})
+        return links
+
+    def sync_link(self, source: Path, target: Path, backup_rel: str) -> bool:
+        state = get_link_status(source, target)
+        if state == "Linked" and not self.args.force:
+            badge("OK", "darkgray", f"Already linked: {target} -> {source}")
+            return False
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", f"Would link {target} -> {source} (current: {state})")
+            return False
+        remove_existing_target(target, self.backup_dir, backup_rel, self.args.no_backup)
+        create_link(source, target)
+        badge("LINKED", "green", f"{target} -> {source}")
+        return True
+
+    # --- Primary Actions ---
+
+    def cmd_status(self, workspace: str) -> None:
+        print(ctext("\n=== Personal Settings Sync Status ===", "cyan"))
+        rows: list[tuple[str, str, str, str, str]] = []
+
+        if self.should_process("zsh"):
+            st = self.get_zsh_status()
+            rows.append(("Zsh", "Profile Loader", "Loader", st["status"], str(st["local_path"])))
+
+        if self.should_process("starship"):
+            sl = self.get_starship_link()
+            rows.append(("Starship", sl["name"], "Symlink", get_link_status(sl["source"], sl["target"]), str(sl["target"])))
+
+        if self.should_process("git"):
+            gs = self.get_git_config_status(workspace)
+            rows.append(("Git", ".gitconfig", "Include", gs["status"], str(gs["local_path"])))
+            hl = self.get_git_hooks_link()
+            if hl:
+                rows.append(("Git", ".git-hooks", "Symlink", get_link_status(hl["source"], hl["target"]), str(hl["target"])))
+
+        if self.should_process("gemini"):
+            for f in self.config["subsystems"]["gemini"]["files"]:
+                lp = self.resolve_dynamic_path(f["localPath"])
+                exp = self.expected_gemini_content(f, workspace)
+                if exp is None:
+                    continue
+                if not lp.is_file():
+                    status = "Missing on Machine"
+                elif file_hash_safe(lp) == text_hash(exp):
+                    status = "In Sync"
+                else:
+                    status = "Modified"
+                rows.append(("AI Rules", f["name"], f["mode"], status, str(lp)))
+
+        if self.should_process("skills"):
+            for link in self.get_desired_skill_links(workspace):
+                rows.append(("AI Skill", link["name"], "Symlink", get_link_status(link["source"], link["target"]), str(link["target"])))
+
+        if self.should_process("plugins"):
+            for link in self.get_desired_plugin_links():
+                rows.append(("AI Plugin", link["name"], "Symlink", get_link_status(link["source"], link["target"]), str(link["target"])))
+
+        headers = ("Subsystem", "Target", "Mode", "Status", "Path")
+        widths = [max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(5)] if rows else [len(h) for h in headers]
+        fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+        print(fmt.format(*headers))
+        print(fmt.format(*("-" * w for w in widths)))
+        for r in rows:
+            print(fmt.format(*r))
+        print()
+
+    def cmd_apply(self, workspace: str) -> None:
+        print(ctext(f"\n=== Applying Settings (Repo -> Machine: {workspace}) ===", "cyan"))
+        applied = 0
+
+        if self.should_process("zsh"):
+            print(ctext("\n[Zsh Profile]", "yellow"))
+            st = self.get_zsh_status()
+            if st["status"] == "In Sync" and not self.args.force:
+                badge("OK", "darkgray", f"Already linked: {st['local_path']}")
+            elif self.args.what_if:
+                badge("WHAT-IF", "cyan", f"Would write profile loader -> {st['local_path']}")
+            else:
+                if st["local_path"].is_file() and not self.is_managed_zsh_loader(st["local_path"]):
+                    remove_existing_target(st["local_path"], self.backup_dir, "zsh/.zshrc", self.args.no_backup)
+                write_utf8_file(st["local_path"], st["expected"])
+                badge("LINKED", "green", f"Profile loader -> {st['local_path']}")
+                applied += 1
+
+        if self.should_process("starship"):
+            print(ctext("\n[Starship Prompt]", "yellow"))
+            sl = self.get_starship_link()
+            if self.sync_link(sl["source"], sl["target"], "starship/starship.toml"):
+                applied += 1
+
+        if self.should_process("git"):
+            print(ctext("\n[Git Config]", "yellow"))
+            gs = self.get_git_config_status(workspace)
+            lp = gs["local_path"]
+            if gs["status"] == "In Sync" and not self.args.force:
+                badge("OK", "darkgray", f"Includes up to date in {lp}")
+            else:
+                existing = lp.read_text(encoding="utf-8", errors="replace") if lp.is_file() else ""
+                updated = self.build_updated_gitconfig(existing, gs["desired"])
+                if self.args.what_if:
+                    badge("WHAT-IF", "cyan", f"Would update [include] blocks in {lp}")
+                else:
+                    if existing and not self.args.no_backup:
+                        bdest = self.backup_dir / "git" / ".gitconfig"
+                        bdest.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(lp, bdest)
+                        badge("BACKUP", "darkcyan", f"Backed up -> {bdest.relative_to(SCRIPT_DIR)}")
+                    write_utf8_file(lp, updated)
+                    badge("APPLIED", "green", f"Updated [include] layers (shared + {workspace}) -> {lp}")
+                    applied += 1
+
+            hl = self.get_git_hooks_link()
+            if hl and self.sync_link(hl["source"], hl["target"], "git/.git-hooks"):
+                applied += 1
+
+        if self.should_process("gemini"):
+            print(ctext("\n[AI Agent Rules]", "yellow"))
+            for f in self.config["subsystems"]["gemini"]["files"]:
+                lp = self.resolve_dynamic_path(f["localPath"])
+                exp = self.expected_gemini_content(f, workspace)
+                if exp is None:
+                    continue
+                if not self.args.force and file_hash_safe(lp) == text_hash(exp):
+                    badge("OK", "darkgray", f"Already in sync: {lp}")
+                    continue
+                if self.args.what_if:
+                    badge("WHAT-IF", "cyan", f"Would build {f['name']} -> {lp}")
+                    continue
+                if lp.is_file() and not self.args.no_backup:
+                    bdest = self.backup_dir / "gemini" / f["name"]
+                    bdest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(lp, bdest)
+                    badge("BACKUP", "darkcyan", f"Backed up -> {bdest.relative_to(SCRIPT_DIR)}")
+                write_utf8_file(lp, exp)
+                badge("APPLIED", "green", f"Built {f['name']} ({workspace}) -> {lp}")
+                applied += 1
+
+        if self.should_process("skills"):
+            print(ctext("\n[AI Skills]", "yellow"))
+            skills_dir = self.resolve_dynamic_path(self.config["subsystems"]["skills"]["targetDir"])
+            if not self.args.what_if:
+                skills_dir.mkdir(parents=True, exist_ok=True)
+            desired_links = self.get_desired_skill_links(workspace)
+            desired_targets = {os.path.normcase(os.path.abspath(str(l["target"]))) for l in desired_links}
+
+            ws_root_prefix = os.path.normcase(os.path.abspath(str(SCRIPT_DIR / self.config["workspacesDir"]))).rstrip("/\\") + os.sep
+            if skills_dir.is_dir():
+                for entry in skills_dir.iterdir():
+                    if not is_link(entry):
+                        continue
+                    lt = get_link_target(entry)
+                    if lt and os.path.normcase(lt).startswith(ws_root_prefix) and os.path.normcase(os.path.abspath(str(entry))) not in desired_targets:
+                        if self.args.what_if:
+                            badge("WHAT-IF", "cyan", f"Would unlink stale workspace skill: {entry}")
+                        else:
+                            remove_existing_target(entry, None, "", True)
+                            badge("UNLINKED", "darkyellow", f"Removed stale workspace skill link: {entry}")
+                            applied += 1
+
+            for link in desired_links:
+                if self.sync_link(link["source"], link["target"], f"skills/{link['name']}"):
+                    applied += 1
+
+        if self.should_process("plugins"):
+            print(ctext("\n[AI Plugins]", "yellow"))
+            for link in self.get_desired_plugin_links():
+                if self.sync_link(link["source"], link["target"], f"plugins/{link['name']}"):
+                    applied += 1
+
+        if not self.args.what_if:
+            print(ctext(f"\nDone. Updated {applied} item(s).", "green"))
+            if applied > 0:
+                prune_backups()
+
+    def cmd_diff(self, workspace: str) -> None:
+        print(ctext(f"\n=== Comparing Local Machine vs Repo ({workspace}) ===", "cyan"))
+        diffs = 0
+        if self.should_process("zsh"):
+            st = self.get_zsh_status()
+            if st["status"] != "In Sync":
+                diffs += 1
+                print(ctext(f"\n--- Zsh Profile ({st['status']}) ---", "magenta"))
+                if st["status"] == "Unmanaged Local File":
+                    shared_zsh = SCRIPT_DIR / self.config["subsystems"]["zsh"]["sharedPath"]
+                    subprocess.run(["git", "diff", "--no-index", "--color", str(shared_zsh), str(st["local_path"])])
+                else:
+                    print(f"Local: {st['local_path']}")
+                    print(f"Expected loader:\n{st['expected']}")
+
+        if self.should_process("starship"):
+            sl = self.get_starship_link()
+            ss = get_link_status(sl["source"], sl["target"])
+            if ss != "Linked":
+                diffs += 1
+                print(ctext(f"\n--- Starship Prompt ({ss}) ---", "magenta"))
+                print(f"Expected link: {sl['target']} -> {sl['source']}")
+
+        if self.should_process("git"):
+            gs = self.get_git_config_status(workspace)
+            if gs["status"] != "In Sync":
+                diffs += 1
+                print(ctext(f"\n--- Git Config ({gs['status']}) ---", "magenta"))
+                print(f"Expected includes in {gs['local_path']}:")
+                for d in gs["desired"]:
+                    print(ctext(f"  + {d}", "green"))
+            hl = self.get_git_hooks_link()
+            if hl:
+                hs = get_link_status(hl["source"], hl["target"])
+                if hs != "Linked":
+                    diffs += 1
+                    print(ctext(f"\n--- Git Hooks ({hs}) ---", "magenta"))
+                    print(f"Expected link: {hl['target']} -> {hl['source']}")
+
+        if self.should_process("gemini"):
+            for f in self.config["subsystems"]["gemini"]["files"]:
+                lp = self.resolve_dynamic_path(f["localPath"])
+                exp = self.expected_gemini_content(f, workspace)
+                if exp is None:
+                    continue
+                if not lp.is_file():
+                    diffs += 1
+                    print(ctext(f"\n--- AI Rules: {f['name']} (Missing on Machine) ---", "magenta"))
+                    continue
+                if file_hash_safe(lp) != text_hash(exp):
+                    diffs += 1
+                    print(ctext(f"\n--- AI Rules: {f['name']} ---", "magenta"))
+                    import tempfile
+
+                    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as tf:
+                        tf.write(normalize_lf(exp) + "\n")
+                        tmp_path = tf.name
+                    try:
+                        subprocess.run(["git", "diff", "--no-index", "--color", tmp_path, str(lp)])
+                    finally:
+                        Path(tmp_path).unlink(missing_ok=True)
+
+        if diffs == 0:
+            badge("OK", "green", f"All inspected configurations are in sync with '{workspace}'.")
+
+    def cmd_edit(self, workspace: str, sub: str | None, target_arg: str | None) -> None:
+        known = {"zsh", "shell", "profile", "powershell", "ps", "starship", "git", "agents", "gemini", "skills.json"}
+        if sub and not target_arg and sub.lower() in known:
+            layer, target = "shared", sub.lower()
+        else:
+            layer = sub.lower() if sub else "shared"
+            target = target_arg.lower() if target_arg else ""
+
+        if not target:
+            badge("ERROR", "red", "Usage: pss edit [<shared|workspace>] <zsh|starship|git|agents|gemini|skills.json>")
+            raise SystemExit(1)
+
+        if layer == "shared":
+            mapping = {
+                "zsh": self.config["subsystems"]["zsh"]["sharedPath"],
+                "shell": self.config["subsystems"]["zsh"]["sharedPath"],
+                "profile": self.config["subsystems"]["zsh"]["sharedPath"],
+                "powershell": self.config["subsystems"]["zsh"]["sharedPath"],
+                "ps": self.config["subsystems"]["zsh"]["sharedPath"],
+                "starship": self.config["subsystems"]["starship"]["sharedPath"],
+                "git": self.config["subsystems"]["git"]["sharedPath"],
+                "agents": "configs/gemini/AGENTS.md",
+                "gemini": "configs/gemini/GEMINI.md",
+                "skills.json": "configs/gemini/skills.json",
+            }
+            rel = mapping.get(target)
+        else:
+            ws_name = workspace if layer == "workspace" else layer
+            ws_root = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
+            if not ws_root.is_dir():
+                badge("ERROR", "red", f"Workspace '{ws_name}' does not exist. Create it with 'pss workspace new {ws_name}'.")
+                raise SystemExit(1)
+            mapping = {
+                "zsh": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
+                "shell": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
+                "profile": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
+                "powershell": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
+                "ps": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
+                "git": self.config["subsystems"]["git"]["workspacePath"].replace("{workspace}", ws_name),
+                "agents": f"workspaces/{ws_name}/gemini/AGENTS.md",
+                "gemini": f"workspaces/{ws_name}/gemini/GEMINI.md",
+            }
+            rel = mapping.get(target)
+
+        if not rel:
+            badge("ERROR", "red", f"Unknown edit target '{target}' for layer '{layer}'.")
+            raise SystemExit(1)
+
+        full_path = SCRIPT_DIR / rel
+        if self.args.path_only:
+            print(full_path)
+            return
+
+        if not full_path.is_file():
+            write_utf8_file(full_path, "")
+            badge("CREATED", "green", f"Created {rel}")
+
+        editor = os.environ.get("EDITOR") or shutil.which("code") or shutil.which("xdg-open")
+        if editor:
+            import shlex
+            cmd = shlex.split(editor) + [str(full_path)]
+            subprocess.run(cmd)
+        else:
+            print(full_path)
+
+    def _update_bootstrap_function(self, path: Path, name: str, code: str) -> None:
+        if not path.is_file():
+            raise RuntimeError(f"Cannot update function '{name}': '{path}' missing.")
+        funcs = profile_groups.extract_shell_functions(path)
+        if name not in funcs:
+            raise RuntimeError(f"Cannot update function '{name}': '{path}' no longer contains it.")
+        content = normalize_lf(path.read_text(encoding="utf-8", errors="replace"))
+        old_block = normalize_lf(funcs[name])
+        write_utf8_file(path, content.replace(old_block, normalize_lf(code), 1))
+
+    def cmd_bootstrap(self, workspace: str) -> None:
+        interactive = sys.stdin.isatty()
+        print(ctext(f"\n=== PSS Machine Bootstrapper (Workspace: {workspace}) ===", "cyan"))
+
+        if self.should_process("zsh"):
+            local_zsh = self.resolve_dynamic_path(self.config["subsystems"]["zsh"]["localTarget"])
+            shared_zsh = SCRIPT_DIR / self.config["subsystems"]["zsh"]["sharedPath"]
+            ws_zsh = SCRIPT_DIR / self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", workspace)
+
+            if not local_zsh.is_file():
+                badge("INFO", "darkgray", f"No local zsh profile found at {local_zsh}.")
+            elif self.is_managed_zsh_loader(local_zsh):
+                badge("OK", "green", "Zsh profile is already managed by pss loader.")
+            else:
+                local_funcs = profile_groups.extract_shell_functions(local_zsh)
+                shared_funcs: dict[str, tuple[str, Path]] = {}
+                ws_funcs: dict[str, tuple[str, Path]] = {}
+                for grp in profile_groups.get_profile_groups(SCRIPT_DIR, workspace):
+                    fn_map = profile_groups.extract_shell_functions(grp["path"])
+                    dest = shared_funcs if grp["scope"] == "shared" else ws_funcs
+                    for fn, code in fn_map.items():
+                        dest[fn] = (code, Path(grp["path"]))
+
+                pending: list[tuple[str, str, str]] = []
+                for name, code in local_funcs.items():
+                    lh = text_hash(code)
+                    sh = text_hash(shared_funcs[name][0]) if name in shared_funcs else None
+                    wh = text_hash(ws_funcs[name][0]) if name in ws_funcs else None
+                    if lh == sh or lh == wh:
+                        continue
+                    kind = "Modified" if (name in shared_funcs or name in ws_funcs) else "New"
+                    pending.append((name, kind, code))
+
+                if not pending:
+                    badge("OK", "green", "All functions in local zsh profile already match repo.")
+                else:
+                    print(ctext(f"\nFound {len(pending)} new/modified shell function(s) in {local_zsh}:", "yellow"))
+                    for name, kind, code in pending:
+                        print(ctext(f"  - [{kind}] function {name}", "cyan"))
+                        if self.args.what_if:
+                            continue
+                        if not interactive:
+                            badge("ERROR", "red", f"Interactive session required to route '{name}'.")
+                            raise SystemExit(1)
+                        choice = input(
+                            f"    Route 'function {name}' to: [S]hared, [W]orkspace ({workspace}), [L]ocal ({self.local_paths['local_profile']}), [I]gnore, [Q]uit: "
+                        ).strip().upper()
+                        if choice == "Q":
+                            badge("ABORTED", "darkgray", "Bootstrap aborted.")
+                            return
+                        if choice == "S":
+                            if name in shared_funcs:
+                                target_path = shared_funcs[name][1]
+                                self._update_bootstrap_function(target_path, name, code)
+                            else:
+                                target_path = shared_zsh
+                                append_utf8_file(target_path, code)
+                            badge("ROUTED", "green", f"Saved '{name}' -> {target_path}")
+                        elif choice == "W":
+                            if name in ws_funcs:
+                                target_path = ws_funcs[name][1]
+                                self._update_bootstrap_function(target_path, name, code)
+                            else:
+                                target_path = ws_zsh
+                                append_utf8_file(target_path, code)
+                            badge("ROUTED", "green", f"Saved '{name}' -> {target_path}")
+                        elif choice == "L":
+                            append_utf8_file(self.local_paths["local_profile"], code)
+                            badge("ROUTED", "green", f"Added '{name}' -> {self.local_paths['local_profile']}")
+                        else:
+                            badge("SKIP", "darkgray", f"Ignored function '{name}'.")
+
+        if self.should_process("git"):
+            local_git = self.resolve_dynamic_path(self.config["subsystems"]["git"]["localTarget"])
+            shared_git = SCRIPT_DIR / self.config["subsystems"]["git"]["sharedPath"]
+            ws_git = SCRIPT_DIR / self.config["subsystems"]["git"]["workspacePath"].replace("{workspace}", workspace)
+
+            if local_git.is_file():
+                def git_sections(text: str) -> list[tuple[str, str]]:
+                    secs: list[tuple[str, str]] = []
+                    cur_h = None
+                    cur_l: list[str] = []
+                    for line in normalize_lf(text).split("\n"):
+                        m = re.match(r"^\s*\[([^\]]+)\]\s*(?:[#;].*)?$", line)
+                        if m:
+                            if cur_h:
+                                secs.append((cur_h, "\n".join(cur_l).rstrip()))
+                            cur_h = m.group(1).strip()
+                            cur_l = [line]
+                        elif cur_h:
+                            cur_l.append(line)
+                    if cur_h:
+                        secs.append((cur_h, "\n".join(cur_l).rstrip()))
+                    return secs
+
+                shared_hashes = {text_hash(t) for _, t in git_sections(shared_git.read_text(encoding="utf-8", errors="replace")) if shared_git.is_file()} if shared_git.is_file() else set()
+                ws_hashes = {text_hash(t) for _, t in git_sections(ws_git.read_text(encoding="utf-8", errors="replace")) if ws_git.is_file()} if ws_git.is_file() else set()
+                local_secs = git_sections(local_git.read_text(encoding="utf-8", errors="replace"))
+                candidates = [
+                    (h, t)
+                    for h, t in local_secs
+                    if not re.match(r"^include(?:\b|$)|^includeIf\b|^credential", h)
+                    and text_hash(t) not in shared_hashes
+                    and text_hash(t) not in ws_hashes
+                ]
+                if not candidates:
+                    badge("OK", "green", "All local .gitconfig sections are accounted for.")
+                else:
+                    print(ctext(f"\nFound {len(candidates)} non-managed section(s) in {local_git}:", "yellow"))
+                    for h, t in candidates:
+                        print(ctext(f"  - [{h}]", "cyan"))
+                        if self.args.what_if:
+                            continue
+                        if not interactive:
+                            badge("ERROR", "red", f"Interactive session required to route git section [{h}].")
+                            raise SystemExit(1)
+                        choice = input(f"    Route [{h}] to: [S]hared, [W]orkspace ({workspace}), [L]ocal, [Q]uit: ").strip().upper()
+                        if choice == "Q":
+                            return
+                        if choice == "S":
+                            append_utf8_file(shared_git, t)
+                            badge("ROUTED", "green", f"Added [{h}] -> {shared_git}")
+                        elif choice == "W":
+                            append_utf8_file(ws_git, t)
+                            badge("ROUTED", "green", f"Added [{h}] -> {ws_git}")
+                        else:
+                            badge("KEEP", "darkgray", f"Kept [{h}] local.")
+
+        if self.args.push and not self.args.what_if:
+            host = os.environ.get("HOSTNAME") or os.uname().nodename if hasattr(os, "uname") else os.environ.get("COMPUTERNAME", "host")
+            subprocess.run(["git", "-C", str(SCRIPT_DIR), "push", "--dry-run"], check=True)
+            subprocess.run(["git", "-C", str(SCRIPT_DIR), "add", "-A"], check=True)
+            subprocess.run(["git", "-C", str(SCRIPT_DIR), "commit", "-m", f"chore: bootstrap {workspace} configs from {host}"], check=True)
+            subprocess.run(["git", "-C", str(SCRIPT_DIR), "push"], check=True)
+
+    def cmd_apps(self, workspace: str, sub: str) -> None:
+        pkgs = [
+            p for p in self.config.get("packages", [])
+            if not p.get("workspaces") or workspace in p["workspaces"]
+        ]
+        if sub in ("list", ""):
+            print(ctext(f"\n=== Configured Applications ({workspace}) ===", "cyan"))
+            for p in pkgs:
+                arch = p.get("arch", "-")
+                apt = p.get("apt", "-")
+                print(f"  {p['name']:<32} arch={arch:<24} apt={apt}")
+            print()
+            return
+
+        yay = shutil.which("yay") or shutil.which("paru")
+        pacman = shutil.which("pacman")
+        apt = shutil.which("apt-get")
+
+        if sub == "install":
+            if yay or pacman:
+                installer = yay or pacman
+                names = [p["arch"] for p in pkgs if p.get("arch")]
+                if not yay:
+                    print(ctext("Note: AUR helper (yay/paru) not found; installing official pacman packages only.", "yellow"))
+                cmd = ([installer] if yay else ["sudo", pacman]) + ["-S", "--needed"] + names
+                print(f"--> {' '.join(cmd)}")
+                if not self.args.what_if:
+                    subprocess.run(cmd)
+            elif apt:
+                names = [p["apt"] for p in pkgs if p.get("apt")]
+                cmd = ["sudo", "apt-get", "install", "-y"] + names
+                print(f"--> {' '.join(cmd)}")
+                if not self.args.what_if:
+                    subprocess.run(cmd)
+            else:
+                badge("WARN", "yellow", "No supported package manager (yay/paru/pacman/apt-get) found.")
+        elif sub == "update":
+            if yay:
+                subprocess.run([yay, "-Syu"])
+            elif pacman:
+                subprocess.run(["sudo", pacman, "-Syu"])
+            elif apt:
+                subprocess.run(["sudo", "apt-get", "update"])
+                subprocess.run(["sudo", "apt-get", "upgrade", "-y"])
+            else:
+                badge("WARN", "yellow", "No supported package manager found.")
+
+    def run(self) -> int:
+        action = (self.args.action or "status").lower()
+        sub = (self.args.sub_action or "").lower()
+        target = self.args.target_name
+
+        actions_without_active = action == "workspace" and sub in ("", "list", "current", "use", "new")
+        active_ws = self.get_active_workspace(prompt_if_missing=not actions_without_active)
+
+        if active_ws:
+            print(f"\n{ctext('[PSS] Active Workspace:', 'cyan')} {ctext(active_ws, 'green')}")
+
+        if self.args.pull:
+            print(ctext("\n=== Pulling Latest Changes From Git ===", "cyan"))
+            subprocess.run(["git", "-C", str(SCRIPT_DIR), "pull"])
+
+        if action == "workspace":
+            ws_cmd = sub or "list"
+            if ws_cmd == "list":
+                print(ctext("\n=== Available Workspaces ===", "cyan"))
+                for w in self.get_available_workspaces():
+                    if w == active_ws:
+                        print(ctext(f"  * {w} (active)", "green"))
+                    else:
+                        print(f"    {w}")
+                print(ctext("\nSwitch workspace: pss workspace use <name>\n", "darkgray"))
+            elif ws_cmd == "current":
+                if active_ws:
+                    print(f"\nActive workspace: {ctext(active_ws, 'green')}")
+                    print(ctext(f"Path: {SCRIPT_DIR / 'workspaces' / active_ws}\n", "darkgray"))
+                else:
+                    print(ctext("\nNo active workspace configured. Run 'pss workspace use <name>'.\n", "yellow"))
+            elif ws_cmd == "use":
+                if not target:
+                    badge("ERROR", "red", "Workspace name required: pss workspace use <name>")
+                    return 1
+                ws_norm = target.strip().lower()
+                if self.args.what_if:
+                    badge("WHAT-IF", "cyan", f"Would set active workspace to '{ws_norm}'")
+                    if not self.args.no_apply:
+                        self.cmd_apply(ws_norm)
+                    return 0
+                active_ws = self.set_active_workspace(ws_norm)
+                if not self.args.no_apply:
+                    self.cmd_apply(active_ws)
+            elif ws_cmd == "new":
+                if self.args.what_if:
+                    badge("WHAT-IF", "cyan", f"Would create workspace '{target}'")
+                    return 0
+                self.new_workspace(target)
+                if self.args.push and target:
+                    subprocess.run(["git", "-C", str(SCRIPT_DIR), "add", "-A"], check=True)
+                    subprocess.run(["git", "-C", str(SCRIPT_DIR), "commit", "-m", f"chore: add workspace {target}"], check=True)
+                    subprocess.run(["git", "-C", str(SCRIPT_DIR), "push"], check=True)
+            elif ws_cmd == "delete":
+                if not target:
+                    badge("ERROR", "red", "Workspace name required: pss workspace delete <name>")
+                    return 1
+                ws_del = target.strip().lower()
+                if ws_del == active_ws:
+                    badge("ERROR", "red", f"Cannot delete active workspace '{ws_del}'.")
+                    return 1
+                tdir = SCRIPT_DIR / self.config["workspacesDir"] / ws_del
+                if not tdir.is_dir():
+                    badge("WARN", "yellow", f"Workspace '{ws_del}' not found.")
+                    return 0
+                if self.args.what_if:
+                    badge("WHAT-IF", "cyan", f"Would delete workspace '{ws_del}'")
+                    return 0
+                print(ctext(f"Command preview: rm -rf '{tdir}'", "yellow"))
+                if not self.args.yes:
+                    reply = input(f"Delete workspace '{ws_del}'? [y/N] ").strip().lower()
+                    if reply not in ("y", "yes"):
+                        badge("ABORTED", "darkgray", f"Workspace '{ws_del}' was not deleted.")
+                        return 0
+                shutil.rmtree(tdir)
+                badge("DELETED", "green", f"Deleted workspace '{ws_del}'")
+            else:
+                badge("ERROR", "red", f"Unknown workspace command: {ws_cmd}")
+                return 1
+        elif action == "status":
+            self.cmd_status(active_ws)
+        elif action in ("apply", "link"):
+            self.cmd_apply(active_ws)
+        elif action == "diff":
+            self.cmd_diff(active_ws)
+        elif action == "edit":
+            self.cmd_edit(active_ws, self.args.sub_action, target)
+        elif action == "bootstrap":
+            self.cmd_bootstrap(active_ws)
+        elif action == "apps":
+            self.cmd_apps(active_ws, sub)
+        elif action in ("fonts", "setup"):
+            script = SCRIPT_DIR / "scripts" / "setup-linux.sh"
+            if not script.is_file():
+                badge("ERROR", "red", f"Missing setup script: {script}")
+                return 1
+            cmd = ["sh", str(script)]
+            if action == "fonts":
+                cmd.append("--fonts-only")
+            if self.args.what_if:
+                cmd.append("--what-if")
+            if self.args.force:
+                cmd.append("--force")
+            return subprocess.run(cmd).returncode
+        else:
+            badge("ERROR", "red", f"Unknown action: '{action}'. Run 'pss --help' for usage.")
+            return 1
+        return 0
+
+
+def normalize_cli_flags(argv: list[str]) -> list[str]:
+    """Supports both POSIX (--what-if) and PowerShell-style (-WhatIf) arguments cleanly."""
+    flag_map = {
+        "-force": "--force",
+        "-yes": "--yes",
+        "-whatif": "--what-if",
+        "-nobackup": "--no-backup",
+        "-noapply": "--no-apply",
+        "-push": "--push",
+        "-pull": "--pull",
+        "-pathonly": "--path-only",
+        "-include": "--include",
+        "-exclude": "--exclude",
+        "-homeoverride": "--home-override",
+        "-statehomeoverride": "--state-home-override",
+        "-help": "--help",
+    }
+    return [flag_map.get(tok.lower(), tok) for tok in argv]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="pss",
+        description="Personal Settings Sync (PSS) — Zsh, Starship, Git, and AI configuration manager.",
+    )
+    parser.add_argument("action", nargs="?", default="status", help="status|apply|link|diff|edit|bootstrap|workspace|apps|fonts|setup")
+    parser.add_argument("sub_action", nargs="?", help="Sub-action (e.g. workspace subcommand or edit layer)")
+    parser.add_argument("target_name", nargs="?", help="Target workspace or edit item")
+    parser.add_argument("--include", action="append", help="Filter subsystems: zsh, starship, git, gemini, skills, plugins")
+    parser.add_argument("--exclude", action="append", help="Exclude specific subsystems")
+    parser.add_argument("--pull", action="store_true", help="Run git pull before applying")
+    parser.add_argument("--push", action="store_true", help="Commit and push after mutations")
+    parser.add_argument("--force", "-f", action="store_true", help="Force overwrite or relink")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompts")
+    parser.add_argument("--what-if", "--whatif", action="store_true", help="Dry run without writing to disk")
+    parser.add_argument("--no-backup", "--nobackup", action="store_true", help="Skip .backups/ snapshots")
+    parser.add_argument("--no-apply", "--noapply", action="store_true", help="Skip automatic apply on workspace use")
+    parser.add_argument("--path-only", action="store_true", help="Print resolved repo path for 'pss edit'")
+    parser.add_argument("--home-override", help=argparse.SUPPRESS)
+    parser.add_argument("--state-home-override", help=argparse.SUPPRESS)
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args(normalize_cli_flags(sys.argv[1:]))
+    return PssApp(args).run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

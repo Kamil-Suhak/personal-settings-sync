@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Git diff viewer with PR preview, staged/unstaged reminders, and path filtering."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ctext, git_root, normalize_legacy_flags, run_git  # noqa: E402
+
+MODES = {"unstaged", "u", "staged", "s", "all", "a", "up", "pr", "base", "last"}
+
+
+def count_porcelain(root: Path) -> tuple[int, int, int]:
+    """Return (staged, unstaged, untracked) counts."""
+    res = run_git(["status", "--porcelain=v1"], cwd=root)
+    staged = unstaged = untracked = 0
+    for line in res.stdout.splitlines():
+        if len(line) < 2:
+            continue
+        x, y = line[0], line[1]
+        if x == "?" and y == "?":
+            untracked += 1
+        else:
+            if x != " ":
+                staged += 1
+            if y != " ":
+                unstaged += 1
+    return staged, unstaged, untracked
+
+
+def resolve_base_ref(root: Path, target: str) -> str | None:
+    """Resolve remote tracking ref first if available, else local/exact ref."""
+    remote_ref = f"origin/{target}" if not target.startswith("origin/") else target
+    if run_git(["rev-parse", "--verify", "--quiet", f"{remote_ref}^{{commit}}"], cwd=root).returncode == 0:
+        return remote_ref
+    if run_git(["rev-parse", "--verify", "--quiet", f"{target}^{{commit}}"], cwd=root).returncode == 0:
+        return target
+    return None
+
+
+def build_diff_flags(args: argparse.Namespace) -> list[str]:
+    flags = ["--no-pager", "diff"]
+    if args.stat:
+        flags.append("--stat")
+    elif args.files:
+        flags.append("--name-status")
+    return flags
+
+
+def run_passthrough_git(root: Path, git_args: list[str]) -> int:
+    proc = subprocess.run(["git", "-C", str(root), *git_args])
+    return proc.returncode
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="gdiff",
+        description="Context-aware git diff viewer with PR preview and reminders.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Modes:\n"
+            "  unstaged, u [paths...]   Working tree changes (default)\n"
+            "  staged, s   [paths...]   Index changes staged for commit\n"
+            "  all, a      [paths...]   All tracked changes vs HEAD (+ untracked list)\n"
+            "  up          [paths...]   Unpushed diff against @{upstream}\n"
+            "  pr, base <branch>        GitHub PR preview (merge-base diff ref...HEAD)\n"
+            "  last [N]    [paths...]   Changes from the last N commit(s) (default 1)\n"
+        ),
+    )
+    parser.add_argument("-s", "--stat", action="store_true", help="Show diffstat summary")
+    parser.add_argument("-f", "--files", action="store_true", help="Show changed filenames and status")
+    parser.add_argument("target", nargs=argparse.REMAINDER, help="Mode, branch/count, or file path filters")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    args = parser.parse_args(normalize_legacy_flags(raw))
+
+    root = git_root()
+    if root is None:
+        print(
+            ctext("Not inside a git repository. Use 'cmp <file1> <file2>' to diff two files directly.", "yellow"),
+            file=sys.stderr,
+        )
+        return 1
+
+    tokens = list(args.target)
+    if tokens and tokens[0] == "--":
+        tokens = tokens[1:]
+
+    mode = "unstaged"
+    if tokens and tokens[0].lower() in MODES:
+        mode = tokens[0].lower()
+        rest = tokens[1:]
+    else:
+        rest = tokens
+
+    staged, unstaged, untracked = count_porcelain(root)
+    base_diff_cmd = build_diff_flags(args)
+
+    if mode in ("unstaged", "u"):
+        notes: list[str] = []
+        if staged:
+            notes.append(f"{staged} staged ('gdiff staged')")
+        if untracked:
+            notes.append(f"{untracked} untracked ('st')")
+        if notes:
+            print(ctext(f"Also in working copy: {', '.join(notes)}", "darkgray"))
+        cmd = [*base_diff_cmd]
+        if rest:
+            cmd.extend(["--", *rest])
+        return run_passthrough_git(root, cmd)
+
+    if mode in ("staged", "s"):
+        notes = []
+        if unstaged:
+            notes.append(f"{unstaged} unstaged ('gdiff')")
+        if untracked:
+            notes.append(f"{untracked} untracked ('st')")
+        if notes:
+            print(ctext(f"Also in working copy: {', '.join(notes)}", "darkgray"))
+        cmd = [*base_diff_cmd, "--cached"]
+        if rest:
+            cmd.extend(["--", *rest])
+        return run_passthrough_git(root, cmd)
+
+    if mode in ("all", "a"):
+        has_head = run_git(["rev-parse", "--verify", "--quiet", "HEAD"], cwd=root).returncode == 0
+        cmd = [*base_diff_cmd, "HEAD"] if has_head else [*base_diff_cmd, "--cached"]
+        if rest:
+            cmd.extend(["--", *rest])
+        rc = run_passthrough_git(root, cmd)
+        if untracked:
+            ut = run_git(["ls-files", "--others", "--exclude-standard"], cwd=root).stdout.strip()
+            if ut:
+                print(ctext("\nUntracked files:", "yellow"))
+                for f in ut.splitlines():
+                    print(f"  ? {f}")
+        return rc
+
+    if mode == "up":
+        up_res = run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], cwd=root)
+        if up_res.returncode != 0 or not up_res.stdout.strip():
+            print(ctext("Current branch has no upstream tracking branch.", "yellow"), file=sys.stderr)
+            return 1
+        upstream = up_res.stdout.strip()
+        cmd = [*base_diff_cmd, f"{upstream}..HEAD"]
+        if rest:
+            cmd.extend(["--", *rest])
+        return run_passthrough_git(root, cmd)
+
+    if mode in ("pr", "base"):
+        if not rest:
+            print(ctext("Target branch required (e.g. 'gdiff pr main').", "red"), file=sys.stderr)
+            return 1
+        target = rest[0]
+        paths = rest[1:]
+        resolved = resolve_base_ref(root, target)
+        if not resolved:
+            print(ctext(f"Branch or ref '{target}' not found locally or in origin/.", "red"), file=sys.stderr)
+            return 1
+        print(ctext(f"[gdiff] GitHub PR preview -> {resolved} (commits: {resolved}..HEAD | diff: {resolved}...HEAD)", "cyan"))
+        commits = run_git(["log", "--oneline", f"{resolved}..HEAD"], cwd=root).stdout.strip().splitlines()
+        print(ctext(f"Commits included ({len(commits)}):", "yellow"))
+        for line in commits[:30]:
+            print(f"  {line}")
+        if len(commits) > 30:
+            print(ctext(f"  ... ({len(commits) - 30} more)", "darkgray"))
+        print()
+        cmd = [*base_diff_cmd, f"{resolved}...HEAD"]
+        if paths:
+            cmd.extend(["--", *paths])
+        return run_passthrough_git(root, cmd)
+
+    if mode == "last":
+        count = 1
+        paths = rest
+        if rest and rest[0].isdigit():
+            count = max(1, int(rest[0]))
+            paths = rest[1:]
+        has_parent = run_git(["rev-parse", "--verify", "--quiet", f"HEAD~{count}"], cwd=root).returncode == 0
+        if has_parent:
+            cmd = [*base_diff_cmd, f"HEAD~{count}..HEAD"]
+        else:
+            # Shallow/root fallback via git show
+            cmd = ["--no-pager", "show"]
+            if args.stat:
+                cmd.append("--stat")
+            elif args.files:
+                cmd.append("--name-status")
+            else:
+                cmd.append("--format=")
+            cmd.append("HEAD")
+        if paths:
+            cmd.extend(["--", *paths])
+        return run_passthrough_git(root, cmd)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

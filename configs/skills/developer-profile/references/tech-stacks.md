@@ -14,22 +14,21 @@ Guidelines and conventions across primary technologies:
 ---
 
 ## 2. Shell & Automation
-- **Ecosystem**: PowerShell 7+ (`pwsh` on Windows), Bash (POSIX).
+- **Ecosystem**: Zsh (EndeavourOS & WSL2), Bash/POSIX scripts, Python 3 CLI helpers (`configs/bin/`).
 - **Conventions**:
-  - Chained commands using `&&` (logical AND), `||` (logical OR), and `;` (sequential) are fully supported in `pwsh`.
   - Prefer `&&` over `;` when chaining commands that depend on prior success (e.g., `cd <dir> && git status`).
   - `cd` and `p <project>` inside a chained command work for that execution (e.g., `p sync && npm test`).
   - Standalone `cd` in isolation does not affect subsequent tool calls (since each tool call spawns an independent subshell). For persistent workspace scoping, set `Cwd` directly.
-  - Use explicit parameter switches over positional guessing.
+  - Use explicit `--flag` options over positional guessing.
 
-### Custom PowerShell Profile Functions (`$PROFILE`)
-The agent shell runs in `pwsh` and loads the developer's PowerShell profile functions:
-- **`p <project>` (Project Jumper)**: Supported in chained commands (e.g., `p sync && git status`). Jumps dynamically across configured project roots (`~/.project-roots`).
-- **`killport <port>`**: Safe to use. Kills whatever process is occupying a local port (e.g., `killport 3000`, `killport 8080`).
-- **`cmp <file1> <file2>`**: Safe to use. Compares SHA-256 hashes of two files to verify whether they are identical.
-- **`which <command>`**: Safe to use. Prints the full path of an executable or cmdlet.
+### Custom Zsh Profile & Helper Commands (`~/.zshrc` -> `configs/zsh/`)
+Interactive sessions load shared functions from `configs/zsh/` and executables from `configs/bin/`:
+- **`p <project>` (Project Jumper)**: Supported in chained commands (e.g., `p sync && git status`). Jumps across configured project roots (`~/.local/state/pss/project-roots`).
+- **`st` / `unpushed`**: Non-mutating git status and multi-repo unpushed change inspector.
+- **`cmp <file1> <file2>`**: Safe to use. Compares SHA-256 hashes of two files and diffs if needed.
+- **`which <command>`**: Prints the path or source definition; `which <cmd> -h` invokes `--help`.
 - **`push`**: **Do NOT use**. Bypasses review and pushes to remote, violating the safety rule against pushing without explicit approval.
-- **`find`**: **Do NOT use**. Uses interactive `Read-Host` prompts; use native file tools instead.
+- **`find`**: **Do NOT use interactively**. Uses interactive `fzf` / prompt selection; use native search tools or non-interactive `fd` instead.
 
 ---
 

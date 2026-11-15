@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""Evaluate a decision or piped context using the Gemini Decisions API."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ctext, normalize_legacy_flags, should_use_color  # noqa: E402
+
+DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/decisions"
+DEFAULT_INSTRUCTIONS = "Evaluate the scenario and pick the best option."
+
+
+def parse_choices(raw_items: list[str] | None) -> list[str]:
+    if not raw_items:
+        return ["yes", "no"]
+    choices: list[str] = []
+    for item in raw_items:
+        for part in item.split(","):
+            trimmed = part.strip()
+            if trimmed:
+                choices.append(trimmed)
+    return choices
+
+
+def run_with_spinner(work_fn):
+    """Run work_fn on a worker thread with a green TTY spinner."""
+    result: dict[str, object] = {}
+    done = threading.Event()
+
+    def _worker() -> None:
+        try:
+            result["value"] = work_fn()
+        except BaseException as exc:
+            result["error"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+
+    animate = sys.stdout.isatty() and should_use_color(sys.stdout)
+    frames = ["|", "/", "-", "\\"]
+    idx = 0
+    try:
+        if animate:
+            sys.stdout.write("\033[?25l")
+            sys.stdout.flush()
+        while not done.wait(timeout=0.1):
+            if animate:
+                sys.stdout.write(f"\r{ctext(frames[idx % len(frames)], 'green', force=True)} ")
+                sys.stdout.flush()
+                idx += 1
+    finally:
+        if animate:
+            sys.stdout.write("\r\033[2K\033[?25h")
+            sys.stdout.flush()
+
+    if "error" in result:
+        raise result["error"]  # type: ignore[misc]
+    return result.get("value")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="decide",
+        description="Evaluate a scenario or piped context with Gemini Decisions API.",
+    )
+    parser.add_argument(
+        "-c",
+        "--choices",
+        action="append",
+        help="Comma-separated choices (e.g. -c yes,no or -c fast,safe,cheap)",
+    )
+    parser.add_argument(
+        "-i",
+        "--instructions",
+        default=DEFAULT_INSTRUCTIONS,
+        help="Decision criteria instructions",
+    )
+    parser.add_argument("question", nargs="*", help="Question or scenario to evaluate")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw))
+
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        print(ctext("✖ decide: GEMINI_API_KEY environment variable is not set.", "red"), file=sys.stderr)
+        return 1
+
+    choices = parse_choices(args.choices)
+    if len(choices) < 2:
+        print(ctext("✖ decide: --choices must contain at least 2 options.", "red"), file=sys.stderr)
+        return 1
+
+    piped = ""
+    if not sys.stdin.isatty():
+        piped = sys.stdin.read().strip()
+
+    q_text = " ".join(args.question).strip()
+    if not q_text and not piped:
+        print(ctext("Usage: decide [-c a,b] [-i instructions] <question>", "yellow"), file=sys.stderr)
+        return 1
+
+    if not q_text:
+        q_text = "What is the recommended decision?"
+
+    target = f"Context / Input:\n{piped}\n\nQuestion: {q_text}" if piped else q_text
+    endpoint = os.environ.get("PSS_DECIDE_ENDPOINT") or DEFAULT_ENDPOINT
+
+    payload = {
+        "model": "gemini-decision-1",
+        "input": target,
+        "questions": {
+            "verdict": {
+                "type": "choice",
+                "instructions": args.instructions,
+                "criteria": {c: f"Option: {c}" for c in choices},
+            }
+        },
+    }
+    body_bytes = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=body_bytes,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": api_key,
+        },
+    )
+
+    def _call() -> dict:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    try:
+        res = run_with_spinner(_call)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        print(ctext(f"✖ Gemini Decisions API failed ({exc.code} {exc.reason}): {detail}", "red"), file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(ctext(f"✖ Gemini Decisions API request failed: {exc}", "red"), file=sys.stderr)
+        return 1
+
+    verdict = res["answers"]["verdict"]
+    choice = str(verdict["choice"])
+    p = float(verdict["confidence"])
+    pct = round(p * 100)
+    filled = max(0, min(10, round(p * 10)))
+    bar = ("█" * filled) + ("░" * (10 - filled))
+
+    c_lower = choice.lower()
+    badge_color = "green" if c_lower == "yes" else ("red" if c_lower == "no" else "cyan")
+    bar_color = "green" if p >= 0.8 else ("yellow" if p >= 0.5 else "red")
+
+    print()
+    print(
+        f"  {ctext(f'[{choice.upper()}]', badge_color)}"
+        f"{ctext(f'  {pct:3d}%  ', 'white')}"
+        f"{ctext(bar, bar_color)}"
+        f"  {ctext(q_text, 'darkgray')}"
+    )
+
+    probs = verdict.get("probabilities")
+    if len(choices) > 2 and isinstance(probs, dict):
+        breakdown = [f"{k} {float(v):.0%}" for k, v in probs.items()]
+        print(f"  {ctext(' · '.join(breakdown), 'darkgray')}")
+    print()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

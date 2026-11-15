@@ -1,0 +1,179 @@
+#!/usr/bin/env python3
+"""Compare two files, a file against clipboard, or two consecutive clipboard copies."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
+
+
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def run_no_index_diff(left: Path, right: Path, ignore_whitespace: bool) -> int:
+    cmd = ["git", "--no-pager", "diff", "--no-index", "--color=auto"]
+    if ignore_whitespace:
+        cmd.append("--ignore-all-space")
+    cmd.extend([str(left), str(right)])
+    proc = subprocess.run(cmd)
+    return proc.returncode
+
+
+def compare_two_files(f1: Path, f2: Path, ignore_whitespace: bool, quiet: bool) -> int:
+    if not f1.is_file():
+        print(ctext(f"File not found: {f1}", "red"), file=sys.stderr)
+        return 2
+    if not f2.is_file():
+        print(ctext(f"File not found: {f2}", "red"), file=sys.stderr)
+        return 2
+
+    b1 = f1.read_bytes()
+    b2 = f2.read_bytes()
+    if sha256_bytes(b1) == sha256_bytes(b2):
+        print(ctext("Files are identical.", "green"))
+        return 0
+
+    lf_match = b1.replace(b"\r\n", b"\n") == b2.replace(b"\r\n", b"\n")
+    if ignore_whitespace:
+        t1 = "".join(f1.read_text(encoding="utf-8", errors="replace").split())
+        t2 = "".join(f2.read_text(encoding="utf-8", errors="replace").split())
+        if t1 == t2:
+            print(ctext("Files are identical (ignoring whitespace).", "green"))
+            return 0
+
+    if quiet:
+        print(ctext("Contents differ (CRLF vs LF mismatch)." if lf_match else "Contents differ.", "yellow"))
+        return 1
+
+    if lf_match:
+        print(ctext("CRLF vs LF mismatch (byte line endings differ).", "yellow"))
+        return 1
+
+    print(ctext("Files differ:", "yellow"))
+    run_no_index_diff(f1, f2, ignore_whitespace)
+    return 1
+
+
+def compare_text_blobs(
+    left_label: str,
+    left_text: str,
+    right_label: str,
+    right_text: str,
+    ignore_whitespace: bool,
+    quiet: bool,
+) -> int:
+    b1 = left_text.encode("utf-8")
+    b2 = right_text.encode("utf-8")
+    if sha256_bytes(b1) == sha256_bytes(b2):
+        print(ctext(f"Identical ({left_label} == {right_label}).", "green"))
+        return 0
+
+    if left_text.replace("\r\n", "\n") == right_text.replace("\r\n", "\n"):
+        if ignore_whitespace:
+            print(ctext("Identical (ignoring line-ending whitespace).", "green"))
+            return 0
+        print(ctext("CRLF vs LF mismatch.", "yellow"))
+        return 1
+
+    if ignore_whitespace and "".join(left_text.split()) == "".join(right_text.split()):
+        print(ctext("Identical (ignoring whitespace).", "green"))
+        return 0
+
+    if quiet:
+        print(ctext(f"Contents differ ({left_label} vs {right_label}).", "yellow"))
+        return 1
+
+    print(ctext(f"Difference ({left_label} vs {right_label}):", "yellow"))
+    with tempfile.TemporaryDirectory(prefix="pss-cmp-") as tmp:
+        p1 = Path(tmp) / "left.txt"
+        p2 = Path(tmp) / "right.txt"
+        p1.write_text(left_text, encoding="utf-8", newline="\n")
+        p2.write_text(right_text, encoding="utf-8", newline="\n")
+        run_no_index_diff(p1, p2, ignore_whitespace)
+    return 1
+
+
+def watch_clipboard(ignore_whitespace: bool, quiet: bool) -> int:
+    initial = read_clipboard()
+    if initial is None:
+        print(ctext("Clipboard unavailable. Set PSS_CLIPBOARD_FILE or install wl-clipboard/xclip.", "red"), file=sys.stderr)
+        return 1
+
+    initial_hash = sha256_bytes(initial.encode("utf-8"))
+    print(ctext("Watching clipboard... Copy item #1 (Ctrl+C to cancel).", "cyan"))
+    try:
+        first_text: str | None = None
+        while first_text is None:
+            time.sleep(0.1)
+            cur = read_clipboard()
+            if cur is not None and sha256_bytes(cur.encode("utf-8")) != initial_hash:
+                first_text = cur
+
+        first_hash = sha256_bytes(first_text.encode("utf-8"))
+        print(ctext("Captured item #1. Copy item #2 to compare...", "green"))
+
+        second_text: str | None = None
+        while second_text is None:
+            time.sleep(0.1)
+            cur = read_clipboard()
+            if cur is not None and sha256_bytes(cur.encode("utf-8")) != first_hash:
+                second_text = cur
+    except KeyboardInterrupt:
+        print(ctext("\nCancelled.", "darkgray"))
+        return 130
+
+    return compare_text_blobs("copy #1", first_text, "copy #2", second_text, ignore_whitespace, quiet)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="cmp",
+        description="Compare two files, a file against clipboard, or two consecutive clipboard copies.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Modes:\n"
+            "  cmp <file1> <file2>   Compare two files via SHA-256 + colored git diff\n"
+            "  cmp <file>            Compare a file against the current clipboard text\n"
+            "  cmp                   Watch clipboard and diff the next two copied values\n"
+        ),
+    )
+    parser.add_argument("files", nargs="*", help="Zero, one, or two file paths to compare")
+    parser.add_argument("-w", "--ignore-whitespace", action="store_true", help="Ignore all whitespace differences")
+    parser.add_argument("-q", "--quiet", action="store_true", help="Report match/differ without printing full diff")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw))
+
+    if len(args.files) == 0:
+        return watch_clipboard(args.ignore_whitespace, args.quiet)
+    if len(args.files) == 1:
+        f1 = Path(args.files[0])
+        if not f1.is_file():
+            print(ctext(f"File not found: {f1}", "red"), file=sys.stderr)
+            return 2
+        clip = read_clipboard()
+        if clip is None:
+            print(ctext("Clipboard is empty or unavailable.", "red"), file=sys.stderr)
+            return 1
+        return compare_text_blobs(str(f1), f1.read_text(encoding="utf-8", errors="replace"), "clipboard", clip, args.ignore_whitespace, args.quiet)
+    if len(args.files) == 2:
+        return compare_two_files(Path(args.files[0]), Path(args.files[1]), args.ignore_whitespace, args.quiet)
+
+    print(ctext("Expected 0, 1, or 2 file arguments.", "red"), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
