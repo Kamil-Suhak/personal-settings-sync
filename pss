@@ -964,6 +964,26 @@ class PssApp:
             subprocess.run(["git", "-C", str(SCRIPT_DIR), "commit", "-m", f"chore: bootstrap {workspace} configs from {host}"], check=True)
             subprocess.run(["git", "-C", str(SCRIPT_DIR), "push"], check=True)
 
+    @staticmethod
+    def filter_available_apt_packages(names: list[str]) -> tuple[list[str], list[str]]:
+        """Partition apt package names into (available, missing) using apt-cache."""
+        if not shutil.which("apt-cache"):
+            return list(names), []
+        available: list[str] = []
+        missing: list[str] = []
+        for pkg_name in names:
+            res = subprocess.run(
+                ["apt-cache", "show", pkg_name],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                available.append(pkg_name)
+            else:
+                missing.append(pkg_name)
+        return available, missing
+
     def cmd_apps(self, workspace: str, sub: str) -> None:
         pkgs = [
             p for p in self.config.get("packages", [])
@@ -994,10 +1014,16 @@ class PssApp:
                     subprocess.run(cmd)
             elif apt:
                 names = [p["apt"] for p in pkgs if p.get("apt")]
-                cmd = ["sudo", "apt-get", "install", "-y"] + names
-                print(f"--> {' '.join(cmd)}")
-                if not self.args.what_if:
-                    subprocess.run(cmd)
+                available, missing = self.filter_available_apt_packages(names)
+                if missing:
+                    badge("WARN", "yellow", f"Skipping unavailable apt package(s): {', '.join(missing)}")
+                if available:
+                    cmd = ["sudo", "apt-get", "install", "-y"] + available
+                    print(f"--> {' '.join(cmd)}")
+                    if not self.args.what_if:
+                        subprocess.run(cmd)
+                else:
+                    badge("WARN", "yellow", "No configured apt packages are available in the current apt cache.")
             else:
                 badge("WARN", "yellow", "No supported package manager (yay/paru/pacman/apt-get) found.")
         elif sub == "update":

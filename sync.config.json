@@ -40,6 +40,14 @@
       "category": "Development"
     },
     {
+      "id": "DotnetSdk10",
+      "arch": "dotnet-sdk",
+      "apt": "dotnet-sdk-10.0",
+      "name": ".NET SDK 10.0",
+      "category": "Development",
+      "workspaces": ["work"]
+    },
+    {
       "id": "Zsh",
       "arch": "zsh",
       "apt": "zsh",
