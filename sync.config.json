@@ -210,7 +210,8 @@
         "readme",
         "visualize",
         "feedback",
-        "vault-cleanup"
+        "vault-cleanup",
+        "bootstrap-docs"
       ]
     },
     "plugins": {
