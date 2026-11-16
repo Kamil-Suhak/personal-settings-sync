@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Manage named cross-repository issue file sets ('worksets')."""
+"""Manage named cross-repository issue file sets ('worksets') backed by Obsidian markdown notes."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -13,8 +12,8 @@ import sys
 import uuid
 from pathlib import Path
 
-BIN_COMMON_DIR = Path(__file__).resolve().parents[3] / "configs" / "bin"
-SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+BIN_COMMON_DIR = Path(__file__).resolve().parent
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 sys.path.insert(0, str(BIN_COMMON_DIR))
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -25,16 +24,18 @@ from _pss_common import (  # noqa: E402
     resolve_project_roots_file,
     resolve_pss_root,
     resolve_state_home,
+    resolve_workspace_vault,
+    resolve_workset_config,
     run_git,
 )
 from local_state import get_local_state_paths  # noqa: E402
 
 RESERVED_WIN_RE = re.compile(r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)", re.IGNORECASE)
-VALID_ACTIONS = ("new", "add", "rm", "edit", "show", "list", "open", "archive", "restore", "delete")
+VALID_ACTIONS = ("new", "add", "rm", "edit", "show", "list", "open", "gh", "archive", "restore", "delete")
 
 
 def convert_to_workset_name(name: str) -> str:
-    """Normalize a workset identifier into a safe directory name."""
+    """Normalize a workset identifier into a safe filename stem."""
     step1 = re.sub(r"[^a-z0-9._-]+", "-", name.strip().lower())
     normalized = re.sub(r"-+", "-", step1).strip(" .-")
     if not normalized or len(normalized) > 100 or RESERVED_WIN_RE.match(normalized):
@@ -42,12 +43,23 @@ def convert_to_workset_name(name: str) -> str:
     return normalized
 
 
-def resolve_worksets_root() -> Path:
-    env_root = os.environ.get("PSS_WORKSETS_ROOT")
-    if env_root:
-        return Path(env_root).expanduser()
-    paths = get_local_state_paths(resolve_pss_root(), state_home=resolve_state_home())
-    return paths["worksets_root"]
+def _resolve_active_workspace(pss_root: Path) -> str:
+    if os.environ.get("PSS_WORKSPACE"):
+        return os.environ["PSS_WORKSPACE"].strip()
+    ws_file = get_local_state_paths(pss_root, state_home=resolve_state_home())["workspace"]
+    if ws_file.is_file():
+        val = ws_file.read_text(encoding="utf-8", errors="replace").strip()
+        if val:
+            return val
+    return "personal"
+
+
+def _workset_env() -> tuple[Path, str, Path, dict]:
+    pss_root = resolve_pss_root()
+    ws_name = _resolve_active_workspace(pss_root)
+    vault = resolve_workspace_vault(pss_root, ws_name)
+    cfg = resolve_workset_config(pss_root, ws_name)
+    return pss_root, ws_name, vault, cfg
 
 
 def get_workset_context(directory: Path | None = None) -> tuple[str, str | None] | None:
@@ -61,9 +73,246 @@ def get_workset_context(directory: Path | None = None) -> tuple[str, str | None]
     return root_path, branch
 
 
-def get_workset_dir(name: str, *, archived: bool = False) -> Path:
-    sub = "archived" if archived else "active"
-    return resolve_worksets_root() / sub / convert_to_workset_name(name)
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse simple YAML frontmatter (`---` delimited) and return (metadata, body)."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return {}, text
+    end_idx = None
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() == "---":
+            end_idx = idx
+            break
+    if end_idx is None:
+        return {}, text
+
+    meta: dict = {}
+    repos: list[dict] = []
+    in_repos = False
+    current_repo: dict | None = None
+
+    for raw in lines[1:end_idx]:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if raw.startswith("  - ") and in_repos:
+            if current_repo:
+                repos.append(current_repo)
+            current_repo = {}
+            rest = raw[4:].strip()
+            if ":" in rest:
+                k, v = rest.split(":", 1)
+                current_repo[k.strip()] = v.strip().strip("'\"")
+            continue
+        if raw.startswith("    ") and in_repos and current_repo is not None:
+            if ":" in stripped:
+                k, v = stripped.split(":", 1)
+                current_repo[k.strip()] = v.strip().strip("'\"")
+            continue
+
+        if in_repos and current_repo is not None:
+            repos.append(current_repo)
+            current_repo = None
+        in_repos = False
+
+        if ":" in stripped:
+            k, v = stripped.split(":", 1)
+            key = k.strip()
+            val = v.strip().strip("'\"")
+            if key == "repositories":
+                in_repos = True
+                if val == "[]":
+                    repos = []
+            else:
+                meta[key] = None if val in ("", "null", "~") else val
+
+    if in_repos and current_repo is not None:
+        repos.append(current_repo)
+    if repos or "repositories" in text:
+        meta.setdefault("repositories", repos)
+
+    body = "\n".join(lines[end_idx + 1 :]).lstrip("\n")
+    return meta, body
+
+
+def _dump_frontmatter(meta: dict) -> str:
+    """Serialize workset metadata dict to YAML frontmatter."""
+    out = ["---", f"type: {meta.get('type', 'workset')}"]
+    for key in ("name", "status", "issue_url", "originRoot", "branch"):
+        val = meta.get(key)
+        out.append(f"{key}: {val if val else ''}".rstrip())
+    repos = meta.get("repositories") or []
+    if not repos:
+        out.append("repositories: []")
+    else:
+        out.append("repositories:")
+        for repo in repos:
+            if not isinstance(repo, dict):
+                continue
+            out.append(f"  - root: {repo.get('root', '')}")
+            if repo.get("name"):
+                out.append(f"    name: {repo['name']}")
+            if repo.get("branch"):
+                out.append(f"    branch: {repo['branch']}")
+    out.append("---")
+    return "\n".join(out)
+
+
+def _extract_files_section(body: str) -> list[str]:
+    lines = body.splitlines()
+    in_files = False
+    entries: list[str] = []
+    for raw in lines:
+        s = raw.strip()
+        if s.startswith("## "):
+            if s.lower() == "## files":
+                in_files = True
+                continue
+            if in_files:
+                break
+        if in_files and s.startswith("- "):
+            item = s[2:].strip()
+            if item.startswith("`") and item.endswith("`") and len(item) >= 2:
+                item = item[1:-1]
+            if item:
+                entries.append(item)
+    return entries
+
+
+def _replace_files_section(body: str, entries: list[str]) -> str:
+    lines = body.splitlines()
+    out: list[str] = []
+    in_files = False
+    replaced = False
+
+    def _emit_entries() -> None:
+        for e in entries:
+            out.append(f"- `{e}`")
+
+    for raw in lines:
+        s = raw.strip()
+        if s.startswith("## "):
+            if in_files:
+                in_files = False
+            if s.lower() == "## files":
+                out.append(raw)
+                _emit_entries()
+                in_files = True
+                replaced = True
+                continue
+        if in_files:
+            continue
+        out.append(raw)
+
+    if not replaced:
+        if out and out[-1].strip():
+            out.append("")
+        out.append("## Files")
+        _emit_entries()
+
+    return "\n".join(out).rstrip() + "\n"
+
+
+def _render_workset_note(
+    name: str,
+    *,
+    parent_note: str,
+    status: str,
+    issue_url: str,
+    origin_root: str | None,
+    branch: str | None,
+    repositories: list[dict],
+    files: list[str],
+) -> str:
+    meta = {
+        "type": "workset",
+        "name": name,
+        "status": status,
+        "issue_url": issue_url,
+        "originRoot": origin_root,
+        "branch": branch,
+        "repositories": repositories,
+    }
+    file_lines = "\n".join(f"- `{f}`" for f in files)
+    body = (
+        f"# {name}\n\n"
+        f"Parent: [[{parent_note}]]\n\n"
+        f"## Files\n"
+        f"{file_lines + chr(10) if file_lines else ''}"
+        f"\n## Overview & WIP\n\n\n"
+        f"## Team Questions / Concerns\n"
+    )
+    return _dump_frontmatter(meta) + "\n" + body
+
+
+def _is_workset_note(path: Path) -> bool:
+    if not path.is_file() or path.suffix.lower() != ".md" or path.name.startswith(".new-"):
+        return False
+    try:
+        head = path.read_text(encoding="utf-8", errors="replace")[:512]
+    except OSError:
+        return False
+    meta, _ = _parse_frontmatter(head)
+    return meta.get("type") == "workset"
+
+
+def _iter_workset_notes(*, archived: bool = False) -> list[Path]:
+    env_root = os.environ.get("PSS_WORKSETS_ROOT")
+    if env_root:
+        sub = "archived" if archived else "active"
+        base = Path(env_root).expanduser() / sub
+        if not base.is_dir():
+            return []
+        return sorted((p for p in base.glob("*.md") if _is_workset_note(p)), key=lambda p: p.stem.lower())
+
+    _pss_root, _ws, vault, cfg = _workset_env()
+    if cfg.get("dir_mode") == "per_project":
+        projects_dir = vault / "wiki" / "Projects"
+        if not projects_dir.is_dir():
+            return []
+        notes: list[Path] = []
+        for proj_dir in projects_dir.iterdir():
+            if not proj_dir.is_dir():
+                continue
+            target_dir = (proj_dir / "archived") if archived else proj_dir
+            if not target_dir.is_dir():
+                continue
+            for p in target_dir.glob("*.md"):
+                if _is_workset_note(p):
+                    notes.append(p)
+        return sorted(notes, key=lambda p: p.stem.lower())
+
+    base = vault / "wiki" / "Worksets"
+    target_dir = (base / "archived") if archived else base
+    if not target_dir.is_dir():
+        return []
+    return sorted((p for p in target_dir.glob("*.md") if _is_workset_note(p)), key=lambda p: p.stem.lower())
+
+
+def _target_note_path(name: str, *, parent_note: str, archived: bool = False) -> Path:
+    norm = convert_to_workset_name(name)
+    env_root = os.environ.get("PSS_WORKSETS_ROOT")
+    if env_root:
+        sub = "archived" if archived else "active"
+        return Path(env_root).expanduser() / sub / f"{norm}.md"
+
+    _pss_root, _ws, vault, cfg = _workset_env()
+    if cfg.get("dir_mode") == "per_project":
+        proj_dir = vault / "wiki" / "Projects" / parent_note
+        return (proj_dir / "archived" / f"{norm}.md") if archived else (proj_dir / f"{norm}.md")
+
+    base = vault / "wiki" / "Worksets"
+    return (base / "archived" / f"{norm}.md") if archived else (base / f"{norm}.md")
+
+
+def _archived_counterpart(note_path: Path, *, to_archived: bool) -> Path:
+    if to_archived:
+        if os.environ.get("PSS_WORKSETS_ROOT"):
+            return note_path.parent.parent / "archived" / note_path.name
+        return note_path.parent / "archived" / note_path.name
+    if os.environ.get("PSS_WORKSETS_ROOT"):
+        return note_path.parent.parent / "active" / note_path.name
+    return note_path.parent.parent / note_path.name
 
 
 def _repo_matches(meta: dict, root: str, branch: str) -> bool:
@@ -78,114 +327,84 @@ def _repo_matches(meta: dict, root: str, branch: str) -> bool:
 def find_matching_worksets(root: str, branch: str, *, archived: bool = False) -> list[Path]:
     if not root or not branch:
         return []
-    sub = "archived" if archived else "active"
-    parent = resolve_worksets_root() / sub
-    if not parent.is_dir():
-        return []
     matches: list[Path] = []
-    for entry in sorted(parent.iterdir(), key=lambda p: p.name.lower()):
-        if not entry.is_dir() or entry.name.startswith(".new-"):
-            continue
-        meta_path = entry / "metadata.json"
-        if not meta_path.is_file():
-            continue
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
-        except json.JSONDecodeError:
-            continue
+    for note in _iter_workset_notes(archived=archived):
+        meta, _ = _parse_frontmatter(note.read_text(encoding="utf-8", errors="replace"))
         if _repo_matches(meta, root, branch):
-            matches.append(entry)
+            matches.append(note)
     return matches
 
 
-def _count_workset_entries(ws_dir: Path) -> int:
-    list_file = ws_dir / "files.txt"
-    if not list_file.is_file():
-        return 0
-    return sum(
-        1
-        for raw in list_file.read_text(encoding="utf-8", errors="replace").splitlines()
-        if raw.strip() and not raw.strip().startswith("#")
-    )
-
-
 def get_current_workset_name(root: str, branch: str) -> str | None:
-    if not root or not branch or branch.startswith(":"):
-        return None
     matches = find_matching_worksets(root, branch, archived=False)
-    if len(matches) == 1:
-        return matches[0].name
-    return None
+    return matches[0].stem if len(matches) == 1 else None
 
 
 def get_current_workset_badge(root: str, branch: str) -> str | None:
-    """Return compact Starship badge: `✦N` when name matches branch, else `<name> ✦N`."""
-    if not root or not branch or branch.startswith(":"):
-        return None
     matches = find_matching_worksets(root, branch, archived=False)
     if len(matches) != 1:
         return None
-    ws_dir = matches[0]
-    count = _count_workset_entries(ws_dir)
-    try:
-        branch_norm = convert_to_workset_name(branch)
-    except ValueError:
-        branch_norm = ""
-    if ws_dir.name == branch_norm:
+    note = matches[0]
+    text = note.read_text(encoding="utf-8", errors="replace")
+    _, body = _parse_frontmatter(text)
+    count = len(_extract_files_section(body))
+    norm_branch = ""
+    if branch:
+        try:
+            norm_branch = convert_to_workset_name(branch)
+        except ValueError:
+            norm_branch = ""
+    if norm_branch and note.stem == norm_branch:
         return f"✦{count}"
-    return f"{ws_dir.name} ✦{count}"
+    return f"{note.stem} ✦{count}"
 
 
 def _select_workset_with_fzf(*, archived: bool = False) -> Path | None:
-    if not sys.stdin.isatty() or not shutil.which("fzf"):
+    notes = _iter_workset_notes(archived=archived)
+    if not notes:
         return None
-    sub = "archived" if archived else "active"
-    parent = resolve_worksets_root() / sub
-    if not parent.is_dir():
+    if not shutil.which("fzf") or not sys.stdin.isatty():
         return None
-    names = [
-        entry.name
-        for entry in sorted(parent.iterdir(), key=lambda p: p.name.lower())
-        if entry.is_dir() and not entry.name.startswith(".new-")
-    ]
-    if not names:
-        return None
-    proc = subprocess.run(
-        ["fzf", "--height", "40%", "--reverse", "--prompt", "workset> "],
-        input="\n".join(names) + "\n",
+    names = "\n".join(n.stem for n in notes)
+    res = subprocess.run(
+        ["fzf", "--height", "40%", "--reverse", "--prompt=workset> "],
+        input=names,
         text=True,
         capture_output=True,
         check=False,
     )
-    chosen = proc.stdout.strip()
-    if proc.returncode != 0 or not chosen:
+    if res.returncode != 0:
         return None
-    return parent / chosen
+    choice = res.stdout.strip()
+    for n in notes:
+        if n.stem == choice:
+            return n
+    return None
 
 
-def resolve_workset_dir(name: str | None, *, archived: bool = False, interactive: bool = False) -> Path:
+def resolve_workset_note(name: str | None, *, archived: bool = False, interactive: bool = False) -> Path:
     if name:
-        ws_dir = get_workset_dir(name, archived=archived)
-        if not ws_dir.is_dir():
-            raise FileNotFoundError(f"Workset '{name}' not found.")
-        return ws_dir
+        norm = convert_to_workset_name(name)
+        for n in _iter_workset_notes(archived=archived):
+            if n.stem == norm:
+                return n
+        raise FileNotFoundError(f"Workset '{norm}' does not exist.")
+
     ctx = get_workset_context()
     if ctx and ctx[1]:
         matches = find_matching_worksets(ctx[0], ctx[1], archived=archived)
         if len(matches) == 1:
             return matches[0]
-        if interactive:
-            picked = _select_workset_with_fzf(archived=archived)
-            if picked is not None:
-                return picked
-        raise ValueError(
-            f"Expected one workset for '{ctx[0]}' on '{ctx[1]}'; found {len(matches)}. Specify a name."
-        )
+        if len(matches) > 1:
+            names = ", ".join(m.stem for m in matches)
+            raise ValueError(f"Multiple worksets match '{ctx[1]}': {names}. Pass the workset name explicitly.")
+
     if interactive:
         picked = _select_workset_with_fzf(archived=archived)
         if picked is not None:
             return picked
-    raise ValueError("Specify a workset name outside a repository or on detached HEAD.")
+
+    raise ValueError("Specify a workset name or run from inside a repository branch with an existing workset.")
 
 
 def _find_repo_dir_by_name(repo_name: str, metadata: dict) -> Path | None:
@@ -239,19 +458,13 @@ def _decode_workset_path(raw_line: str, metadata: dict) -> Path:
     raise ValueError(f"Could not resolve relative workset path '{raw_line}'.")
 
 
-def read_workset_files(ws_dir: Path, metadata: dict | None = None) -> list[Path]:
-    list_file = ws_dir / "files.txt"
-    if not list_file.is_file():
-        raise FileNotFoundError(f"Workset file list is missing: {list_file}")
-    if metadata is None:
-        meta_path = ws_dir / "metadata.json"
-        metadata = json.loads(meta_path.read_text(encoding="utf-8", errors="replace")) if meta_path.is_file() else {}
+def read_workset_files(note_path: Path) -> tuple[dict, str, list[Path]]:
+    text = note_path.read_text(encoding="utf-8", errors="replace")
+    metadata, body = _parse_frontmatter(text)
+    entries = _extract_files_section(body)
     files: list[Path] = []
     seen: set[str] = set()
-    for raw in list_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in entries:
         p = _decode_workset_path(line, metadata)
         if not p.is_file():
             raise FileNotFoundError(f"Workset file not found: {line}")
@@ -260,7 +473,7 @@ def read_workset_files(ws_dir: Path, metadata: dict | None = None) -> list[Path]
         if key not in seen:
             seen.add(key)
             files.append(resolved)
-    return files
+    return metadata, body, files
 
 
 def discover_vs_solutions(root: Path, max_depth: int = 3) -> list[Path]:
@@ -319,16 +532,16 @@ def _parse_workset_and_files(
 ) -> tuple[str | None, list[str]]:
     raw_inputs: list[str] = []
     ws_name: str | None = None
+    existing_names = {n.stem for n in _iter_workset_notes(archived=False)}
 
     def _is_file_token(token: str) -> bool:
         if Path(token).is_file():
             return True
-        cand_dir: Path | None = None
         try:
-            cand_dir = get_workset_dir(token)
+            norm = convert_to_workset_name(token)
         except ValueError:
-            cand_dir = None
-        return ("/" in token or "\\" in token) and not (cand_dir and cand_dir.is_dir())
+            norm = ""
+        return ("/" in token or "\\" in token) and norm not in existing_names
 
     if files_flag:
         raw_inputs.extend(files_flag)
@@ -351,20 +564,33 @@ def _parse_workset_and_files(
     return ws_name, raw_inputs
 
 
+def _remote_to_https_url(remote: str) -> str:
+    s = remote.strip()
+    if s.startswith("git@") and ":" in s:
+        host_user, path = s.split(":", 1)
+        host = host_user.split("@", 1)[1]
+        s = f"https://{host}/{path}"
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="workset",
-        description="Manage named cross-repository issue file sets.",
+        description="Manage named cross-repository issue file sets backed by Obsidian markdown notes.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Actions:\n"
             "  list [--archived]                  List active or archived worksets (default)\n"
-            "  new [<name>]                       Create workset (defaults to current branch)\n"
+            "  new [<name>] [--url U] [--project P] [--status S]\n"
+            "                                     Create workset note in vault (defaults to current branch)\n"
             "  add [<name>] <file>...             Add files to current or named workset\n"
             "  rm [<name>] <file>...              Remove files from current or named workset\n"
-            "  show [<name>] [--archived]         Print files stored in workset\n"
-            "  edit [<name>]                      Open files.txt in editor\n"
+            "  show [<name>] [--archived]         Print workset note\n"
+            "  edit [<name>]                      Open workset note in editor\n"
             "  open [<name>] [--code|--vs]        Open workset (splits VS/.NET & VS Code by default)\n"
+            "  gh [<name>]                        Open workset issue_url (or repo remote) in Brave\n"
             "  archive [<name>]                   Move active workset to archived\n"
             "  restore [<name>]                   Restore archived workset to active\n"
             "  delete [<name>] [--archived]       Remove a workset permanently\n"
@@ -372,6 +598,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("tokens", nargs="*", help="Action and arguments")
     parser.add_argument("-f", "--files", nargs="+", dest="files_flag", help="Files to add/remove (on 'add'/'rm')")
+    parser.add_argument("--url", help="Issue URL for 'new'")
+    parser.add_argument("--project", help="Parent [[Project]] wikilink for 'new'")
+    parser.add_argument("--status", help="Initial status for 'new'")
     parser.add_argument("--code", action="store_true", help="Open all workset files in VS Code ('open' only)")
     parser.add_argument("--vs", action="store_true", help="Force Visual Studio ('open' only)")
     parser.add_argument("--archived", action="store_true", help="Target archived worksets (list/show/delete)")
@@ -432,45 +661,58 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if action == "list":
-            sub = "archived" if args.archived else "active"
-            parent = resolve_worksets_root() / sub
-            if parent.is_dir():
-                for entry in sorted(parent.iterdir(), key=lambda p: p.name.lower()):
-                    if entry.is_dir() and not entry.name.startswith(".new-"):
-                        print(entry.name)
+            for note in _iter_workset_notes(archived=args.archived):
+                print(note.stem)
             return 0
 
         if action == "new":
+            _pss_root, _ws, _vault, cfg = _workset_env()
             ctx = get_workset_context()
             if not item:
                 if not ctx or not ctx[1]:
                     raise ValueError("A workset name is required outside a repository or on detached HEAD.")
                 item = ctx[1]
             name = convert_to_workset_name(item)
-            ws_dir = get_workset_dir(name, archived=False)
-            arch_dir = get_workset_dir(name, archived=True)
-            if ws_dir.exists() or arch_dir.exists():
+
+            if args.project:
+                parent_note = args.project.strip()
+            elif cfg.get("parent_mode") == "repo" and ctx:
+                parent_note = Path(ctx[0]).name
+            else:
+                parent_note = str(cfg.get("parent_note") or "Worksets")
+
+            active_note = _target_note_path(name, parent_note=parent_note, archived=False)
+            archived_note = _target_note_path(name, parent_note=parent_note, archived=True)
+            existing = {n.stem for n in (*_iter_workset_notes(archived=False), *_iter_workset_notes(archived=True))}
+            if name in existing or active_note.exists() or archived_note.exists():
                 raise ValueError(f"Workset '{name}' already exists, including archived worksets.")
+
+            status = args.status or str(cfg.get("default_status") or "wip")
+            issue_url = (args.url or "").strip()
+
             if args.what_if:
-                print(ctext(f"WHAT-IF: Create workset '{name}' at {ws_dir}", "cyan"))
+                print(ctext(f"WHAT-IF: Create workset '{name}' at {active_note}", "cyan"))
                 return 0
-            ws_dir.parent.mkdir(parents=True, exist_ok=True)
-            staging = ws_dir.parent / f".new-{uuid.uuid4().hex}"
+
+            active_note.parent.mkdir(parents=True, exist_ok=True)
+            staging = active_note.parent / f".new-{uuid.uuid4().hex}.md"
             try:
-                staging.mkdir(parents=True, exist_ok=True)
-                metadata = {
-                    "name": name,
-                    "originRoot": ctx[0] if ctx else None,
-                    "branch": ctx[1] if ctx else None,
-                    "repositories": [],
-                }
-                (staging / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8", newline="\n")
-                (staging / "files.txt").write_text("", encoding="utf-8", newline="\n")
-                os.replace(staging, ws_dir)
+                content = _render_workset_note(
+                    name,
+                    parent_note=parent_note,
+                    status=status,
+                    issue_url=issue_url,
+                    origin_root=ctx[0] if ctx else None,
+                    branch=ctx[1] if ctx else None,
+                    repositories=[],
+                    files=[],
+                )
+                staging.write_text(content, encoding="utf-8", newline="\n")
+                os.replace(staging, active_note)
             finally:
                 if staging.exists():
-                    shutil.rmtree(staging, ignore_errors=True)
-            print(ctext(f"✓ Created workset '{name}'.", "green"))
+                    staging.unlink(missing_ok=True)
+            print(ctext(f"✓ Created workset '{name}' -> {active_note}", "green"))
             return 0
 
         if action == "add":
@@ -481,11 +723,10 @@ def main(argv: list[str] | None = None) -> int:
                 "Usage: workset add [<name>] <file>... | workset add [<name>] --files <file>...",
             )
 
-            ws_dir = resolve_workset_dir(ws_name)
-            list_path = ws_dir / "files.txt"
-            meta_path = ws_dir / "metadata.json"
-            metadata = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
-            existing = list_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            note_path = resolve_workset_note(ws_name)
+            text = note_path.read_text(encoding="utf-8", errors="replace")
+            metadata, body = _parse_frontmatter(text)
+            existing = _extract_files_section(body)
             added: list[str] = []
             repositories: list[dict] = list(metadata.get("repositories") or [])
             known_roots = {r.get("root") for r in repositories if isinstance(r, dict)}
@@ -505,13 +746,12 @@ def main(argv: list[str] | None = None) -> int:
 
             if added:
                 if args.what_if:
-                    print(ctext(f"WHAT-IF: Add {len(added)} file(s) to '{metadata.get('name', ws_dir.name)}'", "cyan"))
+                    print(ctext(f"WHAT-IF: Add {len(added)} file(s) to '{note_path.stem}'", "cyan"))
                     return 0
                 metadata["repositories"] = repositories
-                meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8", newline="\n")
-                new_lines = [*existing, *added]
-                list_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8", newline="\n")
-                print(ctext(f"✓ Added {len(added)} file(s) to '{metadata.get('name', ws_dir.name)}'.", "green"))
+                new_body = _replace_files_section(body, [*existing, *added])
+                note_path.write_text(_dump_frontmatter(metadata) + "\n" + new_body, encoding="utf-8", newline="\n")
+                print(ctext(f"✓ Added {len(added)} file(s) to '{note_path.stem}'.", "green"))
             return 0
 
         if action == "rm":
@@ -521,11 +761,10 @@ def main(argv: list[str] | None = None) -> int:
                 args.files_flag,
                 "Usage: workset rm [<name>] <file>... | workset rm [<name>] --files <file>...",
             )
-            ws_dir = resolve_workset_dir(ws_name)
-            list_path = ws_dir / "files.txt"
-            meta_path = ws_dir / "metadata.json"
-            metadata = json.loads(meta_path.read_text(encoding="utf-8", errors="replace")) if meta_path.is_file() else {}
-            existing = list_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            note_path = resolve_workset_note(ws_name)
+            text = note_path.read_text(encoding="utf-8", errors="replace")
+            metadata, body = _parse_frontmatter(text)
+            existing = _extract_files_section(body)
 
             targets: set[str] = set()
             for f_raw in raw_inputs:
@@ -540,11 +779,7 @@ def main(argv: list[str] | None = None) -> int:
 
             kept: list[str] = []
             removed = 0
-            for line in existing:
-                s = line.strip()
-                if not s or s.startswith("#"):
-                    kept.append(line)
-                    continue
+            for s in existing:
                 matched = s in targets
                 if not matched:
                     try:
@@ -555,45 +790,66 @@ def main(argv: list[str] | None = None) -> int:
                 if matched:
                     removed += 1
                 else:
-                    kept.append(line)
+                    kept.append(s)
 
             if args.what_if:
-                print(ctext(f"WHAT-IF: Remove {removed} file(s) from '{metadata.get('name', ws_dir.name)}'", "cyan"))
+                print(ctext(f"WHAT-IF: Remove {removed} file(s) from '{note_path.stem}'", "cyan"))
                 return 0
             if removed:
-                list_path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8", newline="\n")
-                print(ctext(f"✓ Removed {removed} file(s) from '{metadata.get('name', ws_dir.name)}'.", "green"))
+                new_body = _replace_files_section(body, kept)
+                note_path.write_text(_dump_frontmatter(metadata) + "\n" + new_body, encoding="utf-8", newline="\n")
+                print(ctext(f"✓ Removed {removed} file(s) from '{note_path.stem}'.", "green"))
             else:
                 print(ctext("No matching files found in workset.", "yellow"))
             return 0
 
         if action == "show":
-            ws_dir = resolve_workset_dir(item, archived=args.archived, interactive=True)
-            print(f"\n{ctext('Workset:', 'cyan')} {ctext(ws_dir.name, 'white')}")
-            content = (ws_dir / "files.txt").read_text(encoding="utf-8", errors="replace")
+            note_path = resolve_workset_note(item, archived=args.archived, interactive=True)
+            print(f"\n{ctext('Workset:', 'cyan')} {ctext(note_path.stem, 'white')} ({note_path})")
+            content = note_path.read_text(encoding="utf-8", errors="replace")
             if content:
                 print(content.rstrip())
             return 0
 
         if action == "edit":
-            ws_dir = resolve_workset_dir(item)
-            list_file = ws_dir / "files.txt"
+            note_path = resolve_workset_note(item)
             editor_cmd = os.environ.get("VISUAL") or os.environ.get("EDITOR")
             if args.what_if:
-                print(ctext(f"WHAT-IF: Edit {list_file}", "cyan"))
+                print(ctext(f"WHAT-IF: Edit {note_path}", "cyan"))
                 return 0
             if shutil.which("code"):
-                proc = subprocess.run(["code", "--wait", str(list_file)])
+                proc = subprocess.run(["code", "--wait", str(note_path)])
                 return proc.returncode
             if editor_cmd:
-                proc = subprocess.run([*editor_cmd.split(), str(list_file)])
+                proc = subprocess.run([*editor_cmd.split(), str(note_path)])
                 return proc.returncode
             raise FileNotFoundError("No editor found (install VS Code 'code' or set VISUAL/EDITOR).")
 
+        if action == "gh":
+            note_path = resolve_workset_note(item, interactive=True)
+            metadata, _ = _parse_frontmatter(note_path.read_text(encoding="utf-8", errors="replace"))
+            url = str(metadata.get("issue_url") or "").strip()
+            if not url:
+                origin_root = metadata.get("originRoot")
+                if origin_root and Path(origin_root).is_dir():
+                    remote_res = run_git(["remote", "get-url", "origin"], cwd=Path(origin_root))
+                    if remote_res.returncode == 0 and remote_res.stdout.strip():
+                        url = _remote_to_https_url(remote_res.stdout.strip())
+            if not url:
+                raise ValueError(f"Workset '{note_path.stem}' has no 'issue_url' and no git origin remote.")
+            if args.what_if:
+                print(ctext(f"WHAT-IF: Open {url} in brave", "cyan"))
+                return 0
+            browser = shutil.which("brave") or shutil.which("brave-browser") or shutil.which("xdg-open")
+            if not browser:
+                raise FileNotFoundError("No browser found ('brave', 'brave-browser', or 'xdg-open').")
+            subprocess.Popen([browser, url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(ctext(f"✓ Opened {url}", "green"))
+            return 0
+
         if action == "open":
-            ws_dir = resolve_workset_dir(item, interactive=True)
-            metadata = json.loads((ws_dir / "metadata.json").read_text(encoding="utf-8", errors="replace"))
-            files = read_workset_files(ws_dir, metadata=metadata)
+            note_path = resolve_workset_note(item, interactive=True)
+            metadata, _body, files = read_workset_files(note_path)
             if not files:
                 raise ValueError("The workset has no files.")
 
@@ -635,7 +891,7 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.code:
                 if args.what_if:
-                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in VS Code ({len(files)} file(s))", "cyan"))
+                    print(ctext(f"WHAT-IF: Open workset '{note_path.stem}' in VS Code ({len(files)} file(s))", "cyan"))
                     return 0
                 code_bin = shutil.which("code")
                 if not code_bin:
@@ -648,7 +904,7 @@ def main(argv: list[str] | None = None) -> int:
                 if not solutions:
                     raise ValueError(f"No Visual Studio solution found for '{roots[0]}'.")
                 if args.what_if:
-                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({solutions[0]})", "cyan"))
+                    print(ctext(f"WHAT-IF: Open workset '{note_path.stem}' in Visual Studio ({solutions[0]})", "cyan"))
                     return 0
                 devenv = resolve_vs_devenv()
                 if not devenv:
@@ -684,9 +940,9 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.what_if:
                 for _r_str, sol, r_files in vs_launches:
-                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in Visual Studio ({sol}, {len(r_files)} file(s))", "cyan"))
+                    print(ctext(f"WHAT-IF: Open workset '{note_path.stem}' in Visual Studio ({sol}, {len(r_files)} file(s))", "cyan"))
                 if code_files:
-                    print(ctext(f"WHAT-IF: Open workset '{ws_dir.name}' in VS Code ({len(code_files)} file(s))", "cyan"))
+                    print(ctext(f"WHAT-IF: Open workset '{note_path.stem}' in VS Code ({len(code_files)} file(s))", "cyan"))
                 return 0
 
             for _r_str, sol, r_files in vs_launches:
@@ -707,38 +963,38 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         if action == "archive":
-            ws_dir = resolve_workset_dir(item, archived=False)
-            dest = get_workset_dir(ws_dir.name, archived=True)
+            note_path = resolve_workset_note(item, archived=False)
+            dest = _archived_counterpart(note_path, to_archived=True)
             if dest.exists():
                 raise ValueError(f"Archive already exists: {dest}")
             if args.what_if:
-                print(ctext(f"WHAT-IF: Archive workset '{ws_dir.name}' -> {dest}", "cyan"))
+                print(ctext(f"WHAT-IF: Archive workset '{note_path.stem}' -> {dest}", "cyan"))
                 return 0
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(ws_dir), str(dest))
-            print(ctext(f"✓ Archived workset '{ws_dir.name}'.", "green"))
+            shutil.move(str(note_path), str(dest))
+            print(ctext(f"✓ Archived workset '{note_path.stem}'.", "green"))
             return 0
 
         if action == "restore":
-            ws_dir = resolve_workset_dir(item, archived=True)
-            dest = get_workset_dir(ws_dir.name, archived=False)
+            note_path = resolve_workset_note(item, archived=True)
+            dest = _archived_counterpart(note_path, to_archived=False)
             if dest.exists():
                 raise ValueError(f"Active workset already exists: {dest}")
             if args.what_if:
-                print(ctext(f"WHAT-IF: Restore workset '{ws_dir.name}' -> {dest}", "cyan"))
+                print(ctext(f"WHAT-IF: Restore workset '{note_path.stem}' -> {dest}", "cyan"))
                 return 0
             dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(ws_dir), str(dest))
-            print(ctext(f"✓ Restored workset '{ws_dir.name}'.", "green"))
+            shutil.move(str(note_path), str(dest))
+            print(ctext(f"✓ Restored workset '{note_path.stem}'.", "green"))
             return 0
 
         if action == "delete":
-            ws_dir = resolve_workset_dir(item, archived=args.archived)
+            note_path = resolve_workset_note(item, archived=args.archived)
             if args.what_if:
-                print(ctext(f"WHAT-IF: Delete workset '{ws_dir.name}'", "cyan"))
+                print(ctext(f"WHAT-IF: Delete workset '{note_path.stem}'", "cyan"))
                 return 0
-            shutil.rmtree(ws_dir)
-            print(ctext(f"✓ Deleted workset '{ws_dir.name}'.", "green"))
+            note_path.unlink()
+            print(ctext(f"✓ Deleted workset '{note_path.stem}'.", "green"))
             return 0
 
     except (ValueError, FileNotFoundError) as exc:

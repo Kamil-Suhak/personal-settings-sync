@@ -57,11 +57,6 @@ azwho() {
     az account show --query "{Subscription:name, Id:id, Tenant:tenantId, User:user.name}" -o table
 }
 
-# Load worksets shell wrapper
-if [ -f "$PSS_ROOT/workspaces/work/zsh/worksets.zsh" ]; then
-    . "$PSS_ROOT/workspaces/work/zsh/worksets.zsh"
-fi
-
 _pss_find_devenv() {
     if command -v devenv >/dev/null 2>&1; then
         command -v devenv

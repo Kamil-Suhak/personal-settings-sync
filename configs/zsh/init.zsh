@@ -102,7 +102,7 @@ EOF
 unset _pss_ws
 
 # Source shared command groups
-for _pss_group in git navigation search ai; do
+for _pss_group in git navigation search ai worksets; do
     if [ -f "$PSS_ROOT/configs/zsh/${_pss_group}.zsh" ]; then
         . "$PSS_ROOT/configs/zsh/${_pss_group}.zsh"
     fi
@@ -310,6 +310,11 @@ cmp() {
 # @cmd: jwt — Decode JWT header, payload, and expiration from arg, stdin, or clipboard
 jwt() {
     "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/jwt" "$@"
+}
+
+# @cmd: note — Workspace-aware Obsidian wiki/raw project note helper (pipes to stdout when redirected)
+note() {
+    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/note" "$@"
 }
 
 # @cmd: pss — Run Personal Settings Sync manager (status, apply, diff, workspace, fonts, apps)

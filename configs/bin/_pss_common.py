@@ -305,3 +305,45 @@ def resolve_workspace_chain(root: str | Path, workspace: str) -> list[str]:
 
     _visit(workspace)
     return chain
+
+
+def resolve_workspace_vault(root: str | Path, workspace: str) -> Path:
+    """Resolve Obsidian vault path from PSS_NOTES_VAULT or workspace.json `vault` along inheritance chain."""
+    env_vault = os.environ.get("PSS_NOTES_VAULT")
+    if env_vault:
+        return Path(os.path.expandvars(env_vault)).expanduser()
+    ws_dir = Path(root) / "workspaces"
+    for ws in reversed(resolve_workspace_chain(root, workspace)):
+        meta_path = ws_dir / ws / "workspace.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            vault_raw = meta.get("vault")
+            if vault_raw and isinstance(vault_raw, str):
+                return Path(os.path.expandvars(vault_raw)).expanduser()
+    return Path.home() / "notes"
+
+
+def resolve_workset_config(root: str | Path, workspace: str) -> dict:
+    """Resolve merged `workset` settings from workspace.json along inheritance chain."""
+    merged: dict = {
+        "dir_mode": "flat",
+        "parent_mode": "note",
+        "parent_note": "Worksets",
+        "statuses": ["todo", "wip", "blocked", "done"],
+        "default_status": "wip",
+    }
+    ws_dir = Path(root) / "workspaces"
+    for ws in resolve_workspace_chain(root, workspace):
+        meta_path = ws_dir / ws / "workspace.json"
+        if meta_path.is_file():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                continue
+            ws_cfg = meta.get("workset")
+            if isinstance(ws_cfg, dict):
+                merged.update(ws_cfg)
+    return merged

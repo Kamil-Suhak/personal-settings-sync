@@ -28,7 +28,7 @@ def get_profile_groups(root: str | Path, workspace: str) -> list[dict]:
             "required": True,
         }
     ]
-    for name in ("git", "navigation", "search", "ai"):
+    for name in ("git", "navigation", "search", "ai", "worksets"):
         groups.append(
             {
                 "name": name,
@@ -38,16 +38,6 @@ def get_profile_groups(root: str | Path, workspace: str) -> list[dict]:
             }
         )
     for ws in resolve_workspace_chain(root_path, workspace):
-        worksets_file = root_path / "workspaces" / ws / "zsh" / "worksets.zsh"
-        if worksets_file.is_file():
-            groups.append(
-                {
-                    "name": "worksets",
-                    "path": worksets_file,
-                    "scope": "workspace",
-                    "required": True,
-                }
-            )
         groups.append(
             {
                 "name": ws,

@@ -124,7 +124,7 @@ class TestSyntaxAndMetadata(unittest.TestCase):
             BIN_DIR / "jwt",
             BIN_DIR / "decide",
             BIN_DIR / "ask-helper",
-            WORK_BIN_DIR / "workset",
+            BIN_DIR / "workset",
             REPO_ROOT / "configs" / "git" / "hooks" / "validate_commit_msg.py",
             REPO_ROOT / "configs" / "skills" / "visualize" / "scripts" / "prepare-d2-svg.py",
             Path(__file__).resolve(),
@@ -144,7 +144,6 @@ class TestSyntaxAndMetadata(unittest.TestCase):
             *sorted((REPO_ROOT / "configs" / "zsh").glob("*.zsh")),
             REPO_ROOT / "workspaces" / "personal" / "zsh" / "profile.zsh",
             REPO_ROOT / "workspaces" / "work" / "zsh" / "profile.zsh",
-            REPO_ROOT / "workspaces" / "work" / "zsh" / "worksets.zsh",
         ]
         for sf in shell_files:
             self.assertTrue(sf.is_file(), f"Missing shell file: {sf}")
@@ -156,7 +155,6 @@ class TestSyntaxAndMetadata(unittest.TestCase):
             *sorted((REPO_ROOT / "configs" / "zsh").glob("*.zsh")),
             REPO_ROOT / "workspaces" / "personal" / "zsh" / "profile.zsh",
             REPO_ROOT / "workspaces" / "work" / "zsh" / "profile.zsh",
-            REPO_ROOT / "workspaces" / "work" / "zsh" / "worksets.zsh",
         ]
         func_re = re.compile(r"^([a-zA-Z0-9_.]+)\s*\(\)\s*\{")
         cmd_re = re.compile(r"^#\s*@cmd:\s*(\S+)\s+[—-]+\s+(.+)$")
@@ -212,7 +210,7 @@ class TestLocalStateAndProfileGroups(unittest.TestCase):
     def test_profile_groups_personal_vs_work(self) -> None:
         personal_groups = profile_groups.get_profile_groups(REPO_ROOT, "personal")
         work_groups = profile_groups.get_profile_groups(REPO_ROOT, "work")
-        self.assertEqual([g["name"] for g in personal_groups], ["shared", "git", "navigation", "search", "ai", "personal"])
+        self.assertEqual([g["name"] for g in personal_groups], ["shared", "git", "navigation", "search", "ai", "worksets", "personal"])
         self.assertEqual([g["name"] for g in work_groups], ["shared", "git", "navigation", "search", "ai", "worksets", "work"])
 
         res = run_cli(
@@ -636,7 +634,7 @@ class TestAskHelper(unittest.TestCase):
 
 class TestWorkset(unittest.TestCase):
     def test_workset_lifecycle_and_safety(self) -> None:
-        ws_mod = load_extensionless_module("workset_mod", WORK_BIN_DIR / "workset")
+        ws_mod = load_extensionless_module("workset_mod", BIN_DIR / "workset")
 
         self.assertEqual(ws_mod.convert_to_workset_name("Feat / Ticket-42 "), "feat-ticket-42")
         with self.assertRaises(ValueError):
@@ -654,15 +652,19 @@ class TestWorkset(unittest.TestCase):
 
             env = {"PSS_WORKSETS_ROOT": str(ws_root)}
 
-            r_new = run_cli(WORK_BIN_DIR / "workset", ["new"], cwd=repo, env=env)
+            r_new = run_cli(BIN_DIR / "workset", ["new", "--url", "https://github.com/org/repo/issues/99"], cwd=repo, env=env)
             self.assertEqual(r_new.returncode, 0, r_new.stderr)
             self.assertIn("feat-ticket-99", r_new.stdout)
 
-            r_add = run_cli(WORK_BIN_DIR / "workset", ["add", "-Files", str(target_file)], cwd=repo, env=env)
+            r_gh = run_cli(BIN_DIR / "workset", ["gh", "feat-ticket-99", "--what-if"], env=env)
+            self.assertEqual(r_gh.returncode, 0, r_gh.stderr)
+            self.assertIn("https://github.com/org/repo/issues/99", r_gh.stdout)
+
+            r_add = run_cli(BIN_DIR / "workset", ["add", "-Files", str(target_file)], cwd=repo, env=env)
             self.assertEqual(r_add.returncode, 0, r_add.stderr)
 
             r_cur = run_cli(
-                WORK_BIN_DIR / "workset",
+                BIN_DIR / "workset",
                 ["--current-name", "--root", str(repo.resolve()), "--branch", "feat/ticket-99"],
                 env=env,
             )
@@ -671,7 +673,7 @@ class TestWorkset(unittest.TestCase):
             # Switch branch and verify 'open --what-if --code' warns without mutating current branch
             subprocess.run(["git", "-C", str(repo), "switch", "-c", "other-branch"], check=True, capture_output=True)
             r_open = run_cli(
-                WORK_BIN_DIR / "workset",
+                BIN_DIR / "workset",
                 ["open", "feat-ticket-99", "--code", "--what-if"],
                 cwd=repo,
                 env=env,
@@ -684,11 +686,11 @@ class TestWorkset(unittest.TestCase):
             cur_branch = subprocess.run(["git", "-C", str(repo), "branch", "--show-current"], capture_output=True, text=True).stdout.strip()
             self.assertEqual(cur_branch, "other-branch")
 
-            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["archive", "feat-ticket-99"], env=env).returncode, 0)
-            self.assertIn("feat-ticket-99", run_cli(WORK_BIN_DIR / "workset", ["list", "--archived"], env=env).stdout)
-            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["restore", "feat-ticket-99"], env=env).returncode, 0)
-            self.assertIn("feat-ticket-99", run_cli(WORK_BIN_DIR / "workset", ["list"], env=env).stdout)
-            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["delete", "feat-ticket-99"], env=env).returncode, 0)
+            self.assertEqual(run_cli(BIN_DIR / "workset", ["archive", "feat-ticket-99"], env=env).returncode, 0)
+            self.assertIn("feat-ticket-99", run_cli(BIN_DIR / "workset", ["list", "--archived"], env=env).stdout)
+            self.assertEqual(run_cli(BIN_DIR / "workset", ["restore", "feat-ticket-99"], env=env).returncode, 0)
+            self.assertIn("feat-ticket-99", run_cli(BIN_DIR / "workset", ["list"], env=env).stdout)
+            self.assertEqual(run_cli(BIN_DIR / "workset", ["delete", "feat-ticket-99"], env=env).returncode, 0)
 
     def test_workset_multirepo_badge_rm_relative_and_split(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -707,43 +709,62 @@ class TestWorkset(unittest.TestCase):
 
             env = {"PSS_WORKSETS_ROOT": str(ws_root)}
 
-            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["new"], cwd=backend, env=env).returncode, 0)
-            self.assertEqual(run_cli(WORK_BIN_DIR / "workset", ["add", str(cs_file), str(ts_file)], cwd=backend, env=env).returncode, 0)
+            self.assertEqual(run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env=env).returncode, 0)
+            self.assertEqual(run_cli(BIN_DIR / "workset", ["add", str(cs_file), str(ts_file)], cwd=backend, env=env).returncode, 0)
 
-            # Repo-relative paths stored in files.txt
-            files_txt = (ws_root / "active" / "feat-ticket-101" / "files.txt").read_text(encoding="utf-8")
-            self.assertIn("backend-repo/Program.cs", files_txt)
-            self.assertIn("frontend-repo/index.ts", files_txt)
+            # Repo-relative paths stored in markdown note
+            note_md = (ws_root / "active" / "feat-ticket-101.md").read_text(encoding="utf-8")
+            self.assertIn("backend-repo/Program.cs", note_md)
+            self.assertIn("frontend-repo/index.ts", note_md)
 
             # Multi-repo badge tracking works from secondary frontend repo too
             r_badge_be = run_cli(
-                WORK_BIN_DIR / "workset",
+                BIN_DIR / "workset",
                 ["--prompt-badge", "--root", str(backend.resolve()), "--branch", "feat/ticket-101"],
                 env=env,
             )
             self.assertEqual(r_badge_be.stdout.strip(), "✦2")
 
             r_badge_fe = run_cli(
-                WORK_BIN_DIR / "workset",
+                BIN_DIR / "workset",
                 ["--prompt-badge", "--root", str(frontend.resolve()), "--branch", "feat/ui-101"],
                 env=env,
             )
             self.assertEqual(r_badge_fe.stdout.strip(), "feat-ticket-101 ✦2")
 
             # Hybrid split open --what-if (on Linux without devenv, falls back cleanly to VS Code; with --code opens all in VS Code)
-            r_split = run_cli(WORK_BIN_DIR / "workset", ["open", "feat-ticket-101", "--what-if"], env=env)
+            r_split = run_cli(BIN_DIR / "workset", ["open", "feat-ticket-101", "--what-if"], env=env)
             self.assertEqual(r_split.returncode, 0, r_split.stderr)
             self.assertIn("WHAT-IF: Open workset 'feat-ticket-101'", r_split.stdout)
 
             # Remove one file via workset rm
-            r_rm = run_cli(WORK_BIN_DIR / "workset", ["rm", "feat-ticket-101", str(ts_file)], env=env)
+            r_rm = run_cli(BIN_DIR / "workset", ["rm", "feat-ticket-101", str(ts_file)], env=env)
             self.assertEqual(r_rm.returncode, 0, r_rm.stderr)
             r_badge_after = run_cli(
-                WORK_BIN_DIR / "workset",
+                BIN_DIR / "workset",
                 ["--prompt-badge", "--root", str(backend.resolve()), "--branch", "feat/ticket-101"],
                 env=env,
             )
             self.assertEqual(r_badge_after.stdout.strip(), "✦1")
+
+            # Vault-backed paths: personal -> wiki/Projects/<repo>/<name>.md, rbc -> wiki/Worksets/<name>.md
+            personal_vault = tpath / "personal-vault"
+            rbc_vault = tpath / "rbc-vault"
+            self.assertEqual(
+                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"PSS_WORKSPACE": "personal", "PSS_NOTES_VAULT": str(personal_vault)}).returncode,
+                0,
+            )
+            p_note = personal_vault / "wiki" / "Projects" / "backend-repo" / "feat-ticket-101.md"
+            self.assertTrue(p_note.is_file())
+            self.assertIn("Parent: [[backend-repo]]", p_note.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"PSS_WORKSPACE": "rbc", "PSS_NOTES_VAULT": str(rbc_vault)}).returncode,
+                0,
+            )
+            r_note = rbc_vault / "wiki" / "Worksets" / "feat-ticket-101.md"
+            self.assertTrue(r_note.is_file())
+            self.assertIn("Parent: [[DodgeOptifyRequirements]]", r_note.read_text(encoding="utf-8"))
 
     def test_clipboard_shared_transforms(self) -> None:
         common = load_extensionless_module("pss_common_mod", BIN_DIR / "_pss_common.py")
@@ -752,6 +773,45 @@ class TestWorkset(unittest.TestCase):
             common.transform_clipboard_text(raw, trim=True, single_line=True, strip_ansi=True),
             "hello world",
         )
+
+    def test_note_helper_and_vault_resolution(self) -> None:
+        common = load_extensionless_module("pss_common_note_mod", BIN_DIR / "_pss_common.py")
+        self.assertEqual(common.resolve_workspace_vault(REPO_ROOT, "personal"), Path.home() / "notes")
+        self.assertEqual(common.resolve_workspace_vault(REPO_ROOT, "rbc"), Path.home() / "work-notes")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = Path(tmp)
+            vault = tpath / "vault"
+            repo = tpath / "state-machine-app"
+            init_git_repo(repo, "main")
+
+            env = {"PSS_NOTES_VAULT": str(vault), "PSS_WORKSPACE": "personal"}
+
+            # Append raw thought via `note -a`
+            r_add = run_cli(BIN_DIR / "note", ["-a", "state machine bug on retry"], cwd=repo, env=env)
+            self.assertEqual(r_add.returncode, 0, r_add.stderr)
+            raw_file = vault / "raw" / "state-machine-app.md"
+            self.assertTrue(raw_file.is_file())
+            self.assertIn("state machine bug on retry", raw_file.read_text(encoding="utf-8"))
+
+            # Piped `note -r` emits raw file content to stdout (no --cat needed)
+            r_raw = run_cli(BIN_DIR / "note", ["-r"], cwd=repo, env=env)
+            self.assertEqual(r_raw.returncode, 0, r_raw.stderr)
+            self.assertIn("state machine bug on retry", r_raw.stdout)
+
+            # Piped `note <topic>` emits wiki hub note content to stdout
+            wiki_hub = vault / "wiki" / "Projects" / "state-machine-bug" / "state-machine-bug.md"
+            wiki_hub.parent.mkdir(parents=True, exist_ok=True)
+            wiki_hub.write_text("# state-machine-bug\n\nFix transition guard.\n", encoding="utf-8")
+            r_wiki = run_cli(BIN_DIR / "note", ["state machine bug".replace(" ", "-")], env=env)
+            self.assertEqual(r_wiki.returncode, 0, r_wiki.stderr)
+            self.assertIn("Fix transition guard.", r_wiki.stdout)
+
+            # `note -l` includes both topics
+            r_list = run_cli(BIN_DIR / "note", ["-l"], env=env)
+            self.assertEqual(r_list.returncode, 0, r_list.stderr)
+            self.assertIn("state-machine-app", r_list.stdout)
+            self.assertIn("state-machine-bug", r_list.stdout)
 
 
 class TestZshFunctionsViaBash(unittest.TestCase):

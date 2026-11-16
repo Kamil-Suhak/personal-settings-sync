@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Workspace-aware Obsidian note helper supporting wiki/raw project notes and piping."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+import urllib.parse
+from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _pss_common import (  # noqa: E402
+    ctext,
+    git_root,
+    normalize_legacy_flags,
+    resolve_pss_root,
+    resolve_workspace_vault,
+)
+
+
+def sanitize_topic(raw: str) -> str:
+    cleaned = re.sub(r"[\\/:*?\"<>|]+", "-", raw.strip()).strip(" .")
+    if not cleaned:
+        raise ValueError("Topic name cannot be empty.")
+    return cleaned
+
+
+def resolve_wiki_note(vault: Path, topic: str) -> Path:
+    projects_dir = vault / "wiki" / "Projects"
+    flat = projects_dir / f"{topic}.md"
+    if flat.is_file():
+        return flat
+    return projects_dir / topic / f"{topic}.md"
+
+
+def resolve_raw_note(vault: Path, topic: str) -> Path:
+    return vault / "raw" / f"{topic}.md"
+
+
+def list_topics(vault: Path) -> list[str]:
+    found: set[str] = set()
+    projects_dir = vault / "wiki" / "Projects"
+    if projects_dir.is_dir():
+        for entry in projects_dir.iterdir():
+            if entry.is_dir():
+                found.add(entry.name)
+            elif entry.is_file() and entry.suffix.lower() == ".md":
+                found.add(entry.stem)
+    raw_dir = vault / "raw"
+    if raw_dir.is_dir():
+        for entry in raw_dir.iterdir():
+            if entry.is_file() and entry.suffix.lower() == ".md":
+                found.add(entry.stem)
+    return sorted(found, key=str.lower)
+
+
+def pick_topic_with_fzf(vault: Path) -> str | None:
+    if not sys.stdin.isatty() or not shutil.which("fzf"):
+        return None
+    topics = list_topics(vault)
+    if not topics:
+        return None
+    proc = subprocess.run(
+        ["fzf", "--height", "40%", "--reverse", "--prompt", "note> "],
+        input="\n".join(topics) + "\n",
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    chosen = proc.stdout.strip()
+    return chosen if proc.returncode == 0 and chosen else None
+
+
+def resolve_topic(explicit: str | None, vault: Path, *, allow_fzf: bool) -> str:
+    if explicit:
+        return sanitize_topic(explicit)
+    top = git_root()
+    if top is not None:
+        return sanitize_topic(top.name)
+    if allow_fzf:
+        picked = pick_topic_with_fzf(vault)
+        if picked:
+            return sanitize_topic(picked)
+    raise ValueError("Specify a topic outside a git repository (or run inside a repo).")
+
+
+def ensure_wiki_note(path: Path, topic: str) -> None:
+    if path.is_file():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = (
+        f"---\n"
+        f"project: {topic}\n"
+        f"status: active\n"
+        f"---\n\n"
+        f"# {topic}\n\n"
+        f"## Context & Rules\n\n"
+        f"## Current State / Next\n\n"
+    )
+    path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def append_raw_entry(path: Path, topic: str, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if not path.is_file():
+        path.write_text(f"# {topic} (raw)\n\n", encoding="utf-8", newline="\n")
+    lines = text.strip().splitlines()
+    if len(lines) <= 1:
+        entry = f"- [{stamp}] {lines[0].strip()}\n"
+    else:
+        body = "\n".join(f"  {ln}" for ln in lines)
+        entry = f"- [{stamp}]\n{body}\n"
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(entry)
+
+
+def open_note_target(path: Path, vault: Path, *, use_obsidian: bool) -> int:
+    if use_obsidian:
+        rel = path.relative_to(vault).with_suffix("").as_posix()
+        uri = f"obsidian://open?vault={urllib.parse.quote(vault.name)}&file={urllib.parse.quote(rel)}"
+        opener = shutil.which("xdg-open") or shutil.which("wslview")
+        if not opener:
+            raise FileNotFoundError("Neither 'xdg-open' nor 'wslview' found for --obsidian.")
+        return subprocess.run([opener, uri]).returncode
+
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        return subprocess.run([*editor.split(), str(path)]).returncode
+    if shutil.which("code"):
+        return subprocess.run(["code", str(path)]).returncode
+    raise FileNotFoundError("No editor found (set VISUAL/EDITOR or install VS Code 'code').")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="note",
+        description="Workspace-aware Obsidian wiki/raw project note helper.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Usage:\n"
+            "  note [<topic>]                 Open wiki hub note (or output to stdout when piped)\n"
+            "  note -r [<topic>]              Open raw/<topic>.md (or output to stdout when piped)\n"
+            "  note -a [-t <topic>] <text>    Append timestamped thought to raw/<topic>.md\n"
+            "  ... | note [-t <topic>]        Append piped stdin to raw/<topic>.md\n"
+            "  note -l                        List project wiki hubs and raw notes\n"
+        ),
+    )
+    parser.add_argument("tokens", nargs="*", help="Topic name (or thought text when using -a/--add)")
+    parser.add_argument("-a", "--add", action="store_true", help="Append thought to raw/<topic>.md")
+    parser.add_argument("-r", "--raw", action="store_true", help="Target raw/<topic>.md")
+    parser.add_argument("-l", "--list", action="store_true", help="List project wiki hubs and raw notes")
+    parser.add_argument("-t", "--topic", help="Explicit project/topic name (defaults to current git repo)")
+    parser.add_argument("--obsidian", action="store_true", help="Open note in Obsidian via URI")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw_argv = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(normalize_legacy_flags(raw_argv))
+
+    workspace = os.environ.get("PSS_WORKSPACE", "personal")
+    vault = resolve_workspace_vault(resolve_pss_root(), workspace)
+
+    tokens = list(args.tokens)
+    piped_stdin = sys.stdin.read() if not sys.stdin.isatty() else ""
+
+    try:
+        if args.list:
+            topics = list_topics(vault)
+            for t in topics:
+                has_wiki = resolve_wiki_note(vault, t).is_file()
+                has_raw = resolve_raw_note(vault, t).is_file()
+                tags = "/".join(tag for tag, ok in (("wiki", has_wiki), ("raw", has_raw)) if ok)
+                print(f"{t} ({tags})" if sys.stdout.isatty() else t)
+            return 0
+
+        is_add = args.add or bool(piped_stdin.strip())
+        if is_add:
+            text = piped_stdin.strip() if piped_stdin.strip() else " ".join(tokens).strip()
+            if not text:
+                raise ValueError("Provide note text or pipe stdin: note -a \"thought\"")
+            topic = resolve_topic(args.topic, vault, allow_fzf=False)
+            raw_path = resolve_raw_note(vault, topic)
+            append_raw_entry(raw_path, topic, text)
+            print(ctext(f"✓ Appended to {raw_path}", "green"))
+            return 0
+
+        explicit_topic = args.topic or (" ".join(tokens).strip() if tokens else None)
+        topic = resolve_topic(explicit_topic, vault, allow_fzf=sys.stdout.isatty())
+
+        target = resolve_raw_note(vault, topic) if args.raw else resolve_wiki_note(vault, topic)
+
+        # When piped (e.g. `note 'state machine bug' | ask '...'`), emit contents to stdout
+        if not sys.stdout.isatty():
+            if not target.is_file():
+                raise FileNotFoundError(f"Note not found: {target}")
+            sys.stdout.write(target.read_text(encoding="utf-8", errors="replace"))
+            return 0
+
+        if args.raw:
+            if not target.is_file():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(f"# {topic} (raw)\n\n", encoding="utf-8", newline="\n")
+        else:
+            ensure_wiki_note(target, topic)
+
+        return open_note_target(target, vault, use_obsidian=args.obsidian)
+    except (ValueError, FileNotFoundError) as exc:
+        print(ctext(str(exc), "red"), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

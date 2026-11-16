@@ -470,7 +470,26 @@ def stream_ask_process(executable: str, args: list[str], label: str, stream_json
     return exit_code, state["conv_id"]
 
 
+def has_terminal_capture_backend() -> bool:
+    if os.environ.get("PSS_TEST_TERMINAL_BUFFER"):
+        return True
+    if os.environ.get("KITTY_LISTEN_ON") and shutil.which("kitty"):
+        return True
+    if os.environ.get("WEZTERM_PANE") and shutil.which("wezterm"):
+        return True
+    if os.environ.get("TMUX") and shutil.which("tmux"):
+        return True
+    return False
+
+
 def cmd_out(args: argparse.Namespace) -> int:
+    if not has_terminal_capture_backend():
+        if os.environ.get("KITTY_WINDOW_ID") and not os.environ.get("KITTY_LISTEN_ON"):
+            msg = "Kitty detected without KITTY_LISTEN_ON (set allow_remote_control yes & listen_on in kitty.conf)."
+        else:
+            msg = "No terminal screen-capture backend available (Ghostty/Windows Terminal do not expose screen buffer IPC; use Kitty with listen_on or pipe output directly)."
+        print(_ce(sys.stderr, msg, "yellow"), file=sys.stderr)
+        return 1
     blocks = convert_to_terminal_blocks(read_terminal_buffer(), fallback_command=args.fallback_command)
     if not blocks:
         print(_ce(sys.stderr, "No completed command blocks found in terminal buffer.", "yellow"), file=sys.stderr)

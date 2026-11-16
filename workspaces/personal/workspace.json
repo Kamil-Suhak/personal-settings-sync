@@ -1,0 +1,9 @@
+{
+  "vault": "~/notes",
+  "workset": {
+    "dir_mode": "per_project",
+    "parent_mode": "repo",
+    "statuses": ["todo", "wip", "blocked", "done"],
+    "default_status": "wip"
+  }
+}

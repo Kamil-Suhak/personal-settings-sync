@@ -1,3 +1,10 @@
 {
-  "extends": "work"
+  "extends": "work",
+  "vault": "~/work-notes",
+  "workset": {
+    "dir_mode": "flat",
+    "parent_note": "DodgeOptifyRequirements",
+    "statuses": ["develop-be", "develop-fe", "security", "beta", "test", "prod"],
+    "default_status": "develop-be"
+  }
 }

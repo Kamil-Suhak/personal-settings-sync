@@ -208,7 +208,9 @@
         "ask",
         "ux",
         "readme",
-        "visualize"
+        "visualize",
+        "feedback",
+        "vault-cleanup"
       ]
     },
     "plugins": {
