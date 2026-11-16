@@ -10,7 +10,8 @@ Generate grounded, Obsidian-native project documentation in `<vault>/wiki/Projec
 ## Constraints
 
 - **Docs only**: Never modify source code or run `git add`/`git commit`.
-- **Vault-first**: Write to `<vault>/wiki/Projects/<repo>/`, never per-repo `AGENTS.md` or nested directory `README.md`s. Use `read_file` (not sandboxed `ls`/`rg`) to check existing vault files.
+- **Vault-first (single source of truth)**: Write to `<vault>/wiki/Projects/<repo>/`, never per-repo `AGENTS.md` or nested directory `README.md`s.
+- **Migrate in-repo docs**: If the repo already has internal docs (`DESIGN.md`, `ROADMAP.md`, `WIP.md`, `docs/`, etc.), synthesize them into the vault notes and—once migrated and verified—safely remove the redundant in-repo docs so only a minimal `README.md` (authored using the `/readme` skill) remains in the repo.
 - **Hub naming**: Name the main hub `<repo>/<repo>.md` (never `_Index.md`) and link it from `<vault>/wiki/Projects/Projects.md`.
 - **Cross-link existing notes**: If `Projects.md` already has related notes (e.g., `SpeedQueen - *`), cross-link them from `<repo>/<repo>.md` instead of silently moving or duplicating them.
 - **Zero fabrication**: Only document file paths, routes, env vars, schemas, and commands directly observed in the repo. Mark unknowns as open questions.
@@ -21,7 +22,7 @@ Generate grounded, Obsidian-native project documentation in `<vault>/wiki/Projec
 - Inspect root manifests (`package.json`, `Cargo.toml`, `pyproject.toml`, `*.sln`, `wrangler.toml`, `Dockerfile`, `.env.example`, `.github/workflows/*`, etc.) to record stack, CI/CD jobs, scripts, and exact **Verification Commands** (test, lint, typecheck, build).
 - Run `git branch -a` and `git log -n 15 --oneline` to surface branching conventions (e.g., `dev`-only workflows) and recent architectural fixes or workarounds. Note any commented-out framework features or defensive patterns in root configs.
 - Map top-level source directories (ignoring `.git`, `node_modules`, `.next`, `dist`, `build`, `.venv`, and `.gitignore` entries) to identify entrypoints, routes/pages, data models, and external integrations.
-- Check `<vault>/raw/<repo>.md` via `read_file` (if present) for existing context before drafting questions—do not edit or delete `raw/` unless asked. If the user references a prior conversation (`conversation://...`), inspect its transcript for decisions and gotchas too.
+- Check `<vault>/raw/<repo>.md` (if present) for existing context before drafting questions—do not edit or delete `raw/` unless asked. If the user references a prior conversation (`conversation://...`), inspect its transcript for decisions and gotchas too.
 
 ### 2. Propose Structure & Short Author Interview
 Before writing vault files, present a concise proposed doc split—inspired by **Hay** (hub rollup) + **Peanuts** (focused leaf notes):

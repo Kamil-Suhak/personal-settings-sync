@@ -31,5 +31,5 @@ Before promoting raw ideas into `wiki/`:
 - Add `[[wikilinks]]` to parent projects, related notes, and the folder's hub note.
 
 ### 4. Vault Hygiene
-- Check `wiki/` for broken `[[wikilinks]]` and orphan notes not referenced from any hub.
+- Run `python3 ~/.agents/skills/vault-cleanup/scripts/audit_vault.py [<vault>]` to scan for `raw/` files, `_Index.md` remnants, folders missing `<Topic>/<Topic>.md` hubs, broken `[[wikilinks]]`, orphan notes, and duplicate stems.
 - Only delete processed `raw/` files after distilling or confirming with the user.
