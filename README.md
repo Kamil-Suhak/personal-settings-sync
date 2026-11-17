@@ -7,8 +7,8 @@ Driven by `sync.config.json`, `./pss` links Zsh + Starship, Git config/hooks, `c
 ## Setup
 
 ```sh
-git clone -b zsh https://github.com/Kamil-Suhak/personal-settings-sync.git ~/Coding/Projects/personal-settings-sync
-cd ~/Coding/Projects/personal-settings-sync
+git clone -b zsh https://github.com/Kamil-Suhak/personal-settings-sync.git ~/code/projects/personal-settings-sync
+cd ~/code/projects/personal-settings-sync
 ./bootstrap.sh
 ```
 

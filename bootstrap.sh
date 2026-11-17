@@ -8,7 +8,7 @@ set -eu
 REPO_OWNER="Kamil-Suhak"
 REPO_NAME="personal-settings-sync"
 BRANCH="zsh"
-TARGET_DIR="$HOME/Coding/Projects/personal-settings-sync"
+TARGET_DIR="$HOME/code/projects/personal-settings-sync"
 WORKSPACE=""
 SKIP_APPS=0
 SKIP_SETUP=0

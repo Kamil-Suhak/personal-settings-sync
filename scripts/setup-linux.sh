@@ -92,8 +92,8 @@ configure_project_roots() {
         echo "[WHAT-IF] Would initialize project roots in $roots_file"
         return 0
     fi
-    mkdir -p "$state_home" "$HOME/Coding/Projects" "$HOME/Dev"
-    printf "%s\n%s\n" "$HOME/Coding/Projects" "$HOME/Dev" > "$roots_file"
+    mkdir -p "$state_home" "$HOME/code/projects"
+    printf "%s\n" "$HOME/code/projects" > "$roots_file"
     echo "[APPLIED] Initialized project roots in $roots_file"
 }
 
