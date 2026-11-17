@@ -14,40 +14,40 @@ $cmd_duration\
 
 [username]
 show_always = false
-style_root = "bg:red fg:yellow bold"
+style_root = "bg:red fg:white bold"
 style_user = "bg:yellow fg:black bold"
 format = "[ ⚡ $user ]($style)[](fg:prev_bg bg:blue)"
 
 [directory]
 truncation_length = 2
 truncation_symbol = ""
-style = "bg:blue fg:white"
+style = "bg:blue fg:black bold"
 format = "[ $path ]($style)"
 
 [python]
-style = "bg:green fg:white"
+style = "bg:green fg:black bold"
 format = "[](fg:prev_bg bg:green)[ ($virtualenv) ]($style)"
 detect_extensions = []
 detect_files = []
 detect_folders = [".venv", "venv"]
 
 [git_branch]
-style = "bg:purple fg:white"
+style = "bg:purple fg:black bold"
 format = "[](fg:prev_bg bg:purple)[ $symbol$branch ]($style)"
 symbol = ""
 
 [git_status]
-style = "bg:purple fg:bright-yellow"
+style = "bg:purple fg:black bold"
 format = "([$all_status$ahead_behind ]($style))"
 
 [env_var.cw]
 variable = "cw"
-style = "bg:cyan fg:black"
+style = "bg:cyan fg:black bold"
 format = "[](fg:prev_bg bg:cyan)[ $env_value ]($style)"
 
 [cmd_duration]
 min_time = 500
-style = "bg:yellow fg:black"
+style = "bg:yellow fg:black bold"
 format = "[](fg:prev_bg bg:yellow)[ ⏱ $duration ]($style)"
 
 [character]
