@@ -333,7 +333,7 @@ _pss_update_prompt_vars() {
         branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || true)"
         export cb="$branch"
         if command -v workset >/dev/null 2>&1 && [ -n "$branch" ]; then
-            export cw="$(workset --prompt-badge --root "$top" --branch "$branch" 2>/dev/null || true)"
+            export cw="$(command workset --prompt-badge --root "$top" --branch "$branch" 2>/dev/null || true)"
         else
             unset cw 2>/dev/null || true
         fi

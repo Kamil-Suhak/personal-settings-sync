@@ -4,6 +4,9 @@
 workset() {
     "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/workset" "$@"
     local rc=$?
+    case " $* " in
+        *" --prompt-badge "*|*" --current-name "*) return "$rc" ;;
+    esac
     if [ "$rc" -eq 0 ] && command -v _pss_update_prompt_vars >/dev/null 2>&1; then
         _pss_update_prompt_vars
     fi
