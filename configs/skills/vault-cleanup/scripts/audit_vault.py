@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
+import urllib.request
 from pathlib import Path
 
 WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
@@ -22,21 +24,67 @@ def resolve_vault(explicit: str | None) -> Path:
     return (Path.home() / "notes").resolve()
 
 
+def print_yt_titles(urls: list[str]) -> int:
+    for url in urls:
+        oembed = f"https://www.youtube.com/oembed?url={url}&format=json"
+        try:
+            req = urllib.request.Request(oembed, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                print(f"{url} | {data.get('title')} | {data.get('author_name')}")
+        except Exception as e:
+            print(f"{url} | ERROR: {e}")
+    return 0
+
+
+def print_headings(wiki: Path, subdir: str | None) -> int:
+    target = (wiki / subdir) if subdir else wiki
+    if not target.is_dir():
+        print(f"Directory not found: {target}", file=sys.stderr)
+        return 1
+    for p in sorted(target.rglob("*.md")):
+        headings = [
+            line.strip()
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.startswith("#")
+        ]
+        if headings:
+            print(f"{p.relative_to(wiki)}: {' | '.join(headings[:8])}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit Obsidian vault raw/ and wiki/ hygiene.")
     parser.add_argument("vault", nargs="?", help="Vault root path (defaults to $PSS_NOTES_VAULT or ~/notes)")
     parser.add_argument("--strict", action="store_true", help="Exit with code 1 if any issues are found")
+    parser.add_argument("--yt-title", nargs="+", metavar="URL", help="Fetch YouTube oEmbed title/author for URL(s) and exit")
+    parser.add_argument("--headings", nargs="?", const="", metavar="SUBDIR", help="Print markdown headings under wiki/[SUBDIR] and exit")
     args = parser.parse_args(argv)
+
+    if args.yt_title:
+        return print_yt_titles(args.yt_title)
 
     vault = resolve_vault(args.vault)
     raw = vault / "raw"
     wiki = vault / "wiki"
 
+    if args.headings is not None:
+        return print_headings(wiki, args.headings or None)
+
     raw_files = sorted(p.relative_to(raw) for p in raw.rglob("*") if p.is_file()) if raw.is_dir() else []
+    stray_files = sorted(
+        p.relative_to(vault)
+        for p in vault.rglob("*")
+        if p.is_file()
+        and p.relative_to(vault).parts[0] not in {"raw", "wiki", ".obsidian", ".git", ".trash"}
+    )
     print(f"=== Vault: {vault} ===")
     print(f"\n=== RAW ({len(raw_files)} files) ===")
     for rf in raw_files:
         print(f"  - {rf}")
+    print(f"\n=== STRAY ({len(stray_files)} files outside raw/ & wiki/) ===")
+    for sf in stray_files:
+        print(f"  - {sf}")
 
     wiki_md = sorted(wiki.rglob("*.md")) if wiki.is_dir() else []
     all_attachments = {p.name.lower() for p in vault.rglob("*") if p.is_file() and p.suffix.lower() in ATTACHMENT_EXTS}
