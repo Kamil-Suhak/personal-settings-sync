@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import (  # noqa: E402
+from _rig_common import (  # noqa: E402
     ctext,
     git_root,
     normalize_legacy_flags,

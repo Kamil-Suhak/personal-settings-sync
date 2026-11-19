@@ -1,8 +1,8 @@
 # Work workspace Zsh profile overrides (WSL2 Ubuntu)
 
 # Optional Windows host git interop when working directly inside /mnt/<drive> repos
-if [ "${PSS_WSL_GIT_INTEROP:-0}" = "1" ] && command -v git.exe >/dev/null 2>&1; then
-    # @cmd: git — Route git calls inside /mnt/[a-z]/ to Windows git.exe when PSS_WSL_GIT_INTEROP=1
+if [ "${RIG_WSL_GIT_INTEROP:-0}" = "1" ] && command -v git.exe >/dev/null 2>&1; then
+    # @cmd: git — Route git calls inside /mnt/[a-z]/ to Windows git.exe when RIG_WSL_GIT_INTEROP=1
     git() {
         case "$PWD" in
             /mnt/[a-zA-Z]/*|/mnt/[a-zA-Z])
@@ -33,14 +33,14 @@ EOF
     esac
 
     local last_cmd=""
-    if command -v _pss_last_history_command >/dev/null 2>&1; then
-        last_cmd="$(_pss_last_history_command)"
+    if command -v _rig_last_history_command >/dev/null 2>&1; then
+        last_cmd="$(_rig_last_history_command)"
     fi
 
     if [ -n "$last_cmd" ]; then
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" run --engine copilot --fallback-command "$last_cmd" "$@"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" run --engine copilot --fallback-command "$last_cmd" "$@"
     else
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" run --engine copilot "$@"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" run --engine copilot "$@"
     fi
 }
 
@@ -57,7 +57,7 @@ azwho() {
     az account show --query "{Subscription:name, Id:id, Tenant:tenantId, User:user.name}" -o table
 }
 
-_pss_find_devenv() {
+_rig_find_devenv() {
     if command -v devenv >/dev/null 2>&1; then
         command -v devenv
         return 0
@@ -69,7 +69,7 @@ _pss_find_devenv() {
     local vs_base="/mnt/c/Program Files/Microsoft Visual Studio"
     if [ -d "$vs_base" ]; then
         local found
-        found="$("${PSS_PYTHON:-python3}" - "$vs_base" <<'PY'
+        found="$("${RIG_PYTHON:-python3}" - "$vs_base" <<'PY'
 import glob
 import sys
 
@@ -143,7 +143,7 @@ EOF
     done
 
     local resolved_info
-    resolved_info="$("${PSS_PYTHON:-python3}" - "$target_path" "$max_depth" "${extra_files[@]}" <<'PY'
+    resolved_info="$("${RIG_PYTHON:-python3}" - "$target_path" "$max_depth" "${extra_files[@]}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -207,7 +207,7 @@ PY
 )"
 
     local err_msg
-    err_msg="$("${PSS_PYTHON:-python3}" - "$resolved_info" <<'PY'
+    err_msg="$("${RIG_PYTHON:-python3}" - "$resolved_info" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])
 if "error" in data:
@@ -220,7 +220,7 @@ PY
     fi
 
     local chosen_sln
-    chosen_sln="$("${PSS_PYTHON:-python3}" - "$resolved_info" <<'PY'
+    chosen_sln="$("${RIG_PYTHON:-python3}" - "$resolved_info" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])
 sols = data["solutions"]
@@ -257,7 +257,7 @@ PY
     local f_line
     while IFS= read -r f_line; do
         [ -n "$f_line" ] && launch_files+=("$f_line")
-    done < <("${PSS_PYTHON:-python3}" - "$resolved_info" <<'PY'
+    done < <("${RIG_PYTHON:-python3}" - "$resolved_info" <<'PY'
 import json, sys
 data = json.loads(sys.argv[1])
 for fp in data["files"]:
@@ -276,7 +276,7 @@ PY
     fi
 
     local devenv
-    devenv="$(_pss_find_devenv)" || devenv=""
+    devenv="$(_rig_find_devenv)" || devenv=""
     if [ -n "$devenv" ]; then
         local args=()
         if command -v wslpath >/dev/null 2>&1 && [[ "$devenv" == *.exe ]]; then

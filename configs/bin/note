@@ -14,11 +14,11 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import (  # noqa: E402
+from _rig_common import (  # noqa: E402
     ctext,
     git_root,
     normalize_legacy_flags,
-    resolve_pss_root,
+    resolve_rig_root,
     resolve_workspace_vault,
 )
 
@@ -164,8 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = sys.argv[1:] if argv is None else argv
     args = build_parser().parse_args(normalize_legacy_flags(raw_argv))
 
-    workspace = os.environ.get("PSS_WORKSPACE", "personal")
-    vault = resolve_workspace_vault(resolve_pss_root(), workspace)
+    workspace = os.environ.get("RIG_WORKSPACE", "personal")
+    vault = resolve_workspace_vault(resolve_rig_root(), workspace)
 
     tokens = list(args.tokens)
     piped_stdin = sys.stdin.read() if not sys.stdin.isatty() else ""

@@ -1,20 +1,20 @@
 # Shared Zsh entrypoint (sourced by ~/.zshrc managed loader)
 
 if [ -n "${ZSH_VERSION:-}" ]; then
-    eval '_pss_init_file="${(%):-%x}"'
+    eval '_rig_init_file="${(%):-%x}"'
 else
-    _pss_init_file="${BASH_SOURCE[0]:-$0}"
+    _rig_init_file="${BASH_SOURCE[0]:-$0}"
 fi
-export PSS_ROOT
-PSS_ROOT="$(cd "$(dirname "$_pss_init_file")/../.." && pwd)"
-unset _pss_init_file
+export RIG_ROOT
+RIG_ROOT="$(cd "$(dirname "$_rig_init_file")/../.." && pwd)"
+unset _rig_init_file
 
 # Prevent Python virtualenv activate scripts from altering the prompt directly (Starship handles it)
 export VIRTUAL_ENV_DISABLE_PROMPT=1
 
-_pss_find_python() {
-    if [ -n "${PSS_PYTHON:-}" ] && command -v "$PSS_PYTHON" >/dev/null 2>&1; then
-        printf '%s' "$PSS_PYTHON"
+_rig_find_python() {
+    if [ -n "${RIG_PYTHON:-}" ] && command -v "$RIG_PYTHON" >/dev/null 2>&1; then
+        printf '%s' "$RIG_PYTHON"
         return 0
     fi
     local cand
@@ -29,13 +29,13 @@ _pss_find_python() {
     return 1
 }
 
-export PSS_PYTHON
-PSS_PYTHON="$(_pss_find_python || printf 'python3')"
+export RIG_PYTHON
+RIG_PYTHON="$(_rig_find_python || printf 'python3')"
 
 # Resolve machine-local XDG state paths (respecting env overrides for sandbox/tests)
-_pss_state_json="$("$PSS_PYTHON" "$PSS_ROOT/scripts/local_state.py" --checkout "$PSS_ROOT" --migrate --json 2>/dev/null || true)"
-if [ -n "$_pss_state_json" ]; then
-    eval "$("$PSS_PYTHON" - "$_pss_state_json" <<'PY'
+_rig_state_json="$("$RIG_PYTHON" "$RIG_ROOT/scripts/local_state.py" --checkout "$RIG_ROOT" --migrate --json 2>/dev/null || true)"
+if [ -n "$_rig_state_json" ]; then
+    eval "$("$RIG_PYTHON" - "$_rig_state_json" <<'PY'
 import json
 import os
 import shlex
@@ -43,32 +43,32 @@ import sys
 from pathlib import Path
 
 data = json.loads(sys.argv[1])
-state_home = os.environ.get("PSS_STATE_HOME") or data["root"]
-roots_file = os.environ.get("PSS_PROJECT_ROOTS") or data["project_roots"]
+state_home = os.environ.get("RIG_STATE_HOME") or data["root"]
+roots_file = os.environ.get("RIG_PROJECT_ROOTS") or data["project_roots"]
 local_prof = data["local_profile"]
 ws_file = data["workspace"]
 
-ws = os.environ.get("PSS_WORKSPACE", "").strip()
+ws = os.environ.get("RIG_WORKSPACE", "").strip()
 if not ws and Path(ws_file).is_file():
     ws = Path(ws_file).read_text(encoding="utf-8", errors="replace").strip()
 if not ws:
     ws = "personal"
 
-print(f"export PSS_STATE_HOME={shlex.quote(state_home)}")
-print(f"export PSS_PROJECT_ROOTS={shlex.quote(roots_file)}")
-print(f"export PSS_LOCAL_PROFILE={shlex.quote(local_prof)}")
-print(f"export PSS_WORKSPACE={shlex.quote(ws)}")
+print(f"export RIG_STATE_HOME={shlex.quote(state_home)}")
+print(f"export RIG_PROJECT_ROOTS={shlex.quote(roots_file)}")
+print(f"export RIG_LOCAL_PROFILE={shlex.quote(local_prof)}")
+print(f"export RIG_WORKSPACE={shlex.quote(ws)}")
 PY
 )"
 fi
-unset _pss_state_json
+unset _rig_state_json
 
-export PSS_STATE_HOME="${PSS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/pss}"
-export PSS_PROJECT_ROOTS="${PSS_PROJECT_ROOTS:-$PSS_STATE_HOME/project-roots}"
-export PSS_LOCAL_PROFILE="${PSS_LOCAL_PROFILE:-$PSS_STATE_HOME/profile.local.zsh}"
-export PSS_WORKSPACE="${PSS_WORKSPACE:-personal}"
+export RIG_STATE_HOME="${RIG_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/rig}"
+export RIG_PROJECT_ROOTS="${RIG_PROJECT_ROOTS:-$RIG_STATE_HOME/project-roots}"
+export RIG_LOCAL_PROFILE="${RIG_LOCAL_PROFILE:-$RIG_STATE_HOME/profile.local.zsh}"
+export RIG_WORKSPACE="${RIG_WORKSPACE:-personal}"
 
-_pss_prepend_path() {
+_rig_prepend_path() {
     local dir="$1"
     if [ -d "$dir" ]; then
         case ":$PATH:" in
@@ -78,36 +78,36 @@ _pss_prepend_path() {
     fi
 }
 
-_pss_prepend_path "$HOME/.local/bin"
-_pss_prepend_path "$PSS_ROOT"
-_pss_prepend_path "$PSS_ROOT/configs/bin"
+_rig_prepend_path "$HOME/.local/bin"
+_rig_prepend_path "$RIG_ROOT"
+_rig_prepend_path "$RIG_ROOT/configs/bin"
 
-PSS_WORKSPACE_CHAIN="$("$PSS_PYTHON" - "$PSS_ROOT" "$PSS_WORKSPACE" <<'PY' 2>/dev/null || printf '%s\n' "$PSS_WORKSPACE"
+RIG_WORKSPACE_CHAIN="$("$RIG_PYTHON" - "$RIG_ROOT" "$RIG_WORKSPACE" <<'PY' 2>/dev/null || printf '%s\n' "$RIG_WORKSPACE"
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import resolve_workspace_chain
+from _rig_common import resolve_workspace_chain
 
 for ws in resolve_workspace_chain(sys.argv[1], sys.argv[2]):
     print(ws)
 PY
 )"
 
-while IFS= read -r _pss_ws; do
-    [ -n "$_pss_ws" ] && _pss_prepend_path "$PSS_ROOT/workspaces/$_pss_ws/bin"
+while IFS= read -r _rig_ws; do
+    [ -n "$_rig_ws" ] && _rig_prepend_path "$RIG_ROOT/workspaces/$_rig_ws/bin"
 done <<EOF
-$PSS_WORKSPACE_CHAIN
+$RIG_WORKSPACE_CHAIN
 EOF
-unset _pss_ws
+unset _rig_ws
 
 # Source shared command groups
-for _pss_group in git navigation search ai worksets; do
-    if [ -f "$PSS_ROOT/configs/zsh/${_pss_group}.zsh" ]; then
-        . "$PSS_ROOT/configs/zsh/${_pss_group}.zsh"
+for _rig_group in git navigation search ai worksets; do
+    if [ -f "$RIG_ROOT/configs/zsh/${_rig_group}.zsh" ]; then
+        . "$RIG_ROOT/configs/zsh/${_rig_group}.zsh"
     fi
 done
-unset _pss_group
+unset _rig_group
 
 # --- Core System & Development Commands ---
 
@@ -147,13 +147,13 @@ which() {
 
     if [ "$want_profile" -eq 1 ]; then
         if [ "$want_help" -eq 0 ]; then
-            printf '%s\n' "$PSS_ROOT/configs/zsh/init.zsh"
+            printf '%s\n' "$RIG_ROOT/configs/zsh/init.zsh"
             return 0
         fi
-        "$PSS_PYTHON" "$PSS_ROOT/scripts/profile_groups.py" \
-            --root "$PSS_ROOT" \
-            --workspace "$PSS_WORKSPACE" \
-            --project-roots "$PSS_PROJECT_ROOTS" \
+        "$RIG_PYTHON" "$RIG_ROOT/scripts/profile_groups.py" \
+            --root "$RIG_ROOT" \
+            --workspace "$RIG_WORKSPACE" \
+            --project-roots "$RIG_PROJECT_ROOTS" \
             --profile-help
         return $?
     fi
@@ -210,7 +210,7 @@ EOF
     local env_dir="${1:-.venv}"
     if [ ! -d "$env_dir" ]; then
         printf "Creating virtual environment in '%s'...\n" "$env_dir"
-        "$PSS_PYTHON" -m venv "$env_dir" || return 1
+        "$RIG_PYTHON" -m venv "$env_dir" || return 1
     fi
 
     if [ -f "$env_dir/bin/activate" ]; then
@@ -221,7 +221,7 @@ EOF
         printf '✖ venv: Activation script not found in %s.\n' "$env_dir" >&2
         return 1
     fi
-    printf 'Activated %s (%s)\n' "$env_dir" "$("$PSS_PYTHON" --version 2>&1)"
+    printf 'Activated %s (%s)\n' "$env_dir" "$("$RIG_PYTHON" --version 2>&1)"
 }
 
 # @cmd: copy — Copy arguments or piped stdin to the system clipboard (-t/--trim, -1/--single-line, --strip-ansi)
@@ -241,13 +241,13 @@ EOF
             return 0
             ;;
     esac
-    "$PSS_PYTHON" - "$PSS_ROOT" "$@" <<'PY'
+    "$RIG_PYTHON" - "$RIG_ROOT" "$@" <<'PY'
 import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import transform_clipboard_text, write_clipboard
+from _rig_common import transform_clipboard_text, write_clipboard
 
 parser = argparse.ArgumentParser(prog="copy", add_help=False)
 parser.add_argument("-t", "--trim", action="store_true")
@@ -280,13 +280,13 @@ EOF
             return 0
             ;;
     esac
-    "$PSS_PYTHON" - "$PSS_ROOT" "$@" <<'PY'
+    "$RIG_PYTHON" - "$RIG_ROOT" "$@" <<'PY'
 import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import read_clipboard, transform_clipboard_text
+from _rig_common import read_clipboard, transform_clipboard_text
 
 parser = argparse.ArgumentParser(prog="paste", add_help=False)
 parser.add_argument("-t", "--trim", action="store_true")
@@ -304,27 +304,27 @@ PY
 
 # @cmd: cmp — Compare two files, file vs clipboard, or two consecutive clipboard copies
 cmp() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/cmp" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/cmp" "$@"
 }
 
 # @cmd: jwt — Decode JWT header, payload, and expiration from arg, stdin, or clipboard
 jwt() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/jwt" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/jwt" "$@"
 }
 
 # @cmd: note — Workspace-aware Obsidian wiki/raw project note helper (pipes to stdout when redirected)
 note() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/note" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/note" "$@"
 }
 
-# @cmd: pss — Run Personal Settings Sync manager (status, apply, diff, workspace, fonts, apps)
-pss() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/pss" "$@"
+# @cmd: rig — Run Personal Settings Sync manager (status, apply, diff, workspace, fonts, apps)
+rig() {
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/rig" "$@"
 }
 
 # --- Prompt Context Variables & Interactive Zsh Configuration ---
 
-_pss_update_prompt_vars() {
+_rig_update_prompt_vars() {
     local top
     top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     if [ -n "$top" ]; then
@@ -388,14 +388,14 @@ if [ -n "${ZSH_VERSION:-}" ]; then
         done
         unset _autosug
 
-        if [ -f "$PSS_ROOT/configs/zsh/keybinds.zsh" ]; then
-            . "$PSS_ROOT/configs/zsh/keybinds.zsh"
+        if [ -f "$RIG_ROOT/configs/zsh/keybinds.zsh" ]; then
+            . "$RIG_ROOT/configs/zsh/keybinds.zsh"
         fi
 
         if [ -n "${precmd_functions+x}" ]; then
-            precmd_functions+=(_pss_update_prompt_vars)
+            precmd_functions+=(_rig_update_prompt_vars)
         else
-            precmd_functions=(_pss_update_prompt_vars)
+            precmd_functions=(_rig_update_prompt_vars)
         fi
 
         if command -v starship >/dev/null 2>&1; then
@@ -416,15 +416,15 @@ fi
 
 # --- Workspace & Machine-Local Profile Layers ---
 
-while IFS= read -r _pss_ws; do
-    if [ -n "$_pss_ws" ] && [ -f "$PSS_ROOT/workspaces/$_pss_ws/zsh/profile.zsh" ]; then
-        . "$PSS_ROOT/workspaces/$_pss_ws/zsh/profile.zsh"
+while IFS= read -r _rig_ws; do
+    if [ -n "$_rig_ws" ] && [ -f "$RIG_ROOT/workspaces/$_rig_ws/zsh/profile.zsh" ]; then
+        . "$RIG_ROOT/workspaces/$_rig_ws/zsh/profile.zsh"
     fi
 done <<EOF
-$PSS_WORKSPACE_CHAIN
+$RIG_WORKSPACE_CHAIN
 EOF
-unset _pss_ws
+unset _rig_ws
 
-if [ -f "$PSS_LOCAL_PROFILE" ]; then
-    . "$PSS_LOCAL_PROFILE"
+if [ -f "$RIG_LOCAL_PROFILE" ]; then
+    . "$RIG_LOCAL_PROFILE"
 fi

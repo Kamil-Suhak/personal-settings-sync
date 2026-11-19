@@ -23,7 +23,7 @@ Guidelines and conventions across primary technologies:
 
 ### Custom Zsh Profile & Helper Commands (`~/.zshrc` -> `configs/zsh/`)
 Interactive sessions load shared functions from `configs/zsh/` and executables from `configs/bin/`:
-- **`p <project>` (Project Jumper)**: Supported in chained commands (e.g., `p sync && git status`). Jumps across configured project roots (`~/.local/state/pss/project-roots`).
+- **`p <project>` (Project Jumper)**: Supported in chained commands (e.g., `p sync && git status`). Jumps across configured project roots (`~/.local/state/rig/project-roots`).
 - **`st` / `unpushed`**: Non-mutating git status and multi-repo unpushed change inspector.
 - **`cmp <file1> <file2>`**: Safe to use. Compares SHA-256 hashes of two files and diffs if needed.
 - **`which <command>`**: Prints the path or source definition; `which <cmd> -h` invokes `--help`.

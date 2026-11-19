@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive test suite for personal-settings-sync (Python CLIs, sync engine, and shell modules)."""
+"""Comprehensive test suite for rig (Python CLIs, sync engine, and shell modules)."""
 
 from __future__ import annotations
 
@@ -113,13 +113,13 @@ def run_cli(script_path: Path, args: list[str], *, cwd: Path | None = None, env:
 class TestSyntaxAndMetadata(unittest.TestCase):
     def test_python_files_compile(self) -> None:
         targets = [
-            REPO_ROOT / "pss",
+            REPO_ROOT / "rig",
             SCRIPTS_DIR / "local_state.py",
             SCRIPTS_DIR / "profile_groups.py",
-            BIN_DIR / "_pss_common.py",
+            BIN_DIR / "_rig_common.py",
             BIN_DIR / "st",
             BIN_DIR / "unpushed",
-            BIN_DIR / "git-pss-diff",
+            BIN_DIR / "git-rig-diff",
             BIN_DIR / "cmp",
             BIN_DIR / "jwt",
             BIN_DIR / "decide",
@@ -183,7 +183,7 @@ class TestLocalStateAndProfileGroups(unittest.TestCase):
             root = Path(tmp)
             checkout = root / "repo"
             checkout.mkdir()
-            state_home = root / "state" / "pss"
+            state_home = root / "state" / "rig"
             (checkout / ".workspace.local").write_text("work\n", encoding="utf-8")
             (root / ".project-roots").write_text(f"{root / 'projects'}\n", encoding="utf-8")
 
@@ -215,7 +215,7 @@ class TestLocalStateAndProfileGroups(unittest.TestCase):
 
         res = run_cli(
             SCRIPTS_DIR / "profile_groups.py",
-            ["--root", str(REPO_ROOT), "--workspace", "work", "--project-roots", "~/.local/state/pss/project-roots", "--profile-help"],
+            ["--root", str(REPO_ROOT), "--workspace", "work", "--project-roots", "~/.local/state/rig/project-roots", "--profile-help"],
         )
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertIn("[git]", res.stdout)
@@ -225,9 +225,9 @@ class TestLocalStateAndProfileGroups(unittest.TestCase):
 
 class TestPssCli(unittest.TestCase):
     def _create_sandbox_checkout(self, root: Path) -> Path:
-        sandbox_repo = root / "pss-repo"
+        sandbox_repo = root / "rig-repo"
         sandbox_repo.mkdir()
-        shutil.copy2(REPO_ROOT / "pss", sandbox_repo / "pss")
+        shutil.copy2(REPO_ROOT / "rig", sandbox_repo / "rig")
         shutil.copy2(REPO_ROOT / "sync.config.json", sandbox_repo / "sync.config.json")
         shutil.copytree(REPO_ROOT / "scripts", sandbox_repo / "scripts")
         shutil.copytree(REPO_ROOT / "configs", sandbox_repo / "configs")
@@ -235,7 +235,7 @@ class TestPssCli(unittest.TestCase):
         return sandbox_repo
 
     def test_workspace_inheritance_rbc_extends_work(self) -> None:
-        common = load_extensionless_module("pss_common_ws_mod", BIN_DIR / "_pss_common.py")
+        common = load_extensionless_module("rig_common_ws_mod", BIN_DIR / "_rig_common.py")
         self.assertEqual(common.resolve_workspace_chain(REPO_ROOT, "rbc"), ["work", "rbc"])
 
         rbc_groups = profile_groups.get_profile_groups(REPO_ROOT, "rbc")
@@ -245,12 +245,12 @@ class TestPssCli(unittest.TestCase):
             tpath = Path(tmp)
             sandbox_repo = self._create_sandbox_checkout(tpath)
             home_dir = tpath / "home"
-            state_home = tpath / "state" / "pss"
+            state_home = tpath / "state" / "rig"
             home_dir.mkdir(parents=True)
-            env = {"HOME": str(home_dir), "PSS_STATE_HOME": str(state_home)}
+            env = {"HOME": str(home_dir), "RIG_STATE_HOME": str(state_home)}
 
-            self.assertEqual(run_cli(sandbox_repo / "pss", ["workspace", "use", "rbc", "--no-apply"], env=env).returncode, 0)
-            self.assertEqual(run_cli(sandbox_repo / "pss", ["apply"], env=env).returncode, 0)
+            self.assertEqual(run_cli(sandbox_repo / "rig", ["workspace", "use", "rbc", "--no-apply"], env=env).returncode, 0)
+            self.assertEqual(run_cli(sandbox_repo / "rig", ["apply"], env=env).returncode, 0)
 
             # Git includes shared + work + rbc
             gitconfig = (home_dir / ".gitconfig").read_text(encoding="utf-8")
@@ -264,7 +264,7 @@ class TestPssCli(unittest.TestCase):
             self.assertIn("RBC Workspace Context", agents)
 
             # Apps list inherits work-scoped DotnetSdk10
-            apps_res = run_cli(sandbox_repo / "pss", ["apps", "list"], env=env)
+            apps_res = run_cli(sandbox_repo / "rig", ["apps", "list"], env=env)
             self.assertEqual(apps_res.returncode, 0, apps_res.stderr)
             self.assertIn("dotnet-sdk-10.0", apps_res.stdout)
 
@@ -274,18 +274,18 @@ class TestPssCli(unittest.TestCase):
             sandbox_repo = self._create_sandbox_checkout(tmp_path)
             home_dir = tmp_path / "home"
             home_dir.mkdir()
-            state_home = home_dir / ".local" / "state" / "pss"
+            state_home = home_dir / ".local" / "state" / "rig"
 
             env = {
                 "HOME": str(home_dir),
                 "USERPROFILE": str(home_dir),
                 "XDG_CONFIG_HOME": str(home_dir / ".config"),
                 "XDG_STATE_HOME": str(home_dir / ".local" / "state"),
-                "PSS_STATE_HOME": str(state_home),
+                "RIG_STATE_HOME": str(state_home),
             }
 
             # Select personal workspace without applying yet
-            res_ws = run_cli(sandbox_repo / "pss", ["workspace", "use", "personal", "--no-apply"], env=env)
+            res_ws = run_cli(sandbox_repo / "rig", ["workspace", "use", "personal", "--no-apply"], env=env)
             self.assertEqual(res_ws.returncode, 0, res_ws.stdout + res_ws.stderr)
             expected_ws_file = local_state.get_local_state_paths(sandbox_repo, state_home=state_home, home_dir=home_dir)["workspace"]
             self.assertEqual(expected_ws_file.read_text(encoding="utf-8").strip(), "personal")
@@ -296,18 +296,18 @@ class TestPssCli(unittest.TestCase):
             (home_dir / ".config" / "starship.toml").write_text("# old starship\n", encoding="utf-8")
 
             # Status before apply should show Unmanaged/File/Missing
-            res_st1 = run_cli(sandbox_repo / "pss", ["status", "--include", "zsh,starship,git,gemini"], env=env)
+            res_st1 = run_cli(sandbox_repo / "rig", ["status", "--include", "zsh,starship,git,gemini"], env=env)
             self.assertEqual(res_st1.returncode, 0, res_st1.stderr)
             self.assertIn("Unmanaged Local File", res_st1.stdout)
 
             # Diff should catch Starship mismatch too
-            res_diff1 = run_cli(sandbox_repo / "pss", ["diff", "--include", "zsh,starship"], env=env)
+            res_diff1 = run_cli(sandbox_repo / "rig", ["diff", "--include", "zsh,starship"], env=env)
             self.assertEqual(res_diff1.returncode, 0, res_diff1.stderr)
             self.assertIn("Starship Prompt", res_diff1.stdout)
             self.assertIn("Zsh Profile", res_diff1.stdout)
 
             # Apply all subsystems in sandbox
-            res_apply = run_cli(sandbox_repo / "pss", ["apply", "--force", "--yes"], env=env)
+            res_apply = run_cli(sandbox_repo / "rig", ["apply", "--force", "--yes"], env=env)
             self.assertEqual(res_apply.returncode, 0, res_apply.stdout + res_apply.stderr)
 
             # Verify backup created for overwritten files
@@ -320,19 +320,19 @@ class TestPssCli(unittest.TestCase):
 
             # Verify .zshrc loader + .gitconfig includes + starship link
             zshrc_txt = (home_dir / ".zshrc").read_text(encoding="utf-8")
-            self.assertIn("Managed by personal-settings-sync (pss)", zshrc_txt)
+            self.assertIn("Managed by rig (rig)", zshrc_txt)
             self.assertIn("configs/zsh/init.zsh", zshrc_txt)
             gitconfig_txt = (home_dir / ".gitconfig").read_text(encoding="utf-8")
             self.assertIn("configs/git/.gitconfig.shared", gitconfig_txt)
             self.assertIn("workspaces/personal/git/.gitconfig", gitconfig_txt)
 
             # Diff on zsh+starship+git should now show 0 differences
-            res_diff2 = run_cli(sandbox_repo / "pss", ["diff", "--include", "zsh,starship,git"], env=env)
+            res_diff2 = run_cli(sandbox_repo / "rig", ["diff", "--include", "zsh,starship,git"], env=env)
             self.assertEqual(res_diff2.returncode, 0, res_diff2.stderr)
             self.assertIn("All inspected configurations are in sync", res_diff2.stdout)
 
             # Switch to work workspace and apply
-            res_work = run_cli(sandbox_repo / "pss", ["workspace", "use", "work"], env=env)
+            res_work = run_cli(sandbox_repo / "rig", ["workspace", "use", "work"], env=env)
             self.assertEqual(res_work.returncode, 0, res_work.stdout + res_work.stderr)
             gitconfig_work = (home_dir / ".gitconfig").read_text(encoding="utf-8")
             self.assertIn("workspaces/work/git/.gitconfig", gitconfig_work)
@@ -376,10 +376,10 @@ class TestGitHelpers(unittest.TestCase):
             self.assertIn("Commits ahead: 1", res_st_cmp.stdout)
             self.assertIn("app.txt", res_st_cmp.stdout)
 
-            # unpushed tests using PSS_PROJECT_ROOTS
+            # unpushed tests using RIG_PROJECT_ROOTS
             roots_file = tmp_path / "project-roots"
             roots_file.write_text(f"{tmp_path / 'projects'}\n", encoding="utf-8", newline="\n")
-            env = {"PSS_PROJECT_ROOTS": str(roots_file)}
+            env = {"RIG_PROJECT_ROOTS": str(roots_file)}
 
             res_unp = run_cli(BIN_DIR / "unpushed", ["--commits", "--files"], env=env)
             self.assertEqual(res_unp.returncode, 0, res_unp.stderr)
@@ -392,8 +392,8 @@ class TestGitHelpers(unittest.TestCase):
             self.assertEqual(res_unp_all.returncode, 0, res_unp_all.stderr)
             self.assertIn("repo-clean", res_unp_all.stdout)
 
-            # git-pss-diff tests
-            res_outside = run_cli(BIN_DIR / "git-pss-diff", [], cwd=tmp_path)
+            # git-rig-diff tests
+            res_outside = run_cli(BIN_DIR / "git-rig-diff", [], cwd=tmp_path)
             self.assertNotEqual(res_outside.returncode, 0)
             self.assertIn("Use 'cmp <file1> <file2>'", res_outside.stderr)
 
@@ -401,12 +401,12 @@ class TestGitHelpers(unittest.TestCase):
             (repo_ahead / "staged.txt").write_text("s\n", encoding="utf-8", newline="\n")
             subprocess.run(["git", "-C", str(repo_ahead), "add", "staged.txt"], check=True, capture_output=True)
 
-            res_diff_u = run_cli(BIN_DIR / "git-pss-diff", [], cwd=repo_ahead)
+            res_diff_u = run_cli(BIN_DIR / "git-rig-diff", [], cwd=repo_ahead)
             self.assertEqual(res_diff_u.returncode, 0, res_diff_u.stderr)
             self.assertIn("1 staged", res_diff_u.stdout)
             self.assertIn("# Changed", res_diff_u.stdout)
 
-            res_diff_pr = run_cli(BIN_DIR / "git-pss-diff", ["pr", "main", "--stat"], cwd=repo_ahead)
+            res_diff_pr = run_cli(BIN_DIR / "git-rig-diff", ["pr", "main", "--stat"], cwd=repo_ahead)
             self.assertEqual(res_diff_pr.returncode, 0, res_diff_pr.stderr)
             self.assertIn("GitHub PR preview -> origin/main", res_diff_pr.stdout)
             self.assertIn("Commits included (1):", res_diff_pr.stdout)
@@ -426,7 +426,7 @@ class TestClipboardJwtAndDecide(unittest.TestCase):
             f_crlf.write_bytes(b"line1\r\nline2\r\n")
             clip.write_text("line1\nchanged\n", encoding="utf-8", newline="\n")
 
-            env = {"PSS_CLIPBOARD_FILE": str(clip)}
+            env = {"RIG_CLIPBOARD_FILE": str(clip)}
 
             self.assertEqual(run_cli(BIN_DIR / "cmp", [str(f1), str(f2)], env=env).returncode, 0)
 
@@ -444,7 +444,7 @@ class TestClipboardJwtAndDecide(unittest.TestCase):
     def test_jwt_arg_stdin_and_clipboard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             clip = Path(tmp) / "clip.txt"
-            env = {"PSS_CLIPBOARD_FILE": str(clip)}
+            env = {"RIG_CLIPBOARD_FILE": str(clip)}
 
             valid_tok = make_jwt({"sub": "123", "exp": int(time.time()) + 3600})
             expired_tok = make_jwt({"sub": "999", "exp": 1000000})
@@ -502,7 +502,7 @@ class TestClipboardJwtAndDecide(unittest.TestCase):
         try:
             env = {
                 "GEMINI_API_KEY": "test-key",
-                "PSS_DECIDE_ENDPOINT": f"http://127.0.0.1:{port}/v1beta/decisions",
+                "RIG_DECIDE_ENDPOINT": f"http://127.0.0.1:{port}/v1beta/decisions",
             }
             res = run_cli(
                 BIN_DIR / "decide",
@@ -559,7 +559,7 @@ class TestAskHelper(unittest.TestCase):
             tpath = Path(tmp)
             buf = tpath / "screen.txt"
             buf.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            env = {"PSS_TEST_TERMINAL_BUFFER": str(buf)}
+            env = {"RIG_TEST_TERMINAL_BUFFER": str(buf)}
 
             res_out = run_cli(BIN_DIR / "ask-helper", ["out", "~2", "-c"], env=env)
             self.assertEqual(res_out.returncode, 0, res_out.stderr)
@@ -613,7 +613,7 @@ class TestAskHelper(unittest.TestCase):
                 launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{mock_agy}" "$@"\n', encoding="utf-8")
                 launcher.chmod(0o755)
 
-            run_env = {**env, "PSS_AGY_CLI_DIR": str(cli_dir)}
+            run_env = {**env, "RIG_AGY_CLI_DIR": str(cli_dir)}
             res_run = run_cli(
                 BIN_DIR / "ask-helper",
                 ["run", "--engine", "agy", "--executable", str(launcher), "say", "hi"],
@@ -650,7 +650,7 @@ class TestWorkset(unittest.TestCase):
             target_file = repo / "src.txt"
             target_file.write_text("code\n", encoding="utf-8")
 
-            env = {"PSS_WORKSETS_ROOT": str(ws_root)}
+            env = {"RIG_WORKSETS_ROOT": str(ws_root)}
 
             r_new = run_cli(BIN_DIR / "workset", ["new", "--url", "https://github.com/org/repo/issues/99"], cwd=repo, env=env)
             self.assertEqual(r_new.returncode, 0, r_new.stderr)
@@ -707,7 +707,7 @@ class TestWorkset(unittest.TestCase):
             ts_file = frontend / "index.ts"
             ts_file.write_text("export const x = 1;\n", encoding="utf-8")
 
-            env = {"PSS_WORKSETS_ROOT": str(ws_root)}
+            env = {"RIG_WORKSETS_ROOT": str(ws_root)}
 
             self.assertEqual(run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env=env).returncode, 0)
             self.assertEqual(run_cli(BIN_DIR / "workset", ["add", str(cs_file), str(ts_file)], cwd=backend, env=env).returncode, 0)
@@ -751,7 +751,7 @@ class TestWorkset(unittest.TestCase):
             personal_vault = tpath / "personal-vault"
             rbc_vault = tpath / "rbc-vault"
             self.assertEqual(
-                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"PSS_WORKSPACE": "personal", "PSS_NOTES_VAULT": str(personal_vault)}).returncode,
+                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"RIG_WORKSPACE": "personal", "RIG_NOTES_VAULT": str(personal_vault)}).returncode,
                 0,
             )
             p_note = personal_vault / "wiki" / "Projects" / "backend-repo" / "feat-ticket-101.md"
@@ -759,7 +759,7 @@ class TestWorkset(unittest.TestCase):
             self.assertIn("Parent: [[backend-repo]]", p_note.read_text(encoding="utf-8"))
 
             self.assertEqual(
-                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"PSS_WORKSPACE": "rbc", "PSS_NOTES_VAULT": str(rbc_vault)}).returncode,
+                run_cli(BIN_DIR / "workset", ["new"], cwd=backend, env={"RIG_WORKSPACE": "rbc", "RIG_NOTES_VAULT": str(rbc_vault)}).returncode,
                 0,
             )
             r_note = rbc_vault / "wiki" / "Worksets" / "feat-ticket-101.md"
@@ -767,7 +767,7 @@ class TestWorkset(unittest.TestCase):
             self.assertIn("Parent: [[DodgeOptifyRequirements]]", r_note.read_text(encoding="utf-8"))
 
     def test_clipboard_shared_transforms(self) -> None:
-        common = load_extensionless_module("pss_common_mod", BIN_DIR / "_pss_common.py")
+        common = load_extensionless_module("rig_common_mod", BIN_DIR / "_rig_common.py")
         raw = "  \033[36mhello\033[0m\nworld  \n"
         self.assertEqual(
             common.transform_clipboard_text(raw, trim=True, single_line=True, strip_ansi=True),
@@ -775,7 +775,7 @@ class TestWorkset(unittest.TestCase):
         )
 
     def test_note_helper_and_vault_resolution(self) -> None:
-        common = load_extensionless_module("pss_common_note_mod", BIN_DIR / "_pss_common.py")
+        common = load_extensionless_module("rig_common_note_mod", BIN_DIR / "_rig_common.py")
         self.assertEqual(common.resolve_workspace_vault(REPO_ROOT, "personal"), Path.home() / "notes")
         self.assertEqual(common.resolve_workspace_vault(REPO_ROOT, "rbc"), Path.home() / "work-notes")
 
@@ -785,7 +785,7 @@ class TestWorkset(unittest.TestCase):
             repo = tpath / "state-machine-app"
             init_git_repo(repo, "main")
 
-            env = {"PSS_NOTES_VAULT": str(vault), "PSS_WORKSPACE": "personal"}
+            env = {"RIG_NOTES_VAULT": str(vault), "RIG_WORKSPACE": "personal"}
 
             # Append raw thought via `note -a`
             r_add = run_cli(BIN_DIR / "note", ["-a", "state machine bug on retry"], cwd=repo, env=env)
@@ -821,14 +821,14 @@ class TestZshFunctionsViaBash(unittest.TestCase):
         init_posix = REPO_ROOT.as_posix() + "/configs/zsh/init.zsh"
         if os.name == "nt":
             # Convert drive path C:/... to /c/... cleanly inside Git Bash via cygpath if needed
-            preamble = f'PSS_INIT_FILE="$(cygpath -u "{init_posix}")"\nsource "$PSS_INIT_FILE"\n'
+            preamble = f'RIG_INIT_FILE="$(cygpath -u "{init_posix}")"\nsource "$RIG_INIT_FILE"\n'
         else:
             preamble = f'source "{init_posix}"\n'
 
         full_script = preamble + body
         merged_env = os.environ.copy()
         merged_env["NO_COLOR"] = "1"
-        merged_env["PSS_PYTHON"] = sys.executable
+        merged_env["RIG_PYTHON"] = sys.executable
         if env:
             merged_env.update(env)
 
@@ -849,7 +849,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
     def test_shell_functions_end_to_end(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tpath = Path(tmp)
-            state_home = tpath / "state" / "pss"
+            state_home = tpath / "state" / "rig"
             state_home.mkdir(parents=True)
             (state_home / "workspace").write_text("personal\n", encoding="utf-8")
 
@@ -864,11 +864,11 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             (tpath / "dotnet-sol" / "Demo.sln").write_text("", encoding="utf-8")
 
             env = {
-                "PSS_STATE_HOME": str(state_home),
-                "PSS_PROJECT_ROOTS": str(roots_file),
-                "PSS_WORKSPACE": "personal",
-                "PSS_CLIPBOARD_FILE": str(clip_file),
-                "PSS_TEST_RERUN_HISTORY_FILE": str(hist_file),
+                "RIG_STATE_HOME": str(state_home),
+                "RIG_PROJECT_ROOTS": str(roots_file),
+                "RIG_WORKSPACE": "personal",
+                "RIG_CLIPBOARD_FILE": str(clip_file),
+                "RIG_TEST_RERUN_HISTORY_FILE": str(hist_file),
             }
 
             # 1. Help checks, which, p, mkcd, copy/paste, gdiff, work-workspace vs --what-if
@@ -903,7 +903,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             self.assertIn("alpha-app", r1.stdout)
             self.assertIn("hello clipboard", r1.stdout)
 
-            work_env = {**env, "PSS_WORKSPACE": "work"}
+            work_env = {**env, "RIG_WORKSPACE": "work"}
             r_vs = self._run_bash_snippet(
                 f'vs -h >/dev/null && vs "$(cygpath -u "{sln_sub_posix}" 2>/dev/null || echo "{sln_sub_posix}")" --what-if',
                 env=work_env,
@@ -941,7 +941,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             script3 = "\n".join(
                 [
                     "rerun -y ~2..1",
-                    "if __PSS_IN_RERUN=1 rerun -y >/dev/null 2>&1; then exit 99; fi",
+                    "if __RIG_IN_RERUN=1 rerun -y >/dev/null 2>&1; then exit 99; fi",
                 ]
             )
             r3 = self._run_bash_snippet(script3, env=env)

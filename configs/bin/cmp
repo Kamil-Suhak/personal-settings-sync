@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
+from _rig_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -93,7 +93,7 @@ def compare_text_blobs(
         return 1
 
     print(ctext(f"Difference ({left_label} vs {right_label}):", "yellow"))
-    with tempfile.TemporaryDirectory(prefix="pss-cmp-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="rig-cmp-") as tmp:
         p1 = Path(tmp) / "left.txt"
         p2 = Path(tmp) / "right.txt"
         p1.write_text(left_text, encoding="utf-8", newline="\n")
@@ -105,7 +105,7 @@ def compare_text_blobs(
 def watch_clipboard(ignore_whitespace: bool, quiet: bool) -> int:
     initial = read_clipboard()
     if initial is None:
-        print(ctext("Clipboard unavailable. Set PSS_CLIPBOARD_FILE or install wl-clipboard/xclip.", "red"), file=sys.stderr)
+        print(ctext("Clipboard unavailable. Set RIG_CLIPBOARD_FILE or install wl-clipboard/xclip.", "red"), file=sys.stderr)
         return 1
 
     initial_hash = sha256_bytes(initial.encode("utf-8"))

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import ANSI_CODES, normalize_legacy_flags, read_config_lines, should_use_color  # noqa: E402
+from _rig_common import ANSI_CODES, normalize_legacy_flags, read_config_lines, should_use_color  # noqa: E402
 
 PROMPT_RE = re.compile(r"^(?:.*?(?:\uE0B0\s*|\s+))?\u276F\s*(.*)$")
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -129,7 +129,7 @@ def resolve_block_indices(spec: str | None, count: int) -> list[int]:
 
 def read_terminal_buffer() -> list[str]:
     """Capture recent terminal text from test hook, Kitty, WezTerm, or tmux."""
-    test_buf = os.environ.get("PSS_TEST_TERMINAL_BUFFER")
+    test_buf = os.environ.get("RIG_TEST_TERMINAL_BUFFER")
     if test_buf:
         p = Path(test_buf)
         if p.is_file():
@@ -199,7 +199,7 @@ def build_prompt_text(
                     ctx_lines.append("")
                 parts.append(f'[Context: Terminal Commands & Output ("{ctx_spec}")]\n' + "\n".join(ctx_lines).rstrip())
         else:
-            hist_path = os.environ.get("PSS_SHELL_HISTORY_FILE")
+            hist_path = os.environ.get("RIG_SHELL_HISTORY_FILE")
             if hist_path:
                 hist_lines = read_config_lines(Path(hist_path))
                 if hist_lines:
@@ -471,7 +471,7 @@ def stream_ask_process(executable: str, args: list[str], label: str, stream_json
 
 
 def has_terminal_capture_backend() -> bool:
-    if os.environ.get("PSS_TEST_TERMINAL_BUFFER"):
+    if os.environ.get("RIG_TEST_TERMINAL_BUFFER"):
         return True
     if os.environ.get("KITTY_LISTEN_ON") and shutil.which("kitty"):
         return True
@@ -571,7 +571,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
 
     default_bin = "agy" if args.engine == "agy" else "copilot"
-    exe = args.executable or os.environ.get("PSS_ASK_EXECUTABLE") or shutil.which(default_bin)
+    exe = args.executable or os.environ.get("RIG_ASK_EXECUTABLE") or shutil.which(default_bin)
     if not exe:
         print(_ce(sys.stderr, f"✖ ask: '{default_bin}' CLI not found in PATH.", "red"), file=sys.stderr)
         return 1
@@ -580,7 +580,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         code, _ = stream_ask_process(exe, ["-p", full_prompt], "copilot", stream_json=False)
         return code
 
-    cli_dir = Path(os.environ.get("PSS_AGY_CLI_DIR") or (Path.home() / ".gemini" / "antigravity-cli")).expanduser()
+    cli_dir = Path(os.environ.get("RIG_AGY_CLI_DIR") or (Path.home() / ".gemini" / "antigravity-cli")).expanduser()
     conv_dir = cli_dir / "conversations"
     brain_dir = cli_dir / "brain"
     before_convs = {p.stem for p in conv_dir.glob("*.db")} if conv_dir.is_dir() else set()

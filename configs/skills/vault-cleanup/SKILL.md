@@ -19,6 +19,7 @@ Clean, curate, and maintain the active Obsidian vault (`~/notes` for `personal`,
 - Read all `raw/` and stray files and classify each by intent:
   - **Unambiguous Action / Task** (e.g., *"install spotatui"*, *"add X to Y"*, *"cleanup unused packages"*) → **Execute directly** if safe and possible (e.g., install package, edit config, run command). If blocked (e.g., `sudo` password, missing auth), log the exact command/blocker in `BIG TODO.md` or `Cleanup Inbox.md`.
   - **Bare YouTube Links** → Resolve titles in one call with `python3 ~/.agents/skills/vault-cleanup/scripts/audit_vault.py --yt-title <url...>` (`BypassSandbox: true`).
+  - **Direct Questions (`Q:` / `follow-up Q:`)** → Treat as directed at you (the agent). Write a **short, to-the-point answer** directly in `wiki/Cleanup Inbox.md` (`- [ ] **Q: ...** — <concise answer>`) rather than creating a separate `wiki/` note, so it is deleted on the next run when checked off.
   - **Calendar Event Invites** → Check conflicts first, then create directly with `gcalendar` (no need to read the full `gcalendar` skill for basic events):
     - `gcalendar readonly events --date YYYY-MM-DD --max 50 --json`
     - `gcalendar mutate create --summary "<Title>" --start YYYY-MM-DDTHH:MM:SS+01:00 --end YYYY-MM-DDTHH:MM:SS+01:00 --location "<Loc>" --send-updates none`

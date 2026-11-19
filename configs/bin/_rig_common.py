@@ -124,7 +124,7 @@ def is_wsl() -> bool:
 
 
 def _clipboard_backend_read() -> str | None:
-    env_file = os.environ.get("PSS_CLIPBOARD_FILE")
+    env_file = os.environ.get("RIG_CLIPBOARD_FILE")
     if env_file:
         p = Path(env_file)
         return p.read_text(encoding="utf-8", errors="replace") if p.is_file() else None
@@ -164,7 +164,7 @@ def read_clipboard() -> str | None:
 
 def write_clipboard(text: str) -> bool:
     """Write UTF-8 text to the active system or test clipboard."""
-    env_file = os.environ.get("PSS_CLIPBOARD_FILE")
+    env_file = os.environ.get("RIG_CLIPBOARD_FILE")
     if env_file:
         p = Path(env_file)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -238,27 +238,27 @@ def git_root(cwd: Path | str | None = None) -> Path | None:
     return Path(val) if val else None
 
 
-def resolve_pss_root() -> Path:
+def resolve_rig_root() -> Path:
     """Return repository root containing configs/bin."""
-    env_root = os.environ.get("PSS_ROOT")
+    env_root = os.environ.get("RIG_ROOT")
     if env_root and Path(env_root).is_dir():
         return Path(env_root)
     return Path(__file__).resolve().parent.parent.parent
 
 
 def resolve_state_home() -> Path:
-    """Return active PSS local state directory."""
-    if os.environ.get("PSS_STATE_HOME"):
-        return Path(os.environ["PSS_STATE_HOME"]).expanduser()
+    """Return active RIG local state directory."""
+    if os.environ.get("RIG_STATE_HOME"):
+        return Path(os.environ["RIG_STATE_HOME"]).expanduser()
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "state"
-    return base / "pss"
+    return base / "rig"
 
 
 def resolve_project_roots_file() -> Path:
     """Return path to project-roots file."""
-    if os.environ.get("PSS_PROJECT_ROOTS"):
-        return Path(os.environ["PSS_PROJECT_ROOTS"]).expanduser()
+    if os.environ.get("RIG_PROJECT_ROOTS"):
+        return Path(os.environ["RIG_PROJECT_ROOTS"]).expanduser()
     return resolve_state_home() / "project-roots"
 
 
@@ -308,8 +308,8 @@ def resolve_workspace_chain(root: str | Path, workspace: str) -> list[str]:
 
 
 def resolve_workspace_vault(root: str | Path, workspace: str) -> Path:
-    """Resolve Obsidian vault path from PSS_NOTES_VAULT or workspace.json `vault` along inheritance chain."""
-    env_vault = os.environ.get("PSS_NOTES_VAULT")
+    """Resolve Obsidian vault path from RIG_NOTES_VAULT or workspace.json `vault` along inheritance chain."""
+    env_vault = os.environ.get("RIG_NOTES_VAULT")
     if env_vault:
         return Path(os.path.expandvars(env_vault)).expanduser()
     ws_dir = Path(root) / "workspaces"

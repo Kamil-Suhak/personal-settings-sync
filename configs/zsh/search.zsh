@@ -1,13 +1,13 @@
 # Search helpers: unified file and content search (sourced by init.zsh)
 
-_pss_clipboard_query() {
+_rig_clipboard_query() {
     local allow_multiline="${1:-0}"
-    "${PSS_PYTHON:-python3}" - "$PSS_ROOT" "$allow_multiline" <<'PY'
+    "${RIG_PYTHON:-python3}" - "$RIG_ROOT" "$allow_multiline" <<'PY'
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import read_clipboard
+from _rig_common import read_clipboard
 
 allow_multiline = sys.argv[2] == "1"
 raw = read_clipboard()
@@ -28,16 +28,16 @@ print(trimmed)
 PY
 }
 
-_pss_copy_and_maybe_open() {
+_rig_copy_and_maybe_open() {
     local selected="$1"
     local open_code="${2:-0}"
 
-    "${PSS_PYTHON:-python3}" - "$PSS_ROOT" "$selected" <<'PY' >/dev/null 2>&1 || true
+    "${RIG_PYTHON:-python3}" - "$RIG_ROOT" "$selected" <<'PY' >/dev/null 2>&1 || true
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "configs" / "bin"))
-from _pss_common import write_clipboard
+from _rig_common import write_clipboard
 
 write_clipboard(sys.argv[2])
 PY
@@ -53,7 +53,7 @@ PY
     fi
 }
 
-_pss_pick_file() {
+_rig_pick_file() {
     local matches="$1"
     local prompt="${2:-seek> }"
     local count
@@ -175,7 +175,7 @@ EOF
             query="${query%$'\r'}"
         fi
         if [ -z "$query" ]; then
-            query="$(_pss_clipboard_query 0 2>/dev/null)" || true
+            query="$(_rig_clipboard_query 0 2>/dev/null)" || true
             if [ -n "$query" ]; then
                 printf "Searching clipboard filename query: '%s'\n" "$query" >&2
             fi
@@ -187,7 +187,7 @@ EOF
         fi
 
         local matches
-        matches="$("${PSS_PYTHON:-python3}" - "$PSS_ROOT" "$query" "$search_path" <<'PY'
+        matches="$("${RIG_PYTHON:-python3}" - "$RIG_ROOT" "$query" "$search_path" <<'PY'
 import os
 import re
 import subprocess
@@ -235,16 +235,16 @@ PY
         fi
 
         local selected
-        selected="$(_pss_pick_file "$matches" "seek> ")"
+        selected="$(_rig_pick_file "$matches" "seek> ")"
         if [ -n "$selected" ]; then
-            _pss_copy_and_maybe_open "$selected" "$open_code"
+            _rig_copy_and_maybe_open "$selected" "$open_code"
         fi
         return 0
     fi
 
     # --- Content / string search mode (-s / --str) ---
     if [ -z "$query" ] && [ -t 0 ]; then
-        query="$(_pss_clipboard_query "$fixed_mode" 2>/dev/null)" || true
+        query="$(_rig_clipboard_query "$fixed_mode" 2>/dev/null)" || true
         if [ -n "$query" ]; then
             printf "Searching clipboard pattern.\n" >&2
         fi
@@ -295,9 +295,9 @@ PY
         fi
 
         local selected
-        selected="$(_pss_pick_file "$file_matches" "seek -s> ")"
+        selected="$(_rig_pick_file "$file_matches" "seek -s> ")"
         if [ -n "$selected" ]; then
-            _pss_copy_and_maybe_open "$selected" "$open_code"
+            _rig_copy_and_maybe_open "$selected" "$open_code"
         fi
         return 0
     fi

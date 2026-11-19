@@ -18,7 +18,7 @@ ATTACHMENT_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".pdf", ".m
 def resolve_vault(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
-    env_vault = os.environ.get("PSS_NOTES_VAULT")
+    env_vault = os.environ.get("RIG_NOTES_VAULT")
     if env_vault:
         return Path(os.path.expandvars(env_vault)).expanduser().resolve()
     return (Path.home() / "notes").resolve()
@@ -55,7 +55,7 @@ def print_headings(wiki: Path, subdir: str | None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit Obsidian vault raw/ and wiki/ hygiene.")
-    parser.add_argument("vault", nargs="?", help="Vault root path (defaults to $PSS_NOTES_VAULT or ~/notes)")
+    parser.add_argument("vault", nargs="?", help="Vault root path (defaults to $RIG_NOTES_VAULT or ~/notes)")
     parser.add_argument("--strict", action="store_true", help="Exit with code 1 if any issues are found")
     parser.add_argument("--yt-title", nargs="+", metavar="URL", help="Fetch YouTube oEmbed title/author for URL(s) and exit")
     parser.add_argument("--headings", nargs="?", const="", metavar="SUBDIR", help="Print markdown headings under wiki/[SUBDIR] and exit")

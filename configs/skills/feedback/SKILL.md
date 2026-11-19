@@ -11,7 +11,7 @@ Conduct an honest, high-signal retrospective on the tools, customizations, and e
 
 Review and report concrete observations across these areas (skip any category with nothing noteworthy):
 
-1. **CLI & Shell Tools** (`pss`, `note`, `workset`, `out`, `rg`/`fd`, git helpers):
+1. **CLI & Shell Tools** (`rig`, `note`, `workset`, `out`, `rg`/`fd`, git helpers):
    - Commands that failed, had awkward flags, or required workarounds.
    - Missing subcommands, flags, or integrations that would save steps.
 2. **Skills & Agent Customizations**:

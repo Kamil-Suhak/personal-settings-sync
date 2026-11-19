@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Personal Settings Sync (PSS) — Repo-as-source-of-truth environment manager."""
+"""Personal Settings Sync (RIG) — Repo-as-source-of-truth environment manager."""
 
 from __future__ import annotations
 
@@ -268,7 +268,7 @@ class PssApp:
 
     def new_workspace(self, name: str | None) -> None:
         if not name:
-            badge("ERROR", "red", "Workspace name required: pss workspace new <name>")
+            badge("ERROR", "red", "Workspace name required: rig workspace new <name>")
             raise SystemExit(1)
         ws_name = name.strip().lower()
         ws_path = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
@@ -288,7 +288,7 @@ class PssApp:
 
     def set_active_workspace(self, name: str | None) -> str:
         if not name:
-            badge("ERROR", "red", "Workspace name required: pss workspace use <name>")
+            badge("ERROR", "red", "Workspace name required: rig workspace use <name>")
             raise SystemExit(1)
         ws_name = name.strip().lower()
         ws_path = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
@@ -307,7 +307,7 @@ class PssApp:
             return ""
         available = self.get_available_workspaces()
         if not sys.stdin.isatty():
-            badge("ERROR", "red", "No active workspace configured. Run 'pss workspace use <name>' first.")
+            badge("ERROR", "red", "No active workspace configured. Run 'rig workspace use <name>' first.")
             raise SystemExit(1)
         print(ctext("\n=== First-Run Workspace Selection ===", "cyan"))
         print(f"Available workspaces: {', '.join(available)}")
@@ -319,7 +319,7 @@ class PssApp:
     def expected_zsh_loader(self) -> str:
         shared_init = Path(os.path.abspath(SCRIPT_DIR / self.config["subsystems"]["zsh"]["sharedPath"]))
         return (
-            "# Managed by personal-settings-sync (pss). Edit files in the repository, not here.\n"
+            "# Managed by rig (rig). Edit files in the repository, not here.\n"
             f'source "{to_forward_path(shared_init)}"'
         )
 
@@ -327,7 +327,7 @@ class PssApp:
         if not local_path.is_file():
             return False
         raw = local_path.read_text(encoding="utf-8", errors="replace")
-        return bool(re.search(r"(?m)^#\s*Managed by personal-settings-sync \(pss\)", raw))
+        return bool(re.search(r"(?m)^#\s*Managed by rig \(rig\)", raw))
 
     def get_zsh_status(self) -> dict:
         local_path = self.resolve_dynamic_path(self.config["subsystems"]["zsh"]["localTarget"])
@@ -377,7 +377,7 @@ class PssApp:
         return to_forward_path(val)
 
     @classmethod
-    def is_pss_managed_git_include(cls, include_path: str) -> bool:
+    def is_rig_managed_git_include(cls, include_path: str) -> bool:
         norm = cls.unquote_git_include_value(include_path)
         return (
             norm in ("~/.gitconfig.shared", "~/.gitconfig.workspace", "~/.gitconfig.local")
@@ -399,7 +399,7 @@ class PssApp:
                     body_line = lines[j]
                     m = re.match(r"^\s*path\s*=\s*(.+)$", body_line)
                     if m:
-                        if not cls.is_pss_managed_git_include(m.group(1)):
+                        if not cls.is_rig_managed_git_include(m.group(1)):
                             section_body.append(body_line)
                     elif body_line.strip() != "":
                         section_body.append(body_line)
@@ -474,7 +474,7 @@ class PssApp:
         parts: list[str] = []
         if file_entry["name"] == "AGENTS.md":
             parts.append(
-                f"<!-- Managed by pss (shared + {' + '.join(chain)}). Edit repo files, not this output. -->"
+                f"<!-- Managed by rig (shared + {' + '.join(chain)}). Edit repo files, not this output. -->"
             )
         parts.append(shared_raw)
         if file_entry.get("workspacePath"):
@@ -776,7 +776,7 @@ class PssApp:
             target = target_arg.lower() if target_arg else ""
 
         if not target:
-            badge("ERROR", "red", "Usage: pss edit [<shared|workspace>] <zsh|starship|git|agents|gemini|skills.json>")
+            badge("ERROR", "red", "Usage: rig edit [<shared|workspace>] <zsh|starship|git|agents|gemini|skills.json>")
             raise SystemExit(1)
 
         if layer == "shared":
@@ -797,7 +797,7 @@ class PssApp:
             ws_name = workspace if layer == "workspace" else layer
             ws_root = SCRIPT_DIR / self.config["workspacesDir"] / ws_name
             if not ws_root.is_dir():
-                badge("ERROR", "red", f"Workspace '{ws_name}' does not exist. Create it with 'pss workspace new {ws_name}'.")
+                badge("ERROR", "red", f"Workspace '{ws_name}' does not exist. Create it with 'rig workspace new {ws_name}'.")
                 raise SystemExit(1)
             mapping = {
                 "zsh": self.config["subsystems"]["zsh"]["workspacePath"].replace("{workspace}", ws_name),
@@ -844,7 +844,7 @@ class PssApp:
 
     def cmd_bootstrap(self, workspace: str) -> None:
         interactive = sys.stdin.isatty()
-        print(ctext(f"\n=== PSS Machine Bootstrapper (Workspace: {workspace}) ===", "cyan"))
+        print(ctext(f"\n=== RIG Machine Bootstrapper (Workspace: {workspace}) ===", "cyan"))
 
         if self.should_process("zsh"):
             local_zsh = self.resolve_dynamic_path(self.config["subsystems"]["zsh"]["localTarget"])
@@ -854,7 +854,7 @@ class PssApp:
             if not local_zsh.is_file():
                 badge("INFO", "darkgray", f"No local zsh profile found at {local_zsh}.")
             elif self.is_managed_zsh_loader(local_zsh):
-                badge("OK", "green", "Zsh profile is already managed by pss loader.")
+                badge("OK", "green", "Zsh profile is already managed by rig loader.")
             else:
                 local_funcs = profile_groups.extract_shell_functions(local_zsh)
                 shared_funcs: dict[str, tuple[str, Path]] = {}
@@ -1060,7 +1060,7 @@ class PssApp:
         active_ws = self.get_active_workspace(prompt_if_missing=not actions_without_active)
 
         if active_ws:
-            print(f"\n{ctext('[PSS] Active Workspace:', 'cyan')} {ctext(active_ws, 'green')}")
+            print(f"\n{ctext('[RIG] Active Workspace:', 'cyan')} {ctext(active_ws, 'green')}")
 
         if self.args.pull:
             print(ctext("\n=== Pulling Latest Changes From Git ===", "cyan"))
@@ -1075,16 +1075,16 @@ class PssApp:
                         print(ctext(f"  * {w} (active)", "green"))
                     else:
                         print(f"    {w}")
-                print(ctext("\nSwitch workspace: pss workspace use <name>\n", "darkgray"))
+                print(ctext("\nSwitch workspace: rig workspace use <name>\n", "darkgray"))
             elif ws_cmd == "current":
                 if active_ws:
                     print(f"\nActive workspace: {ctext(active_ws, 'green')}")
                     print(ctext(f"Path: {SCRIPT_DIR / 'workspaces' / active_ws}\n", "darkgray"))
                 else:
-                    print(ctext("\nNo active workspace configured. Run 'pss workspace use <name>'.\n", "yellow"))
+                    print(ctext("\nNo active workspace configured. Run 'rig workspace use <name>'.\n", "yellow"))
             elif ws_cmd == "use":
                 if not target:
-                    badge("ERROR", "red", "Workspace name required: pss workspace use <name>")
+                    badge("ERROR", "red", "Workspace name required: rig workspace use <name>")
                     return 1
                 ws_norm = target.strip().lower()
                 if self.args.what_if:
@@ -1106,7 +1106,7 @@ class PssApp:
                     subprocess.run(["git", "-C", str(SCRIPT_DIR), "push"], check=True)
             elif ws_cmd == "delete":
                 if not target:
-                    badge("ERROR", "red", "Workspace name required: pss workspace delete <name>")
+                    badge("ERROR", "red", "Workspace name required: rig workspace delete <name>")
                     return 1
                 ws_del = target.strip().lower()
                 if ws_del == active_ws:
@@ -1156,7 +1156,7 @@ class PssApp:
                 cmd.append("--force")
             return subprocess.run(cmd).returncode
         else:
-            badge("ERROR", "red", f"Unknown action: '{action}'. Run 'pss --help' for usage.")
+            badge("ERROR", "red", f"Unknown action: '{action}'. Run 'rig --help' for usage.")
             return 1
         return 0
 
@@ -1183,8 +1183,8 @@ def normalize_cli_flags(argv: list[str]) -> list[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pss",
-        description="Personal Settings Sync (PSS) — Zsh, Starship, Git, and AI configuration manager.",
+        prog="rig",
+        description="Personal Settings Sync (RIG) — Zsh, Starship, Git, and AI configuration manager.",
     )
     parser.add_argument("action", nargs="?", default="status", help="status|apply|link|diff|edit|bootstrap|workspace|apps|fonts|setup")
     parser.add_argument("sub_action", nargs="?", help="Sub-action (e.g. workspace subcommand or edit layer)")
@@ -1198,7 +1198,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--what-if", "--whatif", action="store_true", help="Dry run without writing to disk")
     parser.add_argument("--no-backup", "--nobackup", action="store_true", help="Skip .backups/ snapshots")
     parser.add_argument("--no-apply", "--noapply", action="store_true", help="Skip automatic apply on workspace use")
-    parser.add_argument("--path-only", action="store_true", help="Print resolved repo path for 'pss edit'")
+    parser.add_argument("--path-only", action="store_true", help="Print resolved repo path for 'rig edit'")
     parser.add_argument("--home-override", help=argparse.SUPPRESS)
     parser.add_argument("--state-home-override", help=argparse.SUPPRESS)
     return parser

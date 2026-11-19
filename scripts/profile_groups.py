@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Profile group registry and `# @cmd:` documentation extractor for PSS."""
+"""Profile group registry and `# @cmd:` documentation extractor for RIG."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ FUNC_DEF_RE = re.compile(r"^\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_.\-]*)\s*\(\
 _BIN_DIR = Path(__file__).resolve().parent.parent / "configs" / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
-from _pss_common import resolve_workspace_chain  # noqa: E402
+from _rig_common import resolve_workspace_chain  # noqa: E402
 
 
 def get_profile_groups(root: str | Path, workspace: str) -> list[dict]:
@@ -68,7 +68,7 @@ def extract_group_commands(file_path: str | Path) -> list[dict]:
 
 
 def extract_shell_functions(file_path: str | Path) -> dict[str, str]:
-    """Extracts top-level shell function blocks for `pss bootstrap`."""
+    """Extracts top-level shell function blocks for `rig bootstrap`."""
     path = Path(file_path)
     if not path.is_file():
         return {}
@@ -144,8 +144,8 @@ def format_profile_help(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="List PSS Zsh profile groups and commands.")
-    parser.add_argument("--root", required=True, help="PSS repository root")
+    parser = argparse.ArgumentParser(description="List RIG Zsh profile groups and commands.")
+    parser.add_argument("--root", required=True, help="RIG repository root")
     parser.add_argument("--workspace", default="personal", help="Active workspace")
     parser.add_argument("--project-roots", help="Project roots file path to display")
     parser.add_argument("--profile-help", action="store_true", help="Print formatted profile command directory")

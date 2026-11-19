@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local machine state paths and safe legacy-state migration for PSS."""
+"""Local machine state paths and safe legacy-state migration for RIG."""
 
 from __future__ import annotations
 
@@ -26,14 +26,14 @@ def resolve_state_home(
 ) -> Path:
     if state_home:
         return Path(state_home)
-    env_pss = os.environ.get("PSS_STATE_HOME", "").strip()
-    if env_pss:
-        return Path(env_pss)
+    env_rig = os.environ.get("RIG_STATE_HOME", "").strip()
+    if env_rig:
+        return Path(env_rig)
     xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
     if xdg_state:
-        return Path(xdg_state) / "pss"
+        return Path(xdg_state) / "rig"
     base_home = Path(home_dir) if home_dir else Path.home()
-    return base_home / ".local" / "state" / "pss"
+    return base_home / ".local" / "state" / "rig"
 
 
 def get_local_state_paths(
@@ -135,9 +135,9 @@ def migrate_legacy_local_state(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Inspect or migrate PSS local state paths.")
-    parser.add_argument("--checkout", required=True, help="PSS repository checkout path")
-    parser.add_argument("--state-home", help="Override PSS state directory")
+    parser = argparse.ArgumentParser(description="Inspect or migrate RIG local state paths.")
+    parser.add_argument("--checkout", required=True, help="RIG repository checkout path")
+    parser.add_argument("--state-home", help="Override RIG state directory")
     parser.add_argument("--home-dir", help="Override HOME directory")
     parser.add_argument("--migrate", action="store_true", help="Run legacy local-state migration")
     parser.add_argument("--what-if", action="store_true", help="Preview migration without changing files")

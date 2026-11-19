@@ -20,13 +20,13 @@ EOF
     esac
 
     local last_cmd=""
-    if command -v _pss_last_history_command >/dev/null 2>&1; then
-        last_cmd="$(_pss_last_history_command)"
+    if command -v _rig_last_history_command >/dev/null 2>&1; then
+        last_cmd="$(_rig_last_history_command)"
     fi
 
     if [ -n "$last_cmd" ]; then
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" run --engine agy --fallback-command "$last_cmd" "$@"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" run --engine agy --fallback-command "$last_cmd" "$@"
     else
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" run --engine agy "$@"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" run --engine agy "$@"
     fi
 }

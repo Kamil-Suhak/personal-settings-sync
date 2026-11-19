@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
+from _rig_common import ctext, normalize_legacy_flags, read_clipboard  # noqa: E402
 
 
 def decode_segment(seg: str) -> dict | list | str:

@@ -82,7 +82,7 @@ configure_git_identity() {
 }
 
 configure_project_roots() {
-    state_home="${PSS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/pss}"
+    state_home="${RIG_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/rig}"
     roots_file="$state_home/project-roots"
     if [ -f "$roots_file" ] && [ "$FORCE" -eq 0 ]; then
         echo "[OK] Project roots already configured in $roots_file."

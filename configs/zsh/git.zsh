@@ -116,17 +116,17 @@ EOF
 
 # @cmd: st — Show upstream delta, working tree status, stashes, and branch comparison
 st() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/st" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/st" "$@"
 }
 
 # @cmd: unpushed — Scan repos or project roots for unpushed commits and dirty trees
 unpushed() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/unpushed" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/unpushed" "$@"
 }
 
 # @cmd: gdiff — Context-aware git diff viewer (unstaged, staged, all, up, pr <branch>, last)
 gdiff() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/git-pss-diff" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/git-rig-diff" "$@"
 }
 
 # @cmd: b — Switch git branches (pass name directly or pick interactively with fzf)

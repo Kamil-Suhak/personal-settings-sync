@@ -1,12 +1,12 @@
 # AI utilities, terminal capture, and rerun workflow (sourced by init.zsh)
 
-_pss_last_history_command() {
-    if [ -n "${PSS_LAST_COMMAND:-}" ]; then
-        printf '%s' "$PSS_LAST_COMMAND"
+_rig_last_history_command() {
+    if [ -n "${RIG_LAST_COMMAND:-}" ]; then
+        printf '%s' "$RIG_LAST_COMMAND"
         return 0
     fi
-    if [ -n "${PSS_SHELL_HISTORY_FILE:-}" ] && [ -f "$PSS_SHELL_HISTORY_FILE" ]; then
-        tail -n 1 "$PSS_SHELL_HISTORY_FILE" 2>/dev/null || true
+    if [ -n "${RIG_SHELL_HISTORY_FILE:-}" ] && [ -f "$RIG_SHELL_HISTORY_FILE" ]; then
+        tail -n 1 "$RIG_SHELL_HISTORY_FILE" 2>/dev/null || true
         return 0
     fi
     fc -ln -1 -1 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
@@ -35,11 +35,11 @@ EOF
     esac
 
     local last_cmd
-    last_cmd="$(_pss_last_history_command)"
+    last_cmd="$(_rig_last_history_command)"
     if [ -n "$last_cmd" ]; then
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" out "$@" --fallback-command "$last_cmd"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" out "$@" --fallback-command "$last_cmd"
     else
-        "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/ask-helper" out "$@"
+        "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/ask-helper" out "$@"
     fi
 }
 
@@ -50,7 +50,7 @@ lastout() {
 
 # @cmd: rerun — Re-run recent shell commands selected by N, ~N, or ~A..B (-y to skip confirmation)
 rerun() {
-    if [ "${__PSS_IN_RERUN:-0}" = "1" ]; then
+    if [ "${__RIG_IN_RERUN:-0}" = "1" ]; then
         printf '✖ rerun: Nested rerun invocation blocked.\n' >&2
         return 1
     fi
@@ -88,27 +88,27 @@ EOF
     done
 
     local hist_dump=""
-    if [ -n "${PSS_TEST_RERUN_HISTORY_FILE:-}" ] && [ -f "$PSS_TEST_RERUN_HISTORY_FILE" ]; then
-        hist_dump="$(cat "$PSS_TEST_RERUN_HISTORY_FILE")"
-    elif [ -n "${PSS_SHELL_HISTORY_FILE:-}" ] && [ -f "$PSS_SHELL_HISTORY_FILE" ]; then
-        hist_dump="$(cat "$PSS_SHELL_HISTORY_FILE")"
+    if [ -n "${RIG_TEST_RERUN_HISTORY_FILE:-}" ] && [ -f "$RIG_TEST_RERUN_HISTORY_FILE" ]; then
+        hist_dump="$(cat "$RIG_TEST_RERUN_HISTORY_FILE")"
+    elif [ -n "${RIG_SHELL_HISTORY_FILE:-}" ] && [ -f "$RIG_SHELL_HISTORY_FILE" ]; then
+        hist_dump="$(cat "$RIG_SHELL_HISTORY_FILE")"
     else
         hist_dump="$(fc -ln -200 -1 2>/dev/null | sed 's/^[[:space:]]*//' || true)"
     fi
 
     local selected_lines
-    selected_lines="$("${PSS_PYTHON:-python3}" - "$PSS_ROOT" "$selector" "$hist_dump" <<'PY'
+    selected_lines="$("${RIG_PYTHON:-python3}" - "$RIG_ROOT" "$selector" "$hist_dump" <<'PY'
 import importlib.machinery
 import importlib.util
 import shlex
 import sys
 from pathlib import Path
 
-pss_root = Path(sys.argv[1])
+rig_root = Path(sys.argv[1])
 selector = sys.argv[2]
 hist_raw = sys.argv[3]
 
-loader = importlib.machinery.SourceFileLoader("ask_helper", str(pss_root / "configs" / "bin" / "ask-helper"))
+loader = importlib.machinery.SourceFileLoader("ask_helper", str(rig_root / "configs" / "bin" / "ask-helper"))
 spec = importlib.util.spec_from_loader("ask_helper", loader)
 ask_helper = importlib.util.module_from_spec(spec)
 loader.exec_module(ask_helper)
@@ -188,24 +188,24 @@ PY
         esac
     fi
 
-    __PSS_IN_RERUN=1
+    __RIG_IN_RERUN=1
     local rc=0
     for line in "${cmds[@]}"; do
         eval "$line"
         rc=$?
         if [ "$rc" -ne 0 ]; then
             printf '✖ Command exited with code %s: %s\n' "$rc" "$line" >&2
-            __PSS_IN_RERUN=0
+            __RIG_IN_RERUN=0
             return "$rc"
         fi
     done
-    __PSS_IN_RERUN=0
+    __RIG_IN_RERUN=0
     return 0
 }
 
 # @cmd: decide — Evaluate a scenario or piped input using the Gemini Decisions API
 decide() {
-    "${PSS_PYTHON:-python3}" "$PSS_ROOT/configs/bin/decide" "$@"
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/decide" "$@"
 }
 
 # @cmd: decision — Alias for 'decide'

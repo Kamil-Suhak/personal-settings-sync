@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import ctext, git_root, normalize_legacy_flags, run_git  # noqa: E402
+from _rig_common import ctext, git_root, normalize_legacy_flags, run_git  # noqa: E402
 
 FRESH_FETCH_SECONDS = 24 * 3600
 
@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    diff_helper = Path(__file__).resolve().parent / "git-pss-diff"
+    diff_helper = Path(__file__).resolve().parent / "git-rig-diff"
     for target in args.branches:
         ref = resolve_branch_ref(root, target)
         if not ref:

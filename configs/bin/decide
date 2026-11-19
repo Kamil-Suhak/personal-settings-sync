@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _pss_common import ctext, normalize_legacy_flags, should_use_color  # noqa: E402
+from _rig_common import ctext, normalize_legacy_flags, should_use_color  # noqa: E402
 
 DEFAULT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/decisions"
 DEFAULT_INSTRUCTIONS = "Evaluate the scenario and pick the best option."
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         q_text = "What is the recommended decision?"
 
     target = f"Context / Input:\n{piped}\n\nQuestion: {q_text}" if piped else q_text
-    endpoint = os.environ.get("PSS_DECIDE_ENDPOINT") or DEFAULT_ENDPOINT
+    endpoint = os.environ.get("RIG_DECIDE_ENDPOINT") or DEFAULT_ENDPOINT
 
     payload = {
         "model": "gemini-decision-1",

@@ -9,8 +9,8 @@ mkcd() {
     mkdir -p -- "$1" && cd -- "$1"
 }
 
-_pss_project_roots_list() {
-    local roots_file="${PSS_PROJECT_ROOTS:-${PSS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/pss}/project-roots}"
+_rig_project_roots_list() {
+    local roots_file="${RIG_PROJECT_ROOTS:-${RIG_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/rig}/project-roots}"
     if [ ! -f "$roots_file" ]; then
         return 0
     fi
@@ -29,7 +29,7 @@ _pss_project_roots_list() {
 
 # @cmd: p — Jump to a project under configured project roots (-list, -add, -remove)
 p() {
-    local roots_file="${PSS_PROJECT_ROOTS:-${PSS_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/pss}/project-roots}"
+    local roots_file="${RIG_PROJECT_ROOTS:-${RIG_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/rig}/project-roots}"
     local mode=""
     local arg1="${1:-}"
     local arg2="${2:-}"
@@ -64,7 +64,7 @@ EOF
         while IFS= read -r r; do
             found_any=1
             printf '  • %s\n' "$r"
-        done < <(_pss_project_roots_list)
+        done < <(_rig_project_roots_list)
         if [ "$found_any" -eq 0 ]; then
             printf "  (none — add one with 'p --add <path>')\n"
         fi
@@ -99,7 +99,7 @@ EOF
             printf "Specify a root path, basename, or index to remove (see 'p --list').\n" >&2
             return 1
         fi
-        "${PSS_PYTHON:-python3}" - "$roots_file" "$arg2" <<'PY'
+        "${RIG_PYTHON:-python3}" - "$roots_file" "$arg2" <<'PY'
 import sys
 from pathlib import Path
 
@@ -138,7 +138,7 @@ PY
     local r
     while IFS= read -r r; do
         roots+=("$r")
-    done < <(_pss_project_roots_list)
+    done < <(_rig_project_roots_list)
 
     if [ "${#roots[@]}" -eq 0 ]; then
         printf "✖ p: No project roots configured in %s. Use 'p --add <path>' first.\n" "$roots_file" >&2
@@ -148,7 +148,7 @@ PY
     if [ -z "$arg1" ]; then
         if command -v fzf >/dev/null 2>&1 && [ -t 0 ]; then
             local pick
-            pick="$("${PSS_PYTHON:-python3}" - "${roots[@]}" <<'PY' | fzf --height 40% --reverse --prompt='project> '
+            pick="$("${RIG_PYTHON:-python3}" - "${roots[@]}" <<'PY' | fzf --height 40% --reverse --prompt='project> '
 import sys
 from pathlib import Path
 
@@ -172,7 +172,7 @@ PY
     fi
 
     local target_dir
-    target_dir="$("${PSS_PYTHON:-python3}" - "$arg1" "${roots[@]}" <<'PY'
+    target_dir="$("${RIG_PYTHON:-python3}" - "$arg1" "${roots[@]}" <<'PY'
 import sys
 from pathlib import Path
 

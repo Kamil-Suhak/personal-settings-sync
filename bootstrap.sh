@@ -1,14 +1,14 @@
 #!/usr/bin/env sh
-# One-line bootstrapper for personal-settings-sync on EndeavourOS (Arch) and WSL2.
+# One-line bootstrapper for rig on EndeavourOS (Arch) and WSL2.
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Kamil-Suhak/personal-settings-sync/main/bootstrap.sh | sh -s -- --workspace personal
+#   curl -fsSL https://raw.githubusercontent.com/Kamil-Suhak/rig/main/bootstrap.sh | sh -s -- --workspace personal
 
 set -eu
 
 REPO_OWNER="Kamil-Suhak"
-REPO_NAME="personal-settings-sync"
+REPO_NAME="rig"
 BRANCH="zsh"
-TARGET_DIR="$HOME/code/projects/personal-settings-sync"
+TARGET_DIR="$HOME/code/projects/rig"
 WORKSPACE=""
 SKIP_APPS=0
 SKIP_SETUP=0
@@ -47,8 +47,8 @@ elif command -v git >/dev/null 2>&1; then
     git clone --branch "$BRANCH" "https://github.com/$REPO_OWNER/$REPO_NAME.git" "$TARGET_DIR"
 else
     echo ">>> Downloading archive $REPO_OWNER/$REPO_NAME@$BRANCH..."
-    TMP_TAR="$(mktemp -t pss-bootstrap.XXXXXX.tar.gz)"
-    TMP_DIR="$(mktemp -d -t pss-extract.XXXXXX)"
+    TMP_TAR="$(mktemp -t rig-bootstrap.XXXXXX.tar.gz)"
+    TMP_DIR="$(mktemp -d -t rig-extract.XXXXXX)"
     cleanup() { rm -rf "$TMP_TAR" "$TMP_DIR"; }
     trap cleanup EXIT
     curl -fsSL "https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/$BRANCH.tar.gz" -o "$TMP_TAR"
@@ -57,9 +57,9 @@ else
     cp -a "$TMP_DIR"/"$REPO_NAME"-"$BRANCH"/. "$TARGET_DIR"/
 fi
 
-PSS_BIN="$TARGET_DIR/pss"
-if [ ! -f "$PSS_BIN" ]; then
-    echo "ERROR: Could not locate pss in $TARGET_DIR" >&2
+RIG_BIN="$TARGET_DIR/rig"
+if [ ! -f "$RIG_BIN" ]; then
+    echo "ERROR: Could not locate rig in $TARGET_DIR" >&2
     exit 1
 fi
 
@@ -68,20 +68,20 @@ command -v python3 >/dev/null 2>&1 || PY_BIN="python"
 
 if [ -n "$WORKSPACE" ]; then
     echo ">>> Binding active workspace '$WORKSPACE'..."
-    "$PY_BIN" "$PSS_BIN" workspace use "$WORKSPACE" --no-apply
+    "$PY_BIN" "$RIG_BIN" workspace use "$WORKSPACE" --no-apply
 fi
 
 if [ "$SKIP_APPS" -eq 0 ]; then
     echo ">>> Installing workspace packages..."
-    "$PY_BIN" "$PSS_BIN" apps install || true
+    "$PY_BIN" "$RIG_BIN" apps install || true
 fi
 
 if [ "$SKIP_SETUP" -eq 0 ]; then
     echo ">>> Running Linux developer environment setup..."
-    "$PY_BIN" "$PSS_BIN" setup || true
+    "$PY_BIN" "$RIG_BIN" setup || true
 fi
 
-echo ">>> Linking configurations via pss apply..."
-"$PY_BIN" "$PSS_BIN" apply
+echo ">>> Linking configurations via rig apply..."
+"$PY_BIN" "$RIG_BIN" apply
 
 echo "Setup complete! Start a new Zsh session with: exec zsh -l"
