@@ -225,6 +225,20 @@
       "category": "Development"
     },
     {
+      "id": "ManDb",
+      "arch": "man-db",
+      "apt": "man-db",
+      "name": "man-db",
+      "category": "CLI"
+    },
+    {
+      "id": "ManPages",
+      "arch": "man-pages",
+      "apt": "manpages",
+      "name": "Linux man-pages",
+      "category": "CLI"
+    },
+    {
       "id": "OpenSSH",
       "arch": "openssh",
       "apt": "openssh-client",
@@ -344,9 +358,7 @@
       "arch": "wl-clipboard",
       "apt": "wl-clipboard",
       "name": "Wayland Clipboard (wl-copy / wl-paste)",
-      "category": "Utilities",
-      "workspaces": ["personal"],
-      "gui": true
+      "category": "Utilities"
     },
     {
       "id": "D2",
