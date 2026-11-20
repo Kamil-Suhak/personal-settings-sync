@@ -317,9 +317,67 @@ note() {
     "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/note" "$@"
 }
 
-# @cmd: rig — Run Personal Settings Sync manager (status, apply, diff, workspace, fonts, apps)
+# @cmd: rig — Run Rig manager (status, apply, diff, workspace, fonts, apps)
 rig() {
     "${RIG_PYTHON:-python3}" "$RIG_ROOT/rig" "$@"
+}
+
+# @cmd: update — Update system and AUR packages via yay (or pacman)
+update() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+        printf 'Usage: update [yay/pacman args...]\n\nRun full system update via yay -Syu (or sudo pacman -Syu).\n'
+        return 0
+    fi
+    if command -v yay >/dev/null 2>&1; then
+        yay -Syu "$@"
+    else
+        sudo pacman -Syu "$@"
+    fi
+}
+
+# @cmd: install — Install packages via yay (or pacman)
+install() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -eq 0 ]; then
+        printf 'Usage: install <pkg...>\n\nInstall packages via yay -S --needed (or sudo pacman -S --needed).\n'
+        [ "$#" -eq 0 ] && return 1 || return 0
+    fi
+    if command -v yay >/dev/null 2>&1; then
+        yay -S --needed "$@"
+    else
+        sudo pacman -S --needed "$@"
+    fi
+}
+
+# @cmd: remove — Remove packages and unused dependencies via yay (or pacman)
+remove() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "$#" -eq 0 ]; then
+        printf 'Usage: remove <pkg...>\n\nRemove packages and unused dependencies via yay -Rns (or sudo pacman -Rns).\n'
+        [ "$#" -eq 0 ] && return 1 || return 0
+    fi
+    if command -v yay >/dev/null 2>&1; then
+        yay -Rns "$@"
+    else
+        sudo pacman -Rns "$@"
+    fi
+}
+
+# @cmd: clean — Remove orphaned packages and prune package cache via yay/pacman
+clean() {
+    if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+        printf 'Usage: clean\n\nRemove orphaned packages and clean package cache via yay (or pacman).\n'
+        return 0
+    fi
+    if command -v yay >/dev/null 2>&1; then
+        yay -Yc
+        yay -Sc
+    else
+        local orphans
+        orphans="$(pacman -Qdtq 2>/dev/null || true)"
+        if [ -n "$orphans" ]; then
+            sudo pacman -Rns ${=orphans}
+        fi
+        sudo pacman -Sc
+    fi
 }
 
 # --- Prompt Context Variables & Interactive Zsh Configuration ---

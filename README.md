@@ -1,29 +1,38 @@
-# Personal Settings Sync (`rig`)
+# rig
 
-Repo-as-source-of-truth dotfile, shell, CLI, and AI customization manager for **EndeavourOS (`personal`)** and **WSL2 (`rbc` / `work`)**.
+Repo-as-source-of-truth dotfile, shell, CLI, and AI customization manager for **Arch Linux / EndeavourOS (`personal`)** and **Arch WSL2 (`rbc` / `work`)**.
 
-Driven by `sync.config.json`, `./rig` links Zsh + Starship, Git config/hooks, `configs/bin/` utilities, and `~/.gemini` agent rules/skills/plugins, with local state stored in `~/.local/state/rig/`.
+Driven by `rig.config.json`, `./rig` links Zsh + Starship, Git config/hooks, `configs/bin/` utilities, and `~/.gemini` agent rules/skills/plugins, with local state stored in `~/.local/state/rig/`.
 
 ## Setup
 
 ```sh
-git clone -b zsh https://github.com/Kamil-Suhak/rig.git ~/code/projects/rig
-cd ~/code/projects/rig
-./bootstrap.sh
+curl -fsSL https://raw.githubusercontent.com/Kamil-Suhak/rig/zsh/bootstrap.sh | sh -s -- --workspace personal
 ```
 
-Or non-interactively for a specific workspace:
+Or from a local clone:
+
+```sh
+git clone -b zsh https://github.com/Kamil-Suhak/rig.git ~/code/projects/rig
+cd ~/code/projects/rig
+./bootstrap.sh --workspace personal   # or: --workspace rbc --mode terminal
+```
+
+Or directly via `./rig`:
 
 ```sh
 ./rig workspace use personal   # or: rbc / work
-./rig setup
+./rig setup                    # yay, fonts (full mode), git identity, project roots, zsh
+./rig apps install             # auto-detects full vs terminal mode (or pass --mode)
 ```
 
 ## Common Commands
 
 - `rig status` / `rig apply` / `rig diff` — Inspect or sync managed configs
 - `rig workspace [list|use <name>]` — Switch active workspace (`personal`, `work`, `rbc`)
-- `rig apps` / `rig fonts` — Install configured packages (`pacman`/`apt`) and Nerd Fonts
+- `rig setup [--mode full|terminal]` — Machine setup (AUR `yay`, fonts, Git identity, project roots, Zsh)
+- `rig apps [list|install|update] [--mode full|terminal]` — Manage packages via `yay` / `pacman`
+- `rig fonts` — Install Nerd Fonts
 - `which profile -h` — List all shell commands inside an interactive Zsh session
 - `python3 -m unittest discover -s tests` — Run the test suite
 

@@ -138,8 +138,6 @@ class TestSyntaxAndMetadata(unittest.TestCase):
         self.assertIsNotNone(bash, "GNU Bash (Git Bash on Windows) is required to syntax-check shell files.")
         shell_files = [
             REPO_ROOT / "bootstrap.sh",
-            REPO_ROOT / "setup.sh",
-            SCRIPTS_DIR / "setup-linux.sh",
             REPO_ROOT / "configs" / "git" / "hooks" / "commit-msg",
             *sorted((REPO_ROOT / "configs" / "zsh").glob("*.zsh")),
             REPO_ROOT / "workspaces" / "personal" / "zsh" / "profile.zsh",
@@ -223,12 +221,12 @@ class TestLocalStateAndProfileGroups(unittest.TestCase):
         self.assertIn("unpushed", res.stdout)
 
 
-class TestPssCli(unittest.TestCase):
+class TestRigCli(unittest.TestCase):
     def _create_sandbox_checkout(self, root: Path) -> Path:
         sandbox_repo = root / "rig-repo"
         sandbox_repo.mkdir()
         shutil.copy2(REPO_ROOT / "rig", sandbox_repo / "rig")
-        shutil.copy2(REPO_ROOT / "sync.config.json", sandbox_repo / "sync.config.json")
+        shutil.copy2(REPO_ROOT / "rig.config.json", sandbox_repo / "rig.config.json")
         shutil.copytree(REPO_ROOT / "scripts", sandbox_repo / "scripts")
         shutil.copytree(REPO_ROOT / "configs", sandbox_repo / "configs")
         shutil.copytree(REPO_ROOT / "workspaces", sandbox_repo / "workspaces")
@@ -266,7 +264,41 @@ class TestPssCli(unittest.TestCase):
             # Apps list inherits work-scoped DotnetSdk10
             apps_res = run_cli(sandbox_repo / "rig", ["apps", "list"], env=env)
             self.assertEqual(apps_res.returncode, 0, apps_res.stderr)
-            self.assertIn("dotnet-sdk-10.0", apps_res.stdout)
+            self.assertIn("dotnet-sdk", apps_res.stdout)
+
+    def test_apps_mode_filtering_and_setup_what_if(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tpath = Path(tmp)
+            sandbox_repo = self._create_sandbox_checkout(tpath)
+            home_dir = tpath / "home"
+            state_home = tpath / "state" / "rig"
+            home_dir.mkdir(parents=True)
+            rig_bin = sandbox_repo / "rig"
+            base_args = ["--home-override", str(home_dir), "--state-home-override", str(state_home)]
+
+            res_use = run_cli(rig_bin, [*base_args, "workspace", "use", "personal", "--no-apply"])
+            self.assertEqual(res_use.returncode, 0, res_use.stderr)
+
+            res_term = run_cli(rig_bin, [*base_args, "apps", "list", "--mode", "terminal"])
+            self.assertEqual(res_term.returncode, 0, res_term.stderr)
+            self.assertIn("spotatui", res_term.stdout)
+            self.assertIn("micro", res_term.stdout)
+            self.assertIn("rustup", res_term.stdout)
+            self.assertNotIn("arch=spotify\n", res_term.stdout)
+            self.assertNotIn("visual-studio-code-bin", res_term.stdout)
+
+            res_full = run_cli(rig_bin, [*base_args, "apps", "list", "--mode", "full"])
+            self.assertEqual(res_full.returncode, 0, res_full.stderr)
+            self.assertIn("spotatui", res_full.stdout)
+            self.assertIn("arch=spotify", res_full.stdout)
+            self.assertIn("visual-studio-code-bin", res_full.stdout)
+
+            res_setup = run_cli(rig_bin, [*base_args, "setup", "--mode", "terminal", "--what-if"])
+            self.assertEqual(res_setup.returncode, 0, res_setup.stderr)
+            self.assertIn("mode=terminal", res_setup.stdout)
+
+            res_fonts = run_cli(rig_bin, [*base_args, "fonts", "--what-if"])
+            self.assertEqual(res_fonts.returncode, 0, res_fonts.stderr)
 
     def test_workspace_status_apply_diff_and_backups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -879,11 +911,11 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             script1 = "\n".join(
                 [
                     "set -e",
-                    "for fn in commit push gdiff b nb lg wip unwip stashes groot mkcd p open out lastout rerun which venv copy paste ask; do",
+                    "for fn in gdiff b nb lg wip unwip stashes groot mkcd p open out lastout rerun which venv copy paste ask update install remove clean; do",
                     '  "$fn" -h >/dev/null',
                     "done",
                     "which profile -h",
-                    "which commit -h",
+                    "which gdiff -h",
                     f'p --add "$(cygpath -u "{proj_parent_posix}" 2>/dev/null || echo "{proj_parent_posix}")"',
                     "p --list",
                     "p alpha",
@@ -899,7 +931,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             r1 = self._run_bash_snippet(script1, env=env)
             self.assertEqual(r1.returncode, 0, f"STDOUT:\n{r1.stdout}\nSTDERR:\n{r1.stderr}")
             self.assertIn("[git]", r1.stdout)
-            self.assertIn("Source: commit is a function", r1.stdout)
+            self.assertIn("Source: gdiff is a function", r1.stdout)
             self.assertIn("alpha-app", r1.stdout)
             self.assertIn("hello clipboard", r1.stdout)
 
@@ -912,7 +944,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             self.assertIn('What if: Performing the operation "Open', r_vs.stdout)
             self.assertIn("Demo.sln", r_vs.stdout)
 
-            # 2. Git shell workflow (nb, commit, wip, unwip, b)
+            # 2. Git shell workflow (nb, wip, unwip, b)
             repo = tpath / "git-work"
             init_git_repo(repo, "main")
             script2 = "\n".join(
@@ -920,7 +952,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
                     "set -e",
                     "nb feat/shell-test",
                     "echo hi > hello.txt",
-                    'commit -a -m "feat: add hello"',
+                    'git add -A && git commit -m "feat: add hello"',
                     "echo tmp > wip.txt",
                     "wip",
                     "unwip",

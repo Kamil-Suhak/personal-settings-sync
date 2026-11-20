@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
-# One-line bootstrapper for rig on EndeavourOS (Arch) and WSL2.
+# One-line bootstrapper for rig on Arch Linux, EndeavourOS, and Arch WSL2.
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/Kamil-Suhak/rig/main/bootstrap.sh | sh -s -- --workspace personal
+#   curl -fsSL https://raw.githubusercontent.com/Kamil-Suhak/rig/zsh/bootstrap.sh | sh -s -- --workspace personal
 
 set -eu
 
@@ -10,6 +10,7 @@ REPO_NAME="rig"
 BRANCH="zsh"
 TARGET_DIR="$HOME/code/projects/rig"
 WORKSPACE=""
+MODE=""
 SKIP_APPS=0
 SKIP_SETUP=0
 
@@ -20,10 +21,11 @@ while [ $# -gt 0 ]; do
         --branch) BRANCH="$2"; shift 2 ;;
         --target-dir) TARGET_DIR="$2"; shift 2 ;;
         --workspace|-w) WORKSPACE="$2"; shift 2 ;;
+        --mode|-m) MODE="$2"; shift 2 ;;
         --skip-apps) SKIP_APPS=1; shift ;;
         --skip-setup) SKIP_SETUP=1; shift ;;
         -h|--help)
-            echo "Usage: bootstrap.sh [--workspace <personal|work>] [--target-dir <path>] [--branch <name>] [--skip-apps] [--skip-setup]"
+            echo "Usage: bootstrap.sh [--workspace <personal|work|rbc>] [--mode <full|terminal>] [--target-dir <path>] [--branch <name>] [--skip-apps] [--skip-setup]"
             exit 0
             ;;
         *)
@@ -34,8 +36,30 @@ while [ $# -gt 0 ]; do
 done
 
 echo "=========================================================="
-echo "   Personal Settings Sync - Linux / WSL Machine Setup     "
+echo "   Rig - Arch / EndeavourOS / WSL2 Machine Setup          "
 echo "=========================================================="
+
+run_privileged() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# Ensure git and python are available on minimal Arch / Arch WSL2 images
+if command -v pacman >/dev/null 2>&1; then
+    missing_base=""
+    command -v git >/dev/null 2>&1 || missing_base="$missing_base git"
+    if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
+        missing_base="$missing_base python"
+    fi
+    if [ -n "$missing_base" ]; then
+        echo ">>> Installing base prerequisites via pacman:$missing_base"
+        # shellcheck disable=SC2086
+        run_privileged pacman -Sy --needed --noconfirm $missing_base
+    fi
+fi
 
 mkdir -p "$(dirname "$TARGET_DIR")"
 
@@ -71,14 +95,22 @@ if [ -n "$WORKSPACE" ]; then
     "$PY_BIN" "$RIG_BIN" workspace use "$WORKSPACE" --no-apply
 fi
 
-if [ "$SKIP_APPS" -eq 0 ]; then
-    echo ">>> Installing workspace packages..."
-    "$PY_BIN" "$RIG_BIN" apps install || true
+if [ "$SKIP_SETUP" -eq 0 ]; then
+    echo ">>> Running machine setup (yay, fonts, git identity, project roots, zsh)..."
+    if [ -n "$MODE" ]; then
+        "$PY_BIN" "$RIG_BIN" setup --mode "$MODE" || true
+    else
+        "$PY_BIN" "$RIG_BIN" setup || true
+    fi
 fi
 
-if [ "$SKIP_SETUP" -eq 0 ]; then
-    echo ">>> Running Linux developer environment setup..."
-    "$PY_BIN" "$RIG_BIN" setup || true
+if [ "$SKIP_APPS" -eq 0 ]; then
+    echo ">>> Installing workspace packages..."
+    if [ -n "$MODE" ]; then
+        "$PY_BIN" "$RIG_BIN" apps install --mode "$MODE" || true
+    else
+        "$PY_BIN" "$RIG_BIN" apps install || true
+    fi
 fi
 
 echo ">>> Linking configurations via rig apply..."

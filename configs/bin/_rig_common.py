@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Shared utilities for Personal Settings Sync Python CLIs."""
+"""Shared utilities for Rig Python CLIs."""
 
 from __future__ import annotations
 

@@ -1,0 +1,505 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "4.0",
+  "workspacesDir": "workspaces",
+  "defaultWorkspace": "personal",
+  "packages": [
+    {
+      "id": "VisualStudioCode",
+      "arch": "visual-studio-code-bin",
+      "apt": "code",
+      "name": "Visual Studio Code",
+      "category": "Development",
+      "gui": true
+    },
+    {
+      "id": "Antigravity",
+      "arch": "antigravity",
+      "name": "Antigravity IDE",
+      "category": "Development",
+      "gui": true
+    },
+    {
+      "id": "AntigravityCLI",
+      "arch": "antigravity-cli",
+      "name": "Antigravity CLI",
+      "category": "Development",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Git",
+      "arch": "git",
+      "apt": "git",
+      "name": "Git",
+      "category": "Development"
+    },
+    {
+      "id": "GitHubCLI",
+      "arch": "github-cli",
+      "apt": "gh",
+      "name": "GitHub CLI",
+      "category": "Development"
+    },
+    {
+      "id": "NodeJS",
+      "arch": "nodejs",
+      "apt": "nodejs",
+      "name": "Node.js",
+      "category": "Development"
+    },
+    {
+      "id": "Pnpm",
+      "arch": "pnpm",
+      "name": "pnpm",
+      "category": "Development"
+    },
+    {
+      "id": "Python3",
+      "arch": "python",
+      "apt": "python3",
+      "name": "Python 3",
+      "category": "Development"
+    },
+    {
+      "id": "Uv",
+      "arch": "uv",
+      "name": "uv (Python Package Manager)",
+      "category": "Development"
+    },
+    {
+      "id": "Rustup",
+      "arch": "rustup",
+      "name": "Rust & Cargo (rustup)",
+      "category": "Development"
+    },
+    {
+      "id": "DotnetSdk10",
+      "arch": "dotnet-sdk",
+      "apt": "dotnet-sdk-10.0",
+      "name": ".NET SDK 10.0",
+      "category": "Development",
+      "workspaces": ["work"]
+    },
+    {
+      "id": "Clang",
+      "arch": "clang",
+      "name": "Clang",
+      "category": "Development"
+    },
+    {
+      "id": "Cmake",
+      "arch": "cmake",
+      "name": "CMake",
+      "category": "Development"
+    },
+    {
+      "id": "Ninja",
+      "arch": "ninja",
+      "name": "Ninja Build",
+      "category": "Development"
+    },
+    {
+      "id": "Lldb",
+      "arch": "lldb",
+      "name": "LLDB Debugger",
+      "category": "Development"
+    },
+    {
+      "id": "Micro",
+      "arch": "micro",
+      "apt": "micro",
+      "name": "micro Terminal Editor",
+      "category": "CLI"
+    },
+    {
+      "id": "Zsh",
+      "arch": "zsh",
+      "apt": "zsh",
+      "name": "Zsh",
+      "category": "Shell"
+    },
+    {
+      "id": "ZshAutosuggestions",
+      "arch": "zsh-autosuggestions",
+      "apt": "zsh-autosuggestions",
+      "name": "Zsh Autosuggestions",
+      "category": "Shell"
+    },
+    {
+      "id": "ZshSyntaxHighlighting",
+      "arch": "zsh-syntax-highlighting",
+      "apt": "zsh-syntax-highlighting",
+      "name": "Zsh Syntax Highlighting",
+      "category": "Shell"
+    },
+    {
+      "id": "ZshCompletions",
+      "arch": "zsh-completions",
+      "name": "Zsh Completions",
+      "category": "Shell"
+    },
+    {
+      "id": "ZshAutocomplete",
+      "arch": "zsh-autocomplete",
+      "name": "Zsh Autocomplete",
+      "category": "Shell"
+    },
+    {
+      "id": "Fzf",
+      "arch": "fzf",
+      "apt": "fzf",
+      "name": "fzf Fuzzy Finder",
+      "category": "Shell"
+    },
+    {
+      "id": "Starship",
+      "arch": "starship",
+      "apt": "starship",
+      "name": "Starship Prompt",
+      "category": "Shell"
+    },
+    {
+      "id": "Zoxide",
+      "arch": "zoxide",
+      "name": "zoxide (Smart cd)",
+      "category": "Shell"
+    },
+    {
+      "id": "Fd",
+      "arch": "fd",
+      "apt": "fd-find",
+      "name": "fd File Finder",
+      "category": "Search"
+    },
+    {
+      "id": "Ripgrep",
+      "arch": "ripgrep",
+      "apt": "ripgrep",
+      "name": "ripgrep",
+      "category": "Search"
+    },
+    {
+      "id": "Bat",
+      "arch": "bat",
+      "apt": "bat",
+      "name": "bat (cat clone)",
+      "category": "CLI"
+    },
+    {
+      "id": "Eza",
+      "arch": "eza",
+      "name": "eza (ls replacement)",
+      "category": "CLI"
+    },
+    {
+      "id": "Btop",
+      "arch": "btop",
+      "apt": "btop",
+      "name": "btop System Monitor",
+      "category": "CLI"
+    },
+    {
+      "id": "Duf",
+      "arch": "duf",
+      "name": "duf Disk Usage",
+      "category": "CLI"
+    },
+    {
+      "id": "Tldr",
+      "arch": "tldr",
+      "name": "tldr",
+      "category": "CLI"
+    },
+    {
+      "id": "Jq",
+      "arch": "jq",
+      "apt": "jq",
+      "name": "jq JSON Processor",
+      "category": "CLI"
+    },
+    {
+      "id": "GitDelta",
+      "arch": "git-delta",
+      "apt": "git-delta",
+      "name": "git-delta",
+      "category": "Development"
+    },
+    {
+      "id": "OpenSSH",
+      "arch": "openssh",
+      "apt": "openssh-client",
+      "name": "OpenSSH",
+      "category": "CLI"
+    },
+    {
+      "id": "Rsync",
+      "arch": "rsync",
+      "apt": "rsync",
+      "name": "rsync",
+      "category": "CLI"
+    },
+    {
+      "id": "Wget",
+      "arch": "wget",
+      "apt": "wget",
+      "name": "wget",
+      "category": "CLI"
+    },
+    {
+      "id": "Unzip",
+      "arch": "unzip",
+      "apt": "unzip",
+      "name": "unzip",
+      "category": "CLI"
+    },
+    {
+      "id": "Stow",
+      "arch": "stow",
+      "apt": "stow",
+      "name": "GNU Stow",
+      "category": "CLI"
+    },
+    {
+      "id": "Fastfetch",
+      "arch": "fastfetch",
+      "name": "fastfetch",
+      "category": "CLI"
+    },
+    {
+      "id": "Typst",
+      "arch": "typst",
+      "name": "Typst",
+      "category": "CLI",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Typstyle",
+      "arch": "typstyle",
+      "name": "typstyle Formatter",
+      "category": "CLI",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Pandoc",
+      "arch": "pandoc-cli",
+      "name": "Pandoc CLI",
+      "category": "CLI",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Ghostty",
+      "arch": "ghostty",
+      "name": "Ghostty Terminal",
+      "category": "Terminal",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "BraveBrowser",
+      "arch": "brave-bin",
+      "name": "Brave Browser",
+      "category": "Browsers",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Obsidian",
+      "arch": "obsidian",
+      "name": "Obsidian",
+      "category": "Productivity",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Bruno",
+      "arch": "bruno-bin",
+      "name": "Bruno API Client",
+      "category": "Development",
+      "gui": true
+    },
+    {
+      "id": "Meld",
+      "arch": "meld",
+      "name": "Meld Diff Viewer",
+      "category": "Development",
+      "gui": true
+    },
+    {
+      "id": "Spotatui",
+      "arch": "spotatui",
+      "name": "spotatui (Spotify TUI)",
+      "category": "Media",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Spotify",
+      "arch": "spotify",
+      "name": "Spotify",
+      "category": "Media",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "WlClipboard",
+      "arch": "wl-clipboard",
+      "apt": "wl-clipboard",
+      "name": "Wayland Clipboard (wl-copy / wl-paste)",
+      "category": "Utilities",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "D2",
+      "arch": "d2",
+      "name": "D2 Diagramming CLI",
+      "category": "Development",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "AndroidTools",
+      "arch": "android-tools",
+      "name": "Android Platform Tools (adb/fastboot)",
+      "category": "Development",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "AndroidStudio",
+      "arch": "android-studio",
+      "name": "Android Studio",
+      "category": "Development",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Godot",
+      "arch": "godot",
+      "name": "Godot Engine",
+      "category": "Development",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Blender",
+      "arch": "blender",
+      "name": "Blender",
+      "category": "Media",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Gradia",
+      "arch": "gradia",
+      "name": "Gradia Screenshot Annotator",
+      "category": "Utilities",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "ExtensionManager",
+      "arch": "extension-manager",
+      "name": "GNOME Extension Manager",
+      "category": "Desktop",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "GnomeTweaks",
+      "arch": "gnome-tweaks",
+      "name": "GNOME Tweaks",
+      "category": "Desktop",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Pavucontrol",
+      "arch": "pavucontrol",
+      "name": "PulseAudio/PipeWire Volume Control",
+      "category": "Desktop",
+      "workspaces": ["personal"],
+      "gui": true
+    }
+  ],
+  "fonts": [
+    {
+      "name": "JetBrains Mono",
+      "archPackage": "ttf-jetbrains-mono-nerd",
+      "repo": "JetBrains/JetBrainsMono",
+      "fallbackUrl": "https://download.jetbrains.com/fonts/JetBrainsMono-2.304.zip",
+      "checkFile": "JetBrainsMono-Regular.ttf"
+    }
+  ],
+  "subsystems": {
+    "zsh": {
+      "displayName": "Zsh Profile",
+      "sharedPath": "configs/zsh/init.zsh",
+      "workspacePath": "workspaces/{workspace}/zsh/profile.zsh",
+      "localTarget": "~/.zshrc"
+    },
+    "starship": {
+      "displayName": "Starship Prompt",
+      "sharedPath": "configs/starship/starship.toml",
+      "localTarget": "~/.config/starship.toml"
+    },
+    "git": {
+      "displayName": "Git Config",
+      "sharedPath": "configs/git/.gitconfig.shared",
+      "workspacePath": "workspaces/{workspace}/git/.gitconfig",
+      "localTarget": "~/.gitconfig",
+      "hooksDir": "configs/git/hooks",
+      "hooksTarget": "~/.git-hooks"
+    },
+    "gemini": {
+      "displayName": "AI Agent Rules",
+      "files": [
+        {
+          "name": "AGENTS.md",
+          "repoPath": "configs/gemini/AGENTS.md",
+          "workspacePath": "workspaces/{workspace}/gemini/AGENTS.md",
+          "localPath": "~/.gemini/AGENTS.md",
+          "mode": "concat"
+        },
+        {
+          "name": "GEMINI.md",
+          "repoPath": "configs/gemini/GEMINI.md",
+          "workspacePath": "workspaces/{workspace}/gemini/GEMINI.md",
+          "localPath": "~/.gemini/GEMINI.md",
+          "mode": "concat"
+        },
+        {
+          "name": "skills.json",
+          "repoPath": "configs/gemini/skills.json",
+          "localPath": "~/.gemini/config/skills.json",
+          "mode": "template"
+        }
+      ]
+    },
+    "skills": {
+      "displayName": "AI Skills",
+      "repoDir": "configs/skills",
+      "workspaceDir": "workspaces/{workspace}/skills",
+      "targetDir": "~/.agents/skills",
+      "mirrorLinks": [
+        "~/.gemini/skills"
+      ],
+      "items": [
+        "developer-profile",
+        "repo-intro",
+        "ask",
+        "ux",
+        "readme",
+        "visualize",
+        "feedback",
+        "vault-cleanup",
+        "bootstrap-docs"
+      ]
+    },
+    "plugins": {
+      "displayName": "AI Plugins",
+      "repoDir": "configs/plugins",
+      "targetDir": "~/.gemini/config/plugins",
+      "items": [
+        "egm"
+      ]
+    }
+  }
+}

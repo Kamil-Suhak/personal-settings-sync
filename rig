@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Personal Settings Sync (RIG) — Repo-as-source-of-truth environment manager."""
+"""Rig — Repo-as-source-of-truth environment manager."""
 
 from __future__ import annotations
 
@@ -7,10 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import pwd
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import urllib.request
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -195,10 +199,10 @@ def prune_backups() -> None:
         badge("CLEANUP", "darkgray", f"Pruned {len(to_remove)} old backup folder(s).")
 
 
-class PssApp:
+class RigApp:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        config_file = SCRIPT_DIR / "sync.config.json"
+        config_file = SCRIPT_DIR / "rig.config.json"
         if not config_file.is_file():
             badge("ERROR", "red", f"Configuration file missing at: {config_file}")
             raise SystemExit(1)
@@ -545,7 +549,7 @@ class PssApp:
     # --- Primary Actions ---
 
     def cmd_status(self, workspace: str) -> None:
-        print(ctext("\n=== Personal Settings Sync Status ===", "cyan"))
+        print(ctext("\n=== Rig Status ===", "cyan"))
         rows: list[tuple[str, str, str, str, str]] = []
 
         if self.should_process("zsh"):
@@ -997,22 +1001,53 @@ class PssApp:
                 missing.append(pkg_name)
         return available, missing
 
-    def cmd_apps(self, workspace: str, sub: str) -> None:
+    @staticmethod
+    def is_wsl() -> bool:
+        if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+            return True
+        if Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists() or Path("/proc/sys/fs/binfmt_misc/WSLInterop-late").exists():
+            return True
+        try:
+            proc_ver = Path("/proc/version").read_text(encoding="utf-8", errors="replace").lower()
+            return "microsoft" in proc_ver or "wsl" in proc_ver
+        except OSError:
+            return False
+
+    @classmethod
+    def detect_default_app_mode(cls) -> str:
+        if cls.is_wsl():
+            return "terminal"
+        if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
+            return "full"
+        return "terminal"
+
+    def resolve_app_mode(self) -> str:
+        return self.args.mode or self.detect_default_app_mode()
+
+    def get_filtered_packages(self, workspace: str, mode: str) -> list[dict]:
         chain = set(self.get_workspace_chain(workspace))
-        pkgs = [
-            p for p in self.config.get("packages", [])
-            if not p.get("workspaces") or any(w in chain for w in p["workspaces"])
-        ]
+        pkgs: list[dict] = []
+        for p in self.config.get("packages", []):
+            if p.get("workspaces") and not any(w in chain for w in p["workspaces"]):
+                continue
+            if mode == "terminal" and p.get("gui"):
+                continue
+            pkgs.append(p)
+        return pkgs
+
+    def cmd_apps(self, workspace: str, sub: str) -> None:
+        mode = self.resolve_app_mode()
+        pkgs = self.get_filtered_packages(workspace, mode)
         if sub in ("list", ""):
-            print(ctext(f"\n=== Configured Applications ({workspace}) ===", "cyan"))
+            print(ctext(f"\n=== Configured Applications ({workspace}, mode={mode}) ===", "cyan"))
             for p in pkgs:
                 arch = p.get("arch", "-")
-                apt = p.get("apt", "-")
-                print(f"  {p['name']:<32} arch={arch:<24} apt={apt}")
+                tag = "[gui] " if p.get("gui") else "[term]"
+                print(f"  {tag} {p['name']:<32} arch={arch}")
             print()
             return
 
-        yay = shutil.which("yay") or shutil.which("paru")
+        yay = shutil.which("yay")
         pacman = shutil.which("pacman")
         apt = shutil.which("apt-get")
 
@@ -1020,8 +1055,11 @@ class PssApp:
             if yay or pacman:
                 installer = yay or pacman
                 names = [p["arch"] for p in pkgs if p.get("arch")]
+                if not names:
+                    badge("OK", "green", f"No packages configured for workspace '{workspace}' (mode={mode}).")
+                    return
                 if not yay:
-                    print(ctext("Note: AUR helper (yay/paru) not found; installing official pacman packages only.", "yellow"))
+                    print(ctext("Note: yay not found; installing official pacman packages only (run 'rig setup' to install yay).", "yellow"))
                 cmd = ([installer] if yay else ["sudo", pacman]) + ["-S", "--needed"] + names
                 print(f"--> {' '.join(cmd)}")
                 if not self.args.what_if:
@@ -1039,17 +1077,180 @@ class PssApp:
                 else:
                     badge("WARN", "yellow", "No configured apt packages are available in the current apt cache.")
             else:
-                badge("WARN", "yellow", "No supported package manager (yay/paru/pacman/apt-get) found.")
+                badge("WARN", "yellow", "No supported package manager (yay/pacman/apt-get) found.")
         elif sub == "update":
             if yay:
-                subprocess.run([yay, "-Syu"])
+                cmd = [yay, "-Syu"]
+                print(f"--> {' '.join(cmd)}")
+                if not self.args.what_if:
+                    subprocess.run(cmd)
             elif pacman:
-                subprocess.run(["sudo", pacman, "-Syu"])
+                cmd = ["sudo", pacman, "-Syu"]
+                print(f"--> {' '.join(cmd)}")
+                if not self.args.what_if:
+                    subprocess.run(cmd)
             elif apt:
-                subprocess.run(["sudo", "apt-get", "update"])
-                subprocess.run(["sudo", "apt-get", "upgrade", "-y"])
+                if not self.args.what_if:
+                    subprocess.run(["sudo", "apt-get", "update"])
+                    subprocess.run(["sudo", "apt-get", "upgrade", "-y"])
             else:
                 badge("WARN", "yellow", "No supported package manager found.")
+
+    def cmd_fonts(self) -> int:
+        font_cfg = (self.config.get("fonts") or [{}])[0]
+        font_name = font_cfg.get("name", "JetBrains Mono")
+        arch_pkg = font_cfg.get("archPackage", "ttf-jetbrains-mono-nerd")
+        check_name = font_cfg.get("checkFile", "JetBrainsMono-Regular.ttf")
+        fallback_url = font_cfg.get("fallbackUrl", "https://download.jetbrains.com/fonts/JetBrainsMono-2.304.zip")
+
+        font_dir = self.home_dir / ".local" / "share" / "fonts"
+        if (font_dir / check_name).is_file() and not self.args.force:
+            badge("OK", "green", f"{font_name} font is already installed in {font_dir}.")
+            return 0
+
+        if shutil.which("fc-list") and not self.args.force:
+            res = subprocess.run(["fc-list"], capture_output=True, text=True, check=False)
+            if "jetbrainsmono" in res.stdout.lower():
+                badge("OK", "green", f"{font_name} font is already installed.")
+                return 0
+
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", f"Would install {font_name} font.")
+            return 0
+
+        pacman = shutil.which("pacman")
+        if pacman:
+            badge("INSTALL", "cyan", f"Installing {arch_pkg} via pacman...")
+            cmd = [pacman, "-S", "--needed", "--noconfirm", arch_pkg]
+            if os.geteuid() != 0:
+                cmd = ["sudo"] + cmd
+            if subprocess.run(cmd, check=False).returncode == 0:
+                return 0
+
+        badge("DOWNLOAD", "cyan", f"Fetching {font_name} from {fallback_url}...")
+        font_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            zip_path = Path(tmp) / "font.zip"
+            urllib.request.urlretrieve(fallback_url, zip_path)
+            with zipfile.ZipFile(zip_path) as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    fname = Path(member.filename).name
+                    if fname.lower().endswith(".ttf") and "[" not in fname:
+                        target = font_dir / fname
+                        with zf.open(member) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+        if shutil.which("fc-cache"):
+            subprocess.run(["fc-cache", "-f", str(font_dir)], capture_output=True, check=False)
+        badge("APPLIED", "green", f"Installed {font_name} into {font_dir}")
+        return 0
+
+    def _ensure_yay(self) -> None:
+        if shutil.which("yay"):
+            badge("OK", "green", "yay AUR helper is already installed.")
+            return
+        pacman = shutil.which("pacman")
+        if not pacman:
+            return
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", "Would offer to install 'yay-bin' from AUR (requires base-devel + git).")
+            return
+        if os.geteuid() == 0:
+            badge("WARN", "yellow", "yay is missing, but makepkg cannot run as root. Install yay-bin as a non-root user.")
+            return
+        if not self.args.yes:
+            if not sys.stdin.isatty():
+                badge("SKIP", "darkgray", "yay not found (non-interactive; skipping AUR bootstrap).")
+                return
+            reply = input("Install 'yay-bin' AUR helper? [Y/n] ").strip().lower()
+            if reply in ("n", "no"):
+                badge("SKIP", "darkgray", "Skipped yay-bin installation.")
+                return
+        badge("INSTALL", "cyan", "Bootstrapping yay-bin from AUR...")
+        subprocess.run(["sudo", pacman, "-S", "--needed", "--noconfirm", "base-devel", "git"], check=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            yay_dir = Path(tmp) / "yay-bin"
+            subprocess.run(["git", "clone", "https://aur.archlinux.org/yay-bin.git", str(yay_dir)], check=True)
+            subprocess.run(["makepkg", "-si", "--noconfirm"], cwd=str(yay_dir), check=True)
+        badge("APPLIED", "green", "Installed yay.")
+
+    def _configure_git_identity(self) -> None:
+        res = subprocess.run(["git", "config", "--global", "user.email"], capture_output=True, text=True, check=False)
+        if res.stdout.strip() and not self.args.force:
+            badge("OK", "green", "Git user identity already configured in ~/.gitconfig.")
+            return
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", "Would prompt for Git user.name and user.email in ~/.gitconfig")
+            return
+        if not sys.stdin.isatty():
+            badge("SKIP", "darkgray", "Git identity not set (non-interactive; skipping prompt).")
+            return
+        g_name = input("Enter Git user.name: ").strip()
+        g_email = input("Enter Git user.email: ").strip()
+        if g_name:
+            subprocess.run(["git", "config", "--global", "user.name", g_name], check=True)
+        if g_email:
+            subprocess.run(["git", "config", "--global", "user.email", g_email], check=True)
+        if g_name or g_email:
+            badge("APPLIED", "green", "Saved Git identity to ~/.gitconfig")
+
+    def _configure_project_roots(self) -> None:
+        roots_file = self.local_paths["project_roots"]
+        if roots_file.is_file() and not self.args.force:
+            badge("OK", "green", f"Project roots already configured in {roots_file}.")
+            return
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", f"Would initialize project roots in {roots_file}")
+            return
+        default_root = self.home_dir / "code" / "projects"
+        roots_file.parent.mkdir(parents=True, exist_ok=True)
+        default_root.mkdir(parents=True, exist_ok=True)
+        roots_file.write_text(f"{default_root}\n", encoding="utf-8")
+        badge("APPLIED", "green", f"Initialized project roots in {roots_file}")
+
+    def _configure_default_shell(self) -> None:
+        zsh_bin = shutil.which("zsh")
+        if not zsh_bin:
+            badge("WARN", "yellow", "zsh not found on PATH; install zsh first.")
+            return
+        try:
+            current_shell = pwd.getpwuid(os.geteuid()).pw_shell
+        except KeyError:
+            current_shell = os.environ.get("SHELL", "")
+        if current_shell == zsh_bin:
+            badge("OK", "green", f"Default login shell is already {zsh_bin}.")
+            return
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", f"Would offer 'chsh -s {zsh_bin}'")
+            return
+        if not self.args.yes:
+            if not sys.stdin.isatty():
+                badge("SKIP", "darkgray", f"Default shell is {current_shell} (non-interactive; skipping chsh).")
+                return
+            reply = input(f"Set Zsh ({zsh_bin}) as your default login shell? [y/N] ").strip().lower()
+            if reply not in ("y", "yes"):
+                badge("SKIP", "darkgray", f"Kept current login shell ({current_shell}).")
+                return
+        res = subprocess.run(["chsh", "-s", zsh_bin], check=False)
+        if res.returncode == 0:
+            badge("APPLIED", "green", f"Default shell set to {zsh_bin}")
+        else:
+            badge("WARN", "yellow", f"chsh failed; run 'chsh -s {zsh_bin}' manually.")
+
+    def cmd_setup(self) -> int:
+        mode = self.resolve_app_mode()
+        print(ctext(f"\n=== Rig Machine Setup (mode={mode}) ===", "cyan"))
+        self._ensure_yay()
+        if mode == "full" or self.args.force:
+            self.cmd_fonts()
+        else:
+            badge("INFO", "darkgray", "Skipping desktop font install in terminal/WSL2 mode (use 'rig fonts' to install anyway).")
+        self._configure_git_identity()
+        self._configure_project_roots()
+        self._configure_default_shell()
+        print(ctext("\nMachine setup complete!\n", "green"))
+        return 0
 
     def run(self) -> int:
         action = (self.args.action or "status").lower()
@@ -1142,19 +1343,10 @@ class PssApp:
             self.cmd_bootstrap(active_ws)
         elif action == "apps":
             self.cmd_apps(active_ws, sub)
-        elif action in ("fonts", "setup"):
-            script = SCRIPT_DIR / "scripts" / "setup-linux.sh"
-            if not script.is_file():
-                badge("ERROR", "red", f"Missing setup script: {script}")
-                return 1
-            cmd = ["sh", str(script)]
-            if action == "fonts":
-                cmd.append("--fonts-only")
-            if self.args.what_if:
-                cmd.append("--what-if")
-            if self.args.force:
-                cmd.append("--force")
-            return subprocess.run(cmd).returncode
+        elif action == "fonts":
+            return self.cmd_fonts()
+        elif action == "setup":
+            return self.cmd_setup()
         else:
             badge("ERROR", "red", f"Unknown action: '{action}'. Run 'rig --help' for usage.")
             return 1
@@ -1184,7 +1376,7 @@ def normalize_cli_flags(argv: list[str]) -> list[str]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="rig",
-        description="Personal Settings Sync (RIG) — Zsh, Starship, Git, and AI configuration manager.",
+        description="Rig — Zsh, Starship, Git, and AI configuration manager.",
     )
     parser.add_argument("action", nargs="?", default="status", help="status|apply|link|diff|edit|bootstrap|workspace|apps|fonts|setup")
     parser.add_argument("sub_action", nargs="?", help="Sub-action (e.g. workspace subcommand or edit layer)")
@@ -1198,6 +1390,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--what-if", "--whatif", action="store_true", help="Dry run without writing to disk")
     parser.add_argument("--no-backup", "--nobackup", action="store_true", help="Skip .backups/ snapshots")
     parser.add_argument("--no-apply", "--noapply", action="store_true", help="Skip automatic apply on workspace use")
+    parser.add_argument("--mode", "-m", choices=["full", "terminal"], help="App/setup profile: full (GUI + terminal) or terminal (headless/WSL2)")
     parser.add_argument("--path-only", action="store_true", help="Print resolved repo path for 'rig edit'")
     parser.add_argument("--home-override", help=argparse.SUPPRESS)
     parser.add_argument("--state-home-override", help=argparse.SUPPRESS)
@@ -1207,7 +1400,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args(normalize_cli_flags(sys.argv[1:]))
-    return PssApp(args).run()
+    return RigApp(args).run()
 
 
 if __name__ == "__main__":
