@@ -24,7 +24,7 @@ sys.path.insert(0, str(SCRIPT_DIR / "scripts"))
 import local_state  # noqa: E402
 import profile_groups  # noqa: E402
 
-VALID_SUBSYSTEMS = ("zsh", "starship", "git", "gemini", "skills", "plugins")
+VALID_SUBSYSTEMS = ("zsh", "starship", "git", "gemini", "skills", "plugins", "dotfiles")
 MAX_BACKUPS = 10
 
 COLORS = {
@@ -533,6 +533,32 @@ class RigApp:
                 links.append({"name": name, "source": src, "target": target_base / name})
         return links
 
+    def get_desired_dotfile_links(self, workspace: str) -> list[dict]:
+        cfg = self.config["subsystems"].get("dotfiles")
+        if not cfg:
+            return []
+        ws_dir_tpl = cfg.get("workspaceDir", "workspaces/{workspace}/dotfiles")
+        chain = self.get_workspace_chain(workspace)
+        links: list[dict] = []
+        seen: set[str] = set()
+        for ws in reversed(chain):
+            ws_base = SCRIPT_DIR / ws_dir_tpl.replace("{workspace}", ws)
+            if not ws_base.is_dir():
+                continue
+            for entry in cfg.get("links", []):
+                name = entry["name"]
+                if name.lower() in seen:
+                    continue
+                src = ws_base / entry["repoSubpath"]
+                if src.exists():
+                    seen.add(name.lower())
+                    links.append({
+                        "name": name,
+                        "source": src,
+                        "target": self.resolve_dynamic_path(entry["localTarget"]),
+                    })
+        return links
+
     def sync_link(self, source: Path, target: Path, backup_rel: str) -> bool:
         state = get_link_status(source, target)
         if state == "Linked" and not self.args.force:
@@ -588,6 +614,10 @@ class RigApp:
         if self.should_process("plugins"):
             for link in self.get_desired_plugin_links():
                 rows.append(("AI Plugin", link["name"], "Symlink", get_link_status(link["source"], link["target"]), str(link["target"])))
+
+        if self.should_process("dotfiles"):
+            for link in self.get_desired_dotfile_links(workspace):
+                rows.append(("Dotfiles", link["name"], "Symlink", get_link_status(link["source"], link["target"]), str(link["target"])))
 
         headers = ("Subsystem", "Target", "Mode", "Status", "Path")
         widths = [max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(5)] if rows else [len(h) for h in headers]
@@ -701,6 +731,12 @@ class RigApp:
                 if self.sync_link(link["source"], link["target"], f"plugins/{link['name']}"):
                     applied += 1
 
+        if self.should_process("dotfiles"):
+            print(ctext("\n[Desktop Dotfiles]", "yellow"))
+            for link in self.get_desired_dotfile_links(workspace):
+                if self.sync_link(link["source"], link["target"], f"dotfiles/{link['name']}"):
+                    applied += 1
+
         if not self.args.what_if:
             print(ctext(f"\nDone. Updated {applied} item(s).", "green"))
             if applied > 0:
@@ -767,6 +803,14 @@ class RigApp:
                         subprocess.run(["git", "diff", "--no-index", "--color", tmp_path, str(lp)])
                     finally:
                         Path(tmp_path).unlink(missing_ok=True)
+
+        if self.should_process("dotfiles"):
+            for link in self.get_desired_dotfile_links(workspace):
+                ds = get_link_status(link["source"], link["target"])
+                if ds != "Linked":
+                    diffs += 1
+                    print(ctext(f"\n--- Dotfiles: {link['name']} ({ds}) ---", "magenta"))
+                    print(f"Expected link: {link['target']} -> {link['source']}")
 
         if diffs == 0:
             badge("OK", "green", f"All inspected configurations are in sync with '{workspace}'.")
@@ -1035,7 +1079,61 @@ class RigApp:
             pkgs.append(p)
         return pkgs
 
+    @staticmethod
+    def _pkg_id_from_name(pkg_name: str) -> str:
+        parts = [p for p in re.split(r"[^A-Za-z0-9]+", pkg_name) if p]
+        return "".join(p[:1].upper() + p[1:] for p in parts) or pkg_name
+
+    def cmd_apps_add(self, pkg_name: str | None) -> None:
+        if not pkg_name:
+            badge("ERROR", "red", "Package name required: rig apps add <pkg> [--gui] [--workspace <name>]")
+            raise SystemExit(1)
+
+        pkg_name = pkg_name.strip()
+        packages = self.config.setdefault("packages", [])
+        if any(p.get("arch") == pkg_name for p in packages):
+            badge("OK", "green", f"'{pkg_name}' is already in rig.config.json.")
+            return
+
+        display_name = self.args.name
+        if not display_name and shutil.which("pacman"):
+            res = subprocess.run(["pacman", "-Qi", pkg_name], capture_output=True, text=True, check=False)
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if line.startswith("Description"):
+                        desc = line.split(":", 1)[1].strip()
+                        if desc and desc.lower() != "none":
+                            display_name = desc
+                        break
+
+        entry: dict = {
+            "id": self._pkg_id_from_name(pkg_name),
+            "arch": pkg_name,
+            "name": display_name or pkg_name,
+            "category": self.args.category or "CLI",
+        }
+        ws_opt = (self.args.workspace or "").strip().lower()
+        if ws_opt and ws_opt != "shared":
+            entry["workspaces"] = [ws_opt]
+        if self.args.gui:
+            entry["gui"] = True
+
+        if self.args.what_if:
+            badge("WHAT-IF", "cyan", f"Would add '{pkg_name}' to rig.config.json: {json.dumps(entry)}")
+            return
+
+        packages.append(entry)
+        config_file = SCRIPT_DIR / "rig.config.json"
+        config_file.write_text(json.dumps(self.config, indent=2) + "\n", encoding="utf-8")
+        scope_msg = f"workspaces={entry['workspaces']}" if "workspaces" in entry else "shared"
+        mode_msg = "gui" if entry.get("gui") else "terminal+full"
+        badge("ADDED", "green", f"Added '{pkg_name}' to rig.config.json ({scope_msg}, {mode_msg}).")
+
     def cmd_apps(self, workspace: str, sub: str) -> None:
+        if sub == "add":
+            self.cmd_apps_add(self.args.target_name)
+            return
+
         mode = self.resolve_app_mode()
         pkgs = self.get_filtered_packages(workspace, mode)
         if sub in ("list", ""):
@@ -1381,7 +1479,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("action", nargs="?", default="status", help="status|apply|link|diff|edit|bootstrap|workspace|apps|fonts|setup")
     parser.add_argument("sub_action", nargs="?", help="Sub-action (e.g. workspace subcommand or edit layer)")
     parser.add_argument("target_name", nargs="?", help="Target workspace or edit item")
-    parser.add_argument("--include", action="append", help="Filter subsystems: zsh, starship, git, gemini, skills, plugins")
+    parser.add_argument("--include", action="append", help="Filter subsystems: zsh, starship, git, gemini, skills, plugins, dotfiles")
     parser.add_argument("--exclude", action="append", help="Exclude specific subsystems")
     parser.add_argument("--pull", action="store_true", help="Run git pull before applying")
     parser.add_argument("--push", action="store_true", help="Commit and push after mutations")
@@ -1391,6 +1489,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-backup", "--nobackup", action="store_true", help="Skip .backups/ snapshots")
     parser.add_argument("--no-apply", "--noapply", action="store_true", help="Skip automatic apply on workspace use")
     parser.add_argument("--mode", "-m", choices=["full", "terminal"], help="App/setup profile: full (GUI + terminal) or terminal (headless/WSL2)")
+    parser.add_argument("--gui", action="store_true", help="Mark package as GUI-only for 'rig apps add'")
+    parser.add_argument("--workspace", help="Scope package to workspace (or 'shared') for 'rig apps add'")
+    parser.add_argument("--name", help="Display name for 'rig apps add'")
+    parser.add_argument("--category", help="Category for 'rig apps add'")
     parser.add_argument("--path-only", action="store_true", help="Print resolved repo path for 'rig edit'")
     parser.add_argument("--home-override", help=argparse.SUPPRESS)
     parser.add_argument("--state-home-override", help=argparse.SUPPRESS)

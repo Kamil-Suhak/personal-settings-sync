@@ -322,6 +322,11 @@ rig() {
     "${RIG_PYTHON:-python3}" "$RIG_ROOT/rig" "$@"
 }
 
+# @cmd: try — Temporarily install and run an Arch/AUR package, then keep, add to rig, or remove
+try() {
+    "${RIG_PYTHON:-python3}" "$RIG_ROOT/configs/bin/try" "$@"
+}
+
 # @cmd: update — Update system and AUR packages via yay (or pacman)
 update() {
     if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then

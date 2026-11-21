@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Temporarily install and run an Arch/AUR package, then keep, add to rig, or remove."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _rig_common import resolve_rig_root  # noqa: E402
+
+
+def _pkg_manager() -> tuple[str, list[str], list[str]]:
+    yay = shutil.which("yay")
+    if yay:
+        return yay, [yay, "-S", "--needed"], [yay, "-Rns"]
+    pacman = shutil.which("pacman")
+    if pacman:
+        prefix = [] if os.geteuid() == 0 else ["sudo"]
+        return pacman, [*prefix, pacman, "-S", "--needed"], [*prefix, pacman, "-Rns"]
+    raise RuntimeError("Neither 'yay' nor 'pacman' was found on PATH.")
+
+
+def _is_installed(pkg: str) -> bool:
+    return subprocess.run(["pacman", "-Q", pkg], capture_output=True, check=False).returncode == 0
+
+
+def _discover_binaries(pkg: str) -> list[str]:
+    res = subprocess.run(["pacman", "-Qlq", pkg], capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        return []
+    bins: list[str] = []
+    for raw in res.stdout.splitlines():
+        p = Path(raw.strip())
+        if p.parent == Path("/usr/bin") and p.is_file() and os.access(p, os.X_OK):
+            bins.append(str(p))
+    return bins
+
+
+def _pick_binary(pkg: str, bins: list[str]) -> str | None:
+    if not bins:
+        return None
+    if len(bins) == 1:
+        return bins[0]
+    fzf = shutil.which("fzf")
+    if fzf and sys.stdin.isatty():
+        names = "\n".join(Path(b).name for b in bins)
+        res = subprocess.run([fzf, "--prompt", f"{pkg} binary> "], input=names, text=True, capture_output=True, check=False)
+        picked = res.stdout.strip()
+        if picked:
+            return str(Path("/usr/bin") / picked)
+    return None
+
+
+def _launch_target(pkg: str, extra_args: list[str], *, force_shell: bool) -> int:
+    shell_bin = os.environ.get("SHELL") or shutil.which("zsh") or shutil.which("bash") or "/bin/sh"
+    if force_shell:
+        print(f"[TRY] Dropping into subshell for '{pkg}' (type 'exit' when done)...")
+        cmd = [shell_bin]
+    elif extra_args and extra_args[0] == "--":
+        cmd = extra_args[1:] if len(extra_args) > 1 else [shell_bin]
+    elif shutil.which(pkg):
+        cmd = [pkg, *extra_args]
+    else:
+        bins = _discover_binaries(pkg)
+        chosen = _pick_binary(pkg, bins)
+        if chosen:
+            cmd = [chosen, *extra_args]
+        else:
+            print(f"[INFO] No single executable found in /usr/bin for '{pkg}'; starting subshell (type 'exit' when done).")
+            cmd = [shell_bin]
+
+    try:
+        return subprocess.run(cmd, check=False).returncode
+    except KeyboardInterrupt:
+        print()
+        return 130
+
+
+def _prompt_post_run(pkg: str, remove_cmd: list[str]) -> int:
+    while True:
+        try:
+            choice = input(f"\nKeep '{pkg}'? [k]eep local / [a]dd to rig / [r]emove [r]: ").strip().lower() or "r"
+        except (EOFError, KeyboardInterrupt):
+            choice = "r"
+            print()
+
+        if choice in ("k", "keep"):
+            print(f"[KEEP] Left '{pkg}' installed locally.")
+            return 0
+        if choice in ("r", "remove"):
+            return subprocess.run([*remove_cmd, pkg], check=False).returncode
+        if choice in ("a", "add"):
+            active_ws = os.environ.get("RIG_WORKSPACE", "").strip() or "personal"
+            ws_reply = input(f"Workspace ([s]hared / [{active_ws}]) [s]: ").strip().lower()
+            gui_reply = input("GUI-only (--mode full)? [y/N]: ").strip().lower()
+
+            rig_bin = resolve_rig_root() / "rig"
+            cmd = [sys.executable, str(rig_bin), "apps", "add", pkg]
+            if ws_reply and ws_reply not in ("s", "shared"):
+                cmd.extend(["--workspace", active_ws if ws_reply in ("y", "yes", active_ws[0]) else ws_reply])
+            if gui_reply in ("y", "yes"):
+                cmd.append("--gui")
+            return subprocess.run(cmd, check=False).returncode
+        print("Please enter 'k', 'a', or 'r'.")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="try",
+        description="Temporarily install an Arch/AUR package, run it, and then keep, add to rig, or remove.",
+    )
+    parser.add_argument("package", help="Arch/AUR package name to try")
+    parser.add_argument("--shell", action="store_true", help="Drop into a subshell instead of running a single binary")
+    parser.add_argument("--what-if", action="store_true", help="Dry run without installing or modifying anything")
+    parser.add_argument("cmd_args", nargs=argparse.REMAINDER, help="Arguments for the command, or '-- <cmd...>'")
+    args = parser.parse_args(argv)
+
+    try:
+        _, install_cmd, remove_cmd = _pkg_manager()
+    except RuntimeError as exc:
+        print(f"✖ try: {exc}", file=sys.stderr)
+        return 1
+
+    pkg = args.package.strip()
+    already_installed = _is_installed(pkg)
+
+    if args.what_if:
+        if already_installed:
+            print(f"[WHAT-IF] '{pkg}' is already installed; would run without prompting to uninstall.")
+        else:
+            print(f"[WHAT-IF] Would run: {' '.join([*install_cmd, pkg])}, launch '{pkg}', then prompt [k/a/r].")
+        return 0
+
+    if already_installed:
+        print(f"[INFO] '{pkg}' is already installed; running without uninstall prompt.")
+        return _launch_target(pkg, args.cmd_args, force_shell=args.shell)
+
+    print(f"--> {' '.join([*install_cmd, pkg])}")
+    if subprocess.run([*install_cmd, pkg], check=False).returncode != 0:
+        return 1
+
+    _launch_target(pkg, args.cmd_args, force_shell=args.shell)
+    return _prompt_post_run(pkg, remove_cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

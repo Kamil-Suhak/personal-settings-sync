@@ -383,6 +383,13 @@
       "gui": true
     },
     {
+      "id": "Fvm",
+      "arch": "fvm",
+      "name": "Flutter Version Management (fvm)",
+      "category": "Development",
+      "workspaces": ["personal"]
+    },
+    {
       "id": "Godot",
       "arch": "godot",
       "name": "Godot Engine",
@@ -399,36 +406,165 @@
       "gui": true
     },
     {
-      "id": "Gradia",
-      "arch": "gradia",
-      "name": "Gradia Screenshot Annotator",
-      "category": "Utilities",
-      "workspaces": ["personal"],
-      "gui": true
-    },
-    {
-      "id": "ExtensionManager",
-      "arch": "extension-manager",
-      "name": "GNOME Extension Manager",
-      "category": "Desktop",
-      "workspaces": ["personal"],
-      "gui": true
-    },
-    {
-      "id": "GnomeTweaks",
-      "arch": "gnome-tweaks",
-      "name": "GNOME Tweaks",
-      "category": "Desktop",
-      "workspaces": ["personal"],
-      "gui": true
-    },
-    {
       "id": "Pavucontrol",
       "arch": "pavucontrol",
       "name": "PulseAudio/PipeWire Volume Control",
       "category": "Desktop",
       "workspaces": ["personal"],
       "gui": true
+    },
+    {
+      "id": "Hyprland",
+      "arch": "hyprland",
+      "name": "Hyprland",
+      "category": "Desktop",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "XdgDesktopPortalHyprland",
+      "arch": "xdg-desktop-portal-hyprland",
+      "name": "Hyprland XDG Portal",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "PolkitGnome",
+      "arch": "polkit-gnome",
+      "name": "Polkit Authentication Agent",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Waybar",
+      "arch": "waybar",
+      "name": "Waybar",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Fuzzel",
+      "arch": "fuzzel",
+      "name": "Fuzzel Launcher",
+      "category": "Desktop",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Mako",
+      "arch": "mako",
+      "name": "Mako Notification Daemon",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Hyprlock",
+      "arch": "hyprlock",
+      "name": "Hyprlock",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Hypridle",
+      "arch": "hypridle",
+      "name": "Hypridle",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Hyprpaper",
+      "arch": "hyprpaper",
+      "name": "Hyprpaper",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Greetd",
+      "arch": "greetd",
+      "name": "greetd Display Manager",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "GreetdTuigreet",
+      "arch": "greetd-tuigreet",
+      "name": "tuigreet Greeter",
+      "category": "Desktop",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Grim",
+      "arch": "grim",
+      "name": "grim Screenshot Utility",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Slurp",
+      "arch": "slurp",
+      "name": "slurp Region Selector",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Satty",
+      "arch": "satty",
+      "name": "Satty Screenshot Annotator",
+      "category": "Utilities",
+      "workspaces": ["personal"],
+      "gui": true
+    },
+    {
+      "id": "Clipse",
+      "arch": "clipse",
+      "name": "Clipse Clipboard Manager",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Brightnessctl",
+      "arch": "brightnessctl",
+      "name": "brightnessctl",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Playerctl",
+      "arch": "playerctl",
+      "name": "playerctl",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "NetworkManagerDmenu",
+      "arch": "networkmanager-dmenu",
+      "name": "networkmanager-dmenu",
+      "category": "Utilities",
+      "workspaces": ["personal"]
+    },
+    {
+      "id": "Yazi",
+      "arch": "yazi",
+      "name": "Yazi File Manager",
+      "category": "CLI"
+    },
+    {
+      "id": "SevenZip",
+      "arch": "7zip",
+      "name": "7-Zip",
+      "category": "CLI"
+    },
+    {
+      "id": "Mdcat",
+      "arch": "mdcat",
+      "name": "mdcat Markdown Renderer",
+      "category": "CLI"
+    },
+    {
+      "id": "Lazygit",
+      "arch": "lazygit",
+      "name": "lazygit",
+      "category": "Dev Tools"
     }
   ],
   "fonts": [
@@ -511,6 +647,20 @@
       "targetDir": "~/.gemini/config/plugins",
       "items": [
         "egm"
+      ]
+    },
+    "dotfiles": {
+      "displayName": "Desktop Dotfiles",
+      "workspaceDir": "workspaces/{workspace}/dotfiles",
+      "links": [
+        { "name": "hypr", "repoSubpath": "hypr", "localTarget": "~/.config/hypr" },
+        { "name": "waybar", "repoSubpath": "waybar", "localTarget": "~/.config/waybar" },
+        { "name": "fuzzel", "repoSubpath": "fuzzel", "localTarget": "~/.config/fuzzel" },
+        { "name": "mako", "repoSubpath": "mako", "localTarget": "~/.config/mako" },
+        { "name": "mdcat", "repoSubpath": "mdcat", "localTarget": "~/.config/mdcat" },
+        { "name": "micro", "repoSubpath": "micro", "localTarget": "~/.config/micro" },
+        { "name": "networkmanager-dmenu", "repoSubpath": "networkmanager-dmenu", "localTarget": "~/.config/networkmanager-dmenu" },
+        { "name": "ghostty", "repoSubpath": "ghostty", "localTarget": "~/.config/ghostty" }
       ]
     }
   }

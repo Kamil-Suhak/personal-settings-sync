@@ -1,0 +1,25 @@
+font-family = JetBrainsMono Nerd Font
+font-size = 13
+
+# Caret: thin blinking line
+cursor-style = bar
+cursor-style-blink = true
+
+# Look & feel
+theme = Atom One Dark
+background-opacity = 0.94
+background-blur-radius = 20
+window-padding-x = 10
+window-padding-y = 8
+window-decoration = auto
+
+# Quality of life
+shell-integration = zsh
+copy-on-select = clipboard
+mouse-hide-while-typing = true
+confirm-close-surface = false
+scrollback-limit = 10000
+
+# Keybinds
+keybind = ctrl+v=paste_from_clipboard
+keybind = performable:ctrl+c=copy_to_clipboard:mixed

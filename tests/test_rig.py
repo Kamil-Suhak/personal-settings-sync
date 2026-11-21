@@ -300,6 +300,23 @@ class TestRigCli(unittest.TestCase):
             res_fonts = run_cli(rig_bin, [*base_args, "fonts", "--what-if"])
             self.assertEqual(res_fonts.returncode, 0, res_fonts.stderr)
 
+            res_add = run_cli(rig_bin, [*base_args, "apps", "add", "lazygit-demo", "--workspace", "personal", "--gui", "--name", "Lazygit Demo"])
+            self.assertEqual(res_add.returncode, 0, res_add.stderr)
+            self.assertIn("Added 'lazygit-demo'", res_add.stdout)
+            cfg_after = json.loads((sandbox_repo / "rig.config.json").read_text(encoding="utf-8"))
+            added_entries = [p for p in cfg_after["packages"] if p.get("arch") == "lazygit-demo"]
+            self.assertEqual(len(added_entries), 1)
+            self.assertEqual(added_entries[0]["workspaces"], ["personal"])
+            self.assertTrue(added_entries[0]["gui"])
+
+            res_add_dup = run_cli(rig_bin, [*base_args, "apps", "add", "lazygit-demo"])
+            self.assertEqual(res_add_dup.returncode, 0, res_add_dup.stderr)
+            self.assertIn("already in rig.config.json", res_add_dup.stdout)
+
+            res_try = run_cli(sandbox_repo / "configs" / "bin" / "try", ["--what-if", "git"])
+            self.assertEqual(res_try.returncode, 0, res_try.stderr)
+            self.assertIn("WHAT-IF", res_try.stdout)
+
     def test_workspace_status_apply_diff_and_backups(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -911,7 +928,7 @@ class TestZshFunctionsViaBash(unittest.TestCase):
             script1 = "\n".join(
                 [
                     "set -e",
-                    "for fn in gdiff b nb lg wip unwip stashes groot mkcd p open out lastout rerun which venv copy paste ask update install remove clean; do",
+                    "for fn in gdiff b nb lg wip unwip stashes groot mkcd p open out lastout rerun which venv copy paste ask update install remove clean try; do",
                     '  "$fn" -h >/dev/null',
                     "done",
                     "which profile -h",

@@ -1,0 +1,87 @@
+[
+  {
+    "output": "eDP-1",
+    "layer": "top",
+    "position": "top",
+    "height": 30,
+    "margin-top": 6,
+    "margin-left": 8,
+    "margin-right": 8,
+    "spacing": 6,
+    "modules-left": ["hyprland/workspaces"],
+    "modules-center": ["clock"],
+    "modules-right": ["pulseaudio", "network", "battery", "tray"],
+    "hyprland/workspaces": {
+      "format": "{id}",
+      "on-click": "activate",
+      "sort-by-number": true
+    },
+    "clock": {
+      "format": "{:%a %d %b  %H:%M}",
+      "tooltip-format": "<tt>{calendar}</tt>"
+    },
+    "pulseaudio": {
+      "format": "󰕾 {volume}%",
+      "format-muted": "󰖁 muted",
+      "on-click": "pavucontrol",
+      "scroll-step": 5
+    },
+    "network": {
+      "format-wifi": "󰤨 {essid}",
+      "format-ethernet": "󰈀 {ifname}",
+      "format-disconnected": "󰤭 offline",
+      "tooltip-format": "{ipaddr}/{cidr} ({signalStrength}%)",
+      "on-click": "networkmanager_dmenu"
+    },
+    "battery": {
+      "states": { "warning": 25, "critical": 12 },
+      "format": "{icon} {capacity}%",
+      "format-charging": "󰂄 {capacity}%",
+      "format-icons": ["󰁺", "󰁼", "󰁾", "󰂀", "󰁹"]
+    },
+    "tray": { "icon-size": 15, "spacing": 8 }
+  },
+  {
+    "output": "HDMI-A-1",
+    "name": "external",
+    "layer": "top",
+    "position": "top",
+    "height": 34,
+    "margin-top": 6,
+    "margin-left": 8,
+    "margin-right": 8,
+    "spacing": 6,
+    "modules-left": ["hyprland/workspaces"],
+    "modules-center": ["clock"],
+    "modules-right": ["pulseaudio", "network", "battery", "tray"],
+    "hyprland/workspaces": {
+      "format": "{id}",
+      "on-click": "activate",
+      "sort-by-number": true
+    },
+    "clock": {
+      "format": "{:%a %d %b  %H:%M}",
+      "tooltip-format": "<tt>{calendar}</tt>"
+    },
+    "pulseaudio": {
+      "format": "󰕾 {volume}%",
+      "format-muted": "󰖁 muted",
+      "on-click": "pavucontrol",
+      "scroll-step": 5
+    },
+    "network": {
+      "format-wifi": "󰤨 {essid}",
+      "format-ethernet": "󰈀 {ifname}",
+      "format-disconnected": "󰤭 offline",
+      "tooltip-format": "{ipaddr}/{cidr} ({signalStrength}%)",
+      "on-click": "networkmanager_dmenu"
+    },
+    "battery": {
+      "states": { "warning": 25, "critical": 12 },
+      "format": "{icon} {capacity}%",
+      "format-charging": "󰂄 {capacity}%",
+      "format-icons": ["󰁺", "󰁼", "󰁾", "󰂀", "󰁹"]
+    },
+    "tray": { "icon-size": 16, "spacing": 8 }
+  }
+]

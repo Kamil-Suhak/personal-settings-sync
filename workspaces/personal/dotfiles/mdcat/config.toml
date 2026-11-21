@@ -1,0 +1,6 @@
+[defaults]
+emoji = true
+smart_punctuation = true
+
+[theme]
+base = "solarized-dark"
